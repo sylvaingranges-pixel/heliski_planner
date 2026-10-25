@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Heliski Planner</title>
+  <meta name="description" content="Optimisation des rotations d'hélicoptères pour l'héliski : minimiser le coût de vol sous contrainte de dénivelé.">
+  <meta name="theme-color" content="#0f2742">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="icons/icon.svg" alt="" width="28" height="28"><span>Heliski Planner</span></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="plan" role="tab">Planification</button>
+      <button class="tab" data-view="formulation" role="tab">Formulation</button>
+      <button class="tab" data-view="data" role="tab">Données</button>
+    </nav>
+    <button id="install" class="btn btn-ghost" hidden>Installer l’app</button>
+  </header>
+
+  <main>
+    <!-- ======================================================= PLANIFICATION -->
+    <section id="view-plan" class="view active">
+      <aside class="sidebar">
+        <details open>
+          <summary>Jeu de données</summary>
+          <div class="grid2">
+            <label>Graine <input type="number" id="ds-seed" value="42"></label>
+            <label>Descentes <input type="number" id="ds-n" value="50" min="5" max="200"></label>
+            <label>Rayon (km) <input type="number" id="ds-radius" value="15" min="5" max="40"></label>
+            <label>Massifs <input type="number" id="ds-massifs" value="6" min="1" max="12"></label>
+          </div>
+          <div class="row"><button id="btn-gen" class="btn">Générer</button><span id="ds-info" class="muted"></span></div>
+        </details>
+
+        <details open>
+          <summary>Groupes (objectif du jour)</summary>
+          <table class="groups-table">
+            <thead><tr><th>Nom</th><th>Forfait (m)</th><th>Jours</th><th>Obj. / j</th><th></th></tr></thead>
+            <tbody id="groups-body"></tbody>
+          </table>
+          <button id="btn-add-group" class="btn btn-small btn-ghost">+ groupe</button>
+        </details>
+
+        <details open>
+          <summary>Hélicoptères &amp; coûts</summary>
+          <div class="grid2">
+            <label>Hélicoptères <input type="number" id="p-nHeli" min="1" max="4"></label>
+            <label>Vol (CHF/min) <input type="number" id="p-flyRate" step="1"></label>
+            <label>Standby (CHF/min) <input type="number" id="p-standbyRate" step="1"></label>
+            <label>Standby max (min) <input type="number" id="p-maxStandby" step="0.5"></label>
+            <label>Chargement (min) <input type="number" id="p-loadMin" step="0.5"></label>
+            <label>Déchargement (min) <input type="number" id="p-unloadMin" step="0.5"></label>
+            <label>Début <input type="time" id="p-dayStart"></label>
+            <label>Fin <input type="time" id="p-dayEnd"></label>
+            <label>Vitesse (km/h) <input type="number" id="p-heliSpeedKmh"></label>
+            <label>Montée (m/min) <input type="number" id="p-climbRate"></label>
+            <label>Décollage+appr. (min) <input type="number" id="p-flightOverhead" step="0.5"></label>
+            <label>Attente client (CHF/min) <input type="number" id="p-clientWaitPenalty" step="0.5"></label>
+            <label title="Au fond des descentes ; 0 = illimitée">Attente max au fond (min) <input type="number" id="p-maxClientWait" step="5" min="0"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="p-exclusiveRuns"> Une descente = un seul groupe à la fois</label>
+          <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée</label>
+        </details>
+
+        <details open>
+          <summary>Résolution</summary>
+          <div class="grid2">
+            <label>Effort
+              <select id="sa-effort">
+                <option value="20000">Rapide (~0,5 s)</option>
+                <option value="60000" selected>Normal (~1,5 s)</option>
+                <option value="250000">Poussé (~6 s)</option>
+              </select>
+            </label>
+            <label>Graine solveur <input type="number" id="sa-seed" value="1"></label>
+          </div>
+          <button id="btn-solve" class="btn btn-primary btn-block">Optimiser (heuristique)</button>
+          <div class="progress" id="sa-progress" hidden><div></div></div>
+
+          <h4>Vérification exacte (MILP, HiGHS)</h4>
+          <div class="grid2">
+            <label>Modèle
+              <select id="milp-mode">
+                <option value="fixed">Affectation hélicos (descentes imposées)</option>
+                <option value="full">Complet (descentes candidates)</option>
+              </select>
+            </label>
+            <label>Candidates <input type="number" id="milp-size" value="10" min="4" max="50"></label>
+            <label>Temps max (s) <input type="number" id="milp-time" value="30" min="5" max="3600"></label>
+          </div>
+          <div class="row">
+            <button id="btn-milp" class="btn">Résoudre MILP</button>
+            <button id="btn-milp-stop" class="btn btn-ghost" hidden>Arrêter</button>
+            <button id="btn-lp" class="btn btn-ghost" title="Fichier LP pour NEOS / CPLEX / Gurobi / CBC">Exporter .lp</button>
+          </div>
+          <div id="milp-status" class="muted small"></div>
+        </details>
+      </aside>
+
+      <div class="content">
+        <div class="kpis" id="kpis"></div>
+        <div class="panels">
+          <div class="card map-card">
+            <div class="card-head">
+              <h3>Carte</h3>
+              <div class="map-tools">
+                <select id="map-focus"></select>
+                <label class="check inline"><input type="checkbox" id="map-all" checked> toutes les descentes</label>
+              </div>
+            </div>
+            <svg id="map" class="map" role="img" aria-label="Carte des descentes"></svg>
+            <div class="timebar">
+              <button id="btn-play" class="btn btn-small" title="Animer la journée">▶</button>
+              <input type="range" id="time" min="540" max="900" step="0.5" value="540">
+              <span id="time-label" class="mono">09:00</span>
+            </div>
+            <div id="run-info" class="run-info muted small">Cliquez sur une descente pour son détail.</div>
+          </div>
+          <div class="card side-card">
+            <div class="subtabs">
+              <button class="subtab active" data-sub="checks">Contrôles</button>
+              <button class="subtab" data-sub="groups">Groupes</button>
+              <button class="subtab" data-sub="ops">Journal</button>
+              <button class="subtab" data-sub="compare">Comparaison</button>
+            </div>
+            <div class="sub active" id="sub-checks"></div>
+            <div class="sub" id="sub-groups"></div>
+            <div class="sub" id="sub-ops"></div>
+            <div class="sub" id="sub-compare"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Planning</h3><div class="legend" id="gantt-legend"></div></div>
+          <div class="gantt-wrap"><svg id="gantt" class="gantt" role="img" aria-label="Diagramme de Gantt"></svg></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ======================================================= FORMULATION -->
+    <section id="view-formulation" class="view doc"></section>
+
+    <!-- ======================================================= DONNÉES -->
+    <section id="view-data" class="view">
+      <div class="card">
+        <div class="card-head">
+          <h3>Descentes</h3>
+          <div class="row">
+            <button id="btn-export-ds" class="btn btn-ghost btn-small">Exporter JSON</button>
+            <label class="btn btn-ghost btn-small">Importer JSON <input type="file" id="file-ds" accept=".json" hidden></label>
+            <button id="btn-export-matrix" class="btn btn-ghost btn-small">Matrice des temps (CSV)</button>
+          </div>
+        </div>
+        <p class="muted small">Format JSON : <code>{ base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin}], timeMatrix? }</code>.
+          Si <code>timeMatrix</code> (minutes, nœuds : base, sommets, fonds) est fourni, il remplace le calcul par distance.</p>
+        <div class="table-wrap"><table class="data-table" id="runs-table"></table></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

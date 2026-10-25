@@ -1,0 +1,12 @@
+{
+  "name": "heliski-planner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PWA d optimisation des rotations d helicopteres pour l heliski",
+  "scripts": {
+    "start": "python3 -m http.server 8080",
+    "test": "node --test tests/*.test.mjs",
+    "bench": "node tools/bench_milp.mjs"
+  }
+}
