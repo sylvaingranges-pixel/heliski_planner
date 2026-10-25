@@ -17,7 +17,7 @@ let BASE_DS = null;
 const baseDataset = () => ({ ...structuredClone(BASE_DS), isBase: true });
 
 const state = {
-  ds: null, dsOpts: structuredClone(BASE_OPTS), placingBase: false, effort: 'fast',
+  ds: null, dsOpts: structuredClone(BASE_OPTS), placingBase: false, effort: 'fast', playSpeed: 1,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
   dayRuns: null,                                   // descentes du jour (null = toutes)
   dayFilter: { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] },
@@ -37,7 +37,7 @@ function keptParams(s) {
 function save() {
   // Le jeu de base n'est jamais recopié : seule la référence « base » est mémorisée, il est relu depuis le fichier.
   const dataset = state.ds?.isBase ? 'base' : state.ds;
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort, playSpeed: state.playSpeed })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -50,6 +50,7 @@ function load() {
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
     if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
     if (EFFORT[s.effort]) state.effort = s.effort;
+    if (PLAY_SPEEDS.includes(s.playSpeed)) state.playSpeed = s.playSpeed;
   } catch { /* ignore */ }
 }
 
@@ -298,6 +299,7 @@ function ensureMapView() {
 }
 // ------------------------------------------------------------------ animation de la journée
 let playTimer = null, pausedAt = null;
+const PLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];         // ×1 : 1 min de journée toutes les 40 ms
 // Fin de l'animation : dernier mouvement (hélicos rentrés, groupes arrivés), borné par le curseur.
 function playEnd() {
   const max = +$('time').max, sch = state.cur?.sch;
@@ -312,7 +314,7 @@ function togglePlay() {
   if ((state.time ?? 0) >= end) state.time = state.inst.params.dayStart;
   if (mapView && state.time !== pausedAt) fitActive(mapView);   // cadrage auto sur la partie active, sauf à la reprise après pause
   playTimer = setInterval(() => {
-    state.time = Math.min(end, (state.time ?? state.inst.params.dayStart) + 1);
+    state.time = Math.min(end, (state.time ?? state.inst.params.dayStart) + state.playSpeed);
     updateTime();
     if (state.time >= end) stopPlay();
   }, 40);
@@ -612,6 +614,10 @@ async function init() {
   $('btn-play').onclick = () => togglePlay();
   $('btn-restart').onclick = () => restartPlay();
   $('btn-replay-restart').onclick = () => restartPlay();
+  const speeds = document.querySelectorAll('.play-speed');
+  const syncSpeed = () => speeds.forEach(e => { e.value = String(state.playSpeed); });
+  speeds.forEach(e => { e.onchange = () => { state.playSpeed = +e.value; syncSpeed(); save(); }; });   // pris en compte en cours de lecture
+  syncSpeed();
   $('btn-replay').onclick = () => {
     if (!playTimer) $('map').scrollIntoView({ block: 'nearest', behavior: 'smooth' });   // sur mobile, la carte est sous le panneau
     togglePlay();

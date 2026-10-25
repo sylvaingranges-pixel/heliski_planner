@@ -35,9 +35,12 @@
           </div>
           <button id="btn-solve" class="btn btn-primary btn-block">Optimiser</button>
           <div class="progress" id="sa-progress" hidden><div></div></div>
-          <div id="replay-row" class="replay-row" hidden>
-            <button id="btn-replay" class="btn btn-play btn-block" title="Animer la journée sur la carte et le planning">▶ Jouer la journée</button>
-            <button id="btn-replay-restart" class="btn btn-block" title="Revenir au début de la journée">⏮ Début</button>
+          <div id="replay-row" hidden>
+            <div class="replay-row">
+              <button id="btn-replay" class="btn btn-play btn-block" title="Animer la journée sur la carte et le planning">▶ Jouer la journée</button>
+              <button id="btn-replay-restart" class="btn btn-block" title="Revenir au début de la journée">⏮ Début</button>
+            </div>
+            <label class="replay-speed">Vitesse de lecture <select class="play-speed" title="Vitesse de lecture (×1 : 25 min de journée par seconde)" aria-label="Vitesse de lecture"><option value="0.25">×¼</option><option value="0.5">×½</option><option value="1">×1</option><option value="2">×2</option><option value="4">×4</option></select></label>
           </div>
         </details>
 
@@ -121,6 +124,7 @@
           <div class="timebar" id="timebar">
             <button id="btn-play" class="btn btn-play" title="Animer la journée">▶ Jouer</button>
             <button id="btn-restart" class="btn" title="Revenir au début de la journée">⏮ Début</button>
+            <select class="play-speed" title="Vitesse de lecture (×1 : 25 min de journée par seconde)" aria-label="Vitesse de lecture"><option value="0.25">×¼</option><option value="0.5">×½</option><option value="1">×1</option><option value="2">×2</option><option value="4">×4</option></select>
             <input type="range" id="time" min="540" max="900" step="0.5" value="540">
             <span id="time-label" class="mono">09:00</span>
           </div>
