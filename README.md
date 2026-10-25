@@ -13,6 +13,9 @@ sous contrainte de dénivelé vendu aux clients (forfaits).
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
 - **Résolution sur [NEOS](https://neos-server.org) avec COPT** (repli SCIP), directement depuis l'app (identifiant NEOS) :
   soumission, journal en direct, récupération et vérification du résultat. Export `.lp` aussi disponible.
+- **Arrêt moteur** à chaque dépose / reprise (option, active par défaut) et / ou à la base : l'attente moteur coupé est
+  gratuite mais chaque redémarrage coûte le prix d'un démarrage ; heuristique, MILP et vérificateur choisissent / contrôlent
+  la coupure seulement quand elle est moins chère que le standby ou le vol d'attente.
 - **Vérification indépendante** de chaque planning (continuité, durées de vol, standby ≤ 5 min, chargement 6 min,
   dénivelé, fenêtre horaire, exclusivité des descentes, recalcul du coût).
 - Carte des descentes (animation de la journée), diagramme de Gantt hélicos / groupes, journal des rotations.
@@ -43,11 +46,13 @@ Sans connexion, repli sur un jeu synthétique.
 Temps de vol = 1 min + max(distance / 180 km/h, montée / 300 m/min).
 4 groupes (forfaits 10 000 m / 5 j, 12 000 m / 5 j, 15 000 m / 5 j, 10 000 m / 4 j → 2 000, 2 400, 3 000, 2 500 m/jour),
 2 hélicoptères, 40.–/min en vol, 20.–/min en standby, 50.– par démarrage moteur, 6 + 6 min de chargement / déchargement, standby ≤ 5 min, 9 h – 15 h.
+L'hélico peut couper le moteur à chaque dépose / reprise (attente gratuite, redémarrage 50.–) : plus de vol d'attente ni de standby long.
 
 | Résultat (relief réel, base Le Châble, graine 42) | Valeur |
 |---|---|
-| Coût hélicos (heuristique, ~4 s) | **CHF 7 342** (15 rotations, 92 min de vol dont 65 chargé, 0 min de standby, 1 hélico utilisé sur 2, 1 démarrage) |
-| MILP « affectation hélicos » (descentes imposées) | 7 342 = **optimal prouvé** (écart 0,01 %, ~23 s) |
+| Coût hélicos (heuristique, ~4 s) | **CHF 7 160** (14 rotations, 83 min de vol dont 67 chargé, 0 min de standby, 2 hélicos, 10 démarrages) |
+| MILP « affectation hélicos » (descentes imposées) | 7 160 = **optimal prouvé** (écart 0,01 %, ~3 s) |
+| Sans arrêt moteur à la dépose / reprise | CHF 7 342 (15 rotations, 1 hélico, 1 démarrage ; optimal prouvé, ~22 s) |
 
 Sur le jeu synthétique (graine 42, sans coût de démarrage) : 6 800 CHF ; MILP complet sur 8 candidates, 300 s → borne 6 336 (écart ≤ 6,8 %).
 
