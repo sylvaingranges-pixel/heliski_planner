@@ -27,16 +27,23 @@ const state = {
 };
 
 // ------------------------------------------------------------------ persistance
+// Un paramètre resté à sa valeur par défaut lors de l'enregistrement suit les nouveaux défauts ;
+// seuls ceux modifiés par l'utilisateur sont restaurés. Enregistrements sans `defaults` : anciens défauts.
+const OLD_DEFAULTS = { flyRate: 40, standbyRate: 20, heliStartCost: 50, maxClientWait: 0, climbRate: 300 };
+function keptParams(s) {
+  const defs = s.defaults ?? OLD_DEFAULTS;
+  return Object.fromEntries(Object.entries(s.params ?? {}).filter(([k, v]) => !(k in defs) || v !== defs[k]));
+}
 function save() {
   // Le jeu de base n'est jamais recopié : seule la référence « base » est mémorisée, il est relu depuis le fichier.
   const dataset = state.ds?.isBase ? 'base' : state.ds;
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE) || 'null');
     if (!s) return;
-    Object.assign(state.dsOpts, s.dsOpts); Object.assign(state.params, s.params);
+    Object.assign(state.dsOpts, s.dsOpts); Object.assign(state.params, keptParams(s));
     if (Array.isArray(s.groups) && s.groups.length) state.groups = s.groups;
     if (s.dataset === 'base' && BASE_DS) state.ds = baseDataset();
     else if (s.dataset?.runs?.length) state.ds = { ...s.dataset, isBase: false };
