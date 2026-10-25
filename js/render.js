@@ -107,6 +107,16 @@ export function drawMap(mv, inst, sch, opts = {}) {
   updateMap(mv, opts.time);
 }
 
+/** Cadre la carte sur la partie active de la solution (base + descentes skiées) ; l'utilisateur reste libre de zoomer ensuite. */
+export function fitActive(mv) {
+  const { map, inst, sch } = mv;
+  if (!inst || !sch) return;
+  const ll = (x, y) => toLatLon(inst.dataset.origin, x, y);
+  const pts = [ll(0, 0)];
+  sch.groupSeg.forEach(segs => segs.forEach(s => { if (s.type === 'ski') for (const [x, y] of runPath(inst.dataset.runs[s.run])) pts.push(ll(x, y)); }));
+  if (pts.length > 1) map.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 14, duration: 0.8 });
+}
+
 /** Positions des hélicos et des groupes à l'instant t. */
 export function updateMap(mv, t) {
   const { inst, sch, layers } = mv;

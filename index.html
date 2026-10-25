@@ -64,24 +64,24 @@
         <details open>
           <summary>Hélicoptères &amp; coûts</summary>
           <div class="grid2">
-            <label>Hélicoptères <input type="number" id="p-nHeli" min="1" max="4"></label>
-            <label>Vol (CHF/min) <input type="number" id="p-flyRate" step="1"></label>
-            <label>Standby (CHF/min) <input type="number" id="p-standbyRate" step="1"></label>
-            <label>Standby max (min) <input type="number" id="p-maxStandby" step="0.5"></label>
-            <label title="Cycle turbine : 1er départ du jour et chaque redémarrage après une coupure (base, dépose, reprise)">Démarrage moteur (CHF) <input type="number" id="p-heliStartCost" step="10" min="0"></label>
-            <label>Chargement (min) <input type="number" id="p-loadMin" step="0.5"></label>
-            <label>Déchargement (min) <input type="number" id="p-unloadMin" step="0.5"></label>
-            <label>Début <input type="time" id="p-dayStart"></label>
-            <label>Fin <input type="time" id="p-dayEnd"></label>
-            <label>Vitesse (km/h) <input type="number" id="p-heliSpeedKmh"></label>
-            <label>Montée (m/min) <input type="number" id="p-climbRate"></label>
-            <label>Décollage+appr. (min) <input type="number" id="p-flightOverhead" step="0.5"></label>
-            <label>Attente client (CHF/min) <input type="number" id="p-clientWaitPenalty" step="0.5"></label>
-            <label title="Au fond des descentes ; 0 = illimitée">Attente max au fond (min) <input type="number" id="p-maxClientWait" step="5" min="0"></label>
+            <label><span>Hélicoptères <i class="help" tabindex="0" data-tip="Nombre d’hélicoptères disponibles en même temps pour les rotations.">?</i></span> <input type="number" id="p-nHeli" min="1" max="4"></label>
+            <label><span>Vol (CHF/min) <i class="help" tabindex="0" data-tip="Coût d’une minute de vol (moteur allumé, en l’air).">?</i></span> <input type="number" id="p-flyRate" step="1"></label>
+            <label><span>Standby (CHF/min) <i class="help" tabindex="0" data-tip="Coût d’une minute au sol, moteur au ralenti (attente moteur allumé).">?</i></span> <input type="number" id="p-standbyRate" step="1"></label>
+            <label><span>Standby max (min) <i class="help" tabindex="0" data-tip="Durée maximale d’attente au sol moteur allumé ; au-delà, l’hélico vole en attente ou coupe le moteur (si autorisé).">?</i></span> <input type="number" id="p-maxStandby" step="0.5"></label>
+            <label><span>Démarrage moteur (CHF) <i class="help" tabindex="0" data-tip="Coût d’un cycle turbine : 1er départ du jour et chaque redémarrage après une coupure (base, dépose, reprise).">?</i></span> <input type="number" id="p-heliStartCost" step="10" min="0"></label>
+            <label><span>Chargement (min) <i class="help" tabindex="0" data-tip="Temps d’embarquement d’un groupe (skieurs + matériel).">?</i></span> <input type="number" id="p-loadMin" step="0.5"></label>
+            <label><span>Déchargement (min) <i class="help" tabindex="0" data-tip="Temps de débarquement d’un groupe au sommet.">?</i></span> <input type="number" id="p-unloadMin" step="0.5"></label>
+            <label><span>Début <i class="help" tabindex="0" data-tip="Heure du premier décollage possible.">?</i></span> <input type="time" id="p-dayStart"></label>
+            <label><span>Fin <i class="help" tabindex="0" data-tip="Heure à laquelle toutes les rotations doivent être terminées.">?</i></span> <input type="time" id="p-dayEnd"></label>
+            <label><span>Vitesse (km/h) <i class="help" tabindex="0" data-tip="Vitesse de croisière horizontale de l’hélico.">?</i></span> <input type="number" id="p-heliSpeedKmh"></label>
+            <label><span>Montée (m/min) <i class="help" tabindex="0" data-tip="Vitesse de montée verticale : le temps de vol d’un segment est le plus long entre la distance horizontale et le dénivelé à gravir.">?</i></span> <input type="number" id="p-climbRate"></label>
+            <label><span>Décollage+appr. (min) <i class="help" tabindex="0" data-tip="Temps ajouté à chaque vol pour le décollage et l’approche.">?</i></span> <input type="number" id="p-flightOverhead" step="0.5"></label>
+            <label><span>Attente client (CHF/min) <i class="help" tabindex="0" data-tip="Coût fictif par minute d’attente d’un groupe, pour pénaliser l’attente des clients (0 = coût hélico seul).">?</i></span> <input type="number" id="p-clientWaitPenalty" step="0.5"></label>
+            <label><span>Attente max au fond (min) <i class="help" tabindex="0" data-tip="Temps d’attente maximum d’un groupe au fond d’une descente avant d’être repris ; 0 = illimité.">?</i></span> <input type="number" id="p-maxClientWait" step="5" min="0"></label>
           </div>
-          <label class="check"><input type="checkbox" id="p-exclusiveRuns"> Une descente = un seul groupe à la fois</label>
-          <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée</label>
-          <label class="check" title="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise</label>
+          <label class="check"><input type="checkbox" id="p-exclusiveRuns"> Une descente = un seul groupe à la fois <i class="help" tabindex="0" data-tip="Interdit à deux groupes de skier la même descente en même temps.">?</i></label>
+          <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée <i class="help" tabindex="0" data-tip="L’hélico peut couper le moteur à la base entre deux rotations (0.-/min), le redémarrage est payant.">?</i></label>
+          <label class="check"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise <i class="help" tabindex="0" data-tip="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long.">?</i></label>
         </details>
 
       </aside>

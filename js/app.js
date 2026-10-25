@@ -1,7 +1,7 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
 import { buildInstance, decode, buildSchedule, nodeLabel, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
-import { createMapView, drawMap, updateMap, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
+import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
 
 const $ = (id) => document.getElementById(id);
@@ -290,7 +290,7 @@ function ensureMapView() {
   return mapView;
 }
 // ------------------------------------------------------------------ animation de la journée
-let playTimer = null;
+let playTimer = null, pausedAt = null;
 // Fin de l'animation : dernier mouvement (hélicos rentrés, groupes arrivés), borné par le curseur.
 function playEnd() {
   const max = +$('time').max, sch = state.cur?.sch;
@@ -299,10 +299,11 @@ function playEnd() {
   return Math.min(max, Math.ceil(last));
 }
 function togglePlay() {
-  if (playTimer) { stopPlay(); return; }
+  if (playTimer) { stopPlay(); pausedAt = state.time; return; }
   if (!state.cur) return;
   const end = playEnd();
   if ((state.time ?? 0) >= end) state.time = state.inst.params.dayStart;
+  if (mapView && state.time !== pausedAt) fitActive(mapView);   // cadrage auto sur la partie active, sauf à la reprise après pause
   playTimer = setInterval(() => {
     state.time = Math.min(end, (state.time ?? state.inst.params.dayStart) + 1);
     updateTime();

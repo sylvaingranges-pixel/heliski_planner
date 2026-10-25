@@ -53,6 +53,14 @@ label.check { flex-direction: row; align-items: center; gap: 6px; margin-top: 6p
 label.check input { width: auto; }
 label.check.inline { margin: 0; font-size: 12.5px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }
+/* aide « ? » : infobulle au survol / au focus, tenue dans la largeur de la grille (la barre latérale défile) */
+.grid2 > label, label.check { position: relative; }
+.help { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: 2px; border-radius: 50%; background: #e6edf6; color: var(--navy); font: 700 10px/1 system-ui, sans-serif; font-style: normal; cursor: help; vertical-align: 1px; }
+.help:hover, .help:focus { background: var(--navy); color: #fff; outline: none; }
+.help::after { content: attr(data-tip); display: none; position: absolute; top: 100%; left: 0; z-index: 20; width: calc(200% + 8px); margin-top: 4px; padding: 6px 8px; border-radius: 6px; background: var(--navy); color: #fff; font: 400 12px/1.4 system-ui, sans-serif; box-shadow: 0 4px 12px rgba(15, 31, 51, .25); pointer-events: none; }
+.grid2 > label:nth-child(even) .help::after { left: auto; right: 0; }
+label.check .help::after { width: 100%; }
+.help:hover::after, .help:focus::after { display: block; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 
 /* ---------- layout */
