@@ -13,7 +13,7 @@ const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'heliStartC
 const STORE = 'heliski-planner-v2';
 
 const state = {
-  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false, playSpeed: 1,
+  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false, playSpeed: 0.5,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
   dayRuns: null,                                   // descentes du jour (null = toutes)
   dayFilter: { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] },
@@ -31,7 +31,7 @@ function keptParams(s) {
   return Object.fromEntries(Object.entries(s.params ?? {}).filter(([k, v]) => !(k in defs) || v !== defs[k]));
 }
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayFilter: state.dayFilter, playSpeed: state.playSpeed })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayFilter: state.dayFilter, speed: state.playSpeed })); } catch { /* stockage indisponible */ }
 }
 const PLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];         // ×1 : 1 min de journée toutes les 40 ms
 function load() {
@@ -43,7 +43,7 @@ function load() {
     if (s.dataset?.runs?.length) state.ds = s.dataset;
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
     if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
-    if (PLAY_SPEEDS.includes(s.playSpeed)) state.playSpeed = s.playSpeed;
+    if (PLAY_SPEEDS.includes(s.speed)) state.playSpeed = s.speed;   // clé `speed` : l'ancien ×1 enregistré par défaut est ignoré
   } catch { /* ignore */ }
 }
 
@@ -147,7 +147,7 @@ function renderDayInfo() {
   $('sel-count').textContent = `${n} / ${inst.R} ouvertes`;
 }
 
-/** Mode « sélection d'itinéraires » : la solution est masquée, ouvertes en vert / fermées en gris, outils clic / rectangle / lasso. */
+/** Mode « sélection d'itinéraires » : la solution est masquée, ouvertes en vert / fermées en rouge, outils clic / rectangle / lasso. */
 function setSelMode(on) {
   const sel = state.sel;
   if (on === sel.on) return;

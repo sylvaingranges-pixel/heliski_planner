@@ -23,13 +23,13 @@ const TOPO_ATTR = 'Carte : © <a href="https://opentopomap.org">OpenTopoMap</a> 
 
 export function createMapView(container, { onRunClick, onMapClick } = {}) {
   const map = L.map(container, { zoomSnap: 0.25, preferCanvas: false });
-  L.tileLayer(TOPO, { maxZoom: 17, subdomains: 'abc', attribution: TOPO_ATTR, crossOrigin: true }).addTo(map);
+  const tiles = L.tileLayer(TOPO, { maxZoom: 17, subdomains: 'abc', attribution: TOPO_ATTR, crossOrigin: true }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
   // Zones de clic des descentes au-dessus des tracés de la solution : une descente reste cliquable même sous un trajet.
   map.createPane('runHit').style.zIndex = 450;
   const layers = { frame: L.layerGroup().addTo(map), runs: L.layerGroup().addTo(map), sol: L.layerGroup().addTo(map), hit: L.layerGroup().addTo(map), live: L.layerGroup().addTo(map), tool: L.layerGroup().addTo(map) };
   map.on('click', (e) => onMapClick?.(e.latlng));
-  return { map, layers, onRunClick, key: null, liveMarkers: null, inst: null, sch: null, areaTool: null };
+  return { map, tiles, layers, onRunClick, key: null, liveMarkers: null, inst: null, sch: null, areaTool: null };
 }
 
 export function drawMap(mv, inst, sch, opts = {}) {
@@ -42,6 +42,7 @@ export function drawMap(mv, inst, sch, opts = {}) {
   const selMode = !!opts.selectMode;              // mode « sélection d'itinéraires » : pas de solution, ouvertes / fermées bien visibles
   Object.values(layers).forEach(l => { if (l !== layers.tool) l.clearLayers(); });
   mv.inst = inst; mv.sch = selMode ? null : sch; mv.liveMarkers = null;
+  mv.tiles.setOpacity(selMode ? 0.5 : 1);         // fond pâli en sélection : ouvertes (vert) / fermées (rouge) ressortent
 
   // Cadre : rayon d'action + base
   L.circle(ll(0, 0), { radius: R * 1000, color: '#0f2742', weight: 1.5, dashArray: '6 6', fill: false, interactive: false }).addTo(layers.frame);
@@ -59,11 +60,11 @@ export function drawMap(mv, inst, sch, opts = {}) {
     const pts = runPath(r).map(([x, y]) => ll(x, y));
     const sel = opts.selectedRun === i;
     let color, w, op;
-    if (selMode) { color = isOpen ? '#0e9f4f' : '#7d8794'; w = isOpen ? 4.5 : 2.5; op = isOpen ? 1 : 0.75; }
+    if (selMode) { color = isOpen ? '#0e9f4f' : '#d62f2f'; w = isOpen ? 4.5 : 3; op = isOpen ? 1 : 0.9; }
     else { color = sel ? '#1d6fe0' : isUsed ? '#0b1f3a' : isOpen ? '#334a6b' : '#9aa4b1'; w = sel ? 5 : isUsed ? 3.5 : isOpen ? 2.5 : 2; op = isOpen ? 0.95 : 0.6; }
     L.polyline(pts, { color: '#fff', weight: w + 2.5, opacity: isOpen || selMode ? 0.85 : 0.45, interactive: false }).addTo(layers.runs); // liseré
     L.polyline(pts, { color, weight: w, opacity: op, interactive: false }).addTo(layers.runs);
-    const dot = isOpen ? (selMode ? '#0e9f4f' : '#1e293b') : '#9aa4b1';
+    const dot = isOpen ? (selMode ? '#0e9f4f' : '#1e293b') : selMode ? '#d62f2f' : '#9aa4b1';
     const top = L.circleMarker(pts[0], { radius: selMode && isOpen ? 5 : 4, color: '#fff', weight: 1, fillColor: dot, fillOpacity: 1, interactive: false }).addTo(layers.runs);
     L.circleMarker(pts[pts.length - 1], { radius: 3.5, color: dot, weight: 1.5, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(layers.runs);
     const tip = `<b>${r.code}</b> – ${r.name}${isOpen ? '' : ' <i>(fermée aujourd’hui)</i>'}<br>${r.top.alt} → ${r.bottom.alt} m (<b>${r.vert} m</b>) · ski ${r.skiMin} min` +
