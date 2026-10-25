@@ -1,17 +1,18 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
 import { buildInstance, decode, buildSchedule, seqFromLifts, nodeLabel, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
-import { renderMap, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
+import { createMapView, drawMap, updateMap, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
+import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
 import { buildMilp, candidateRuns } from './milp.js';
 import { FORMULATION_HTML } from './formulation.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
 const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
-const STORE = 'heliski-planner-v1';
+const STORE = 'heliski-planner-v2';
 
 const state = {
-  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, nMassifs: 6 },
+  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
   inst: null, cur: null, results: [], time: null, selectedRun: null, focus: 'all',
   saWorkers: null, milpWorker: null,
@@ -19,7 +20,7 @@ const state = {
 
 // ------------------------------------------------------------------ persistance
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, customDs: state.ds?.custom ? state.ds : null })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset: state.ds })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -27,7 +28,7 @@ function load() {
     if (!s) return;
     Object.assign(state.dsOpts, s.dsOpts); Object.assign(state.params, s.params);
     if (Array.isArray(s.groups) && s.groups.length) state.groups = s.groups;
-    if (s.customDs) state.ds = s.customDs;
+    if (s.dataset?.runs?.length) state.ds = s.dataset;
   } catch { /* ignore */ }
 }
 
@@ -54,7 +55,8 @@ function bindParams() {
     e.onchange = () => { state.params[k] = e.checked; paramsChanged(); };
   }
   $('ds-seed').value = state.dsOpts.seed; $('ds-n').value = state.dsOpts.nRuns;
-  $('ds-radius').value = state.dsOpts.radiusKm; $('ds-massifs').value = state.dsOpts.nMassifs;
+  $('ds-radius').value = state.dsOpts.radiusKm; $('ds-source').value = state.dsOpts.source;
+  $('ds-lat').value = state.dsOpts.origin.lat.toFixed(5); $('ds-lon').value = state.dsOpts.origin.lon.toFixed(5);
 }
 
 function renderGroupsTable() {
@@ -194,6 +196,18 @@ function exportLp() {
 
 // ------------------------------------------------------------------ rendu
 let mapView = null, ganttView = null;
+function ensureMapView() {
+  mapView ??= createMapView($('map'), {
+    onRunClick: (i) => { state.selectedRun = i; renderMapView(); showRunInfo(); },
+    onMapClick: (latlng) => {
+      if (!state.placingBase) return;
+      state.placingBase = false; $('map').classList.remove('placing'); $('btn-place-base').classList.remove('active');
+      $('ds-lat').value = latlng.lat.toFixed(5); $('ds-lon').value = latlng.lng.toFixed(5);
+      generate();
+    },
+  });
+  return mapView;
+}
 function renderAll() {
   renderKpis(); renderMapView(); renderGanttView(); renderChecks(); renderGroupsSub(); renderOps(); renderCompare(); updateTime();
 }
@@ -223,8 +237,7 @@ function renderMapView() {
   const opts = { selectedRun: state.selectedRun, time: state.time, showAllRuns: $('map-all').checked };
   if (state.focus.startsWith('h')) opts.focusHeli = +state.focus.slice(1);
   if (state.focus.startsWith('g')) opts.focusGroup = +state.focus.slice(1);
-  mapView = renderMap($('map'), state.inst, state.cur?.sch ?? null, opts);
-  $('map').querySelectorAll('.run').forEach(g => g.addEventListener('click', () => { state.selectedRun = +g.dataset.run; renderMapView(); showRunInfo(); }));
+  drawMap(ensureMapView(), state.inst, state.cur?.sch ?? null, opts);
 }
 
 function showRunInfo() {
@@ -245,7 +258,8 @@ function renderGanttView() {
 function updateTime() {
   const t = state.time ?? state.inst.params.dayStart;
   $('time').value = t; $('time-label').textContent = fmt(t);
-  mapView?.update(state.cur ? t : null); ganttView?.update(state.cur ? t : null);
+  if (mapView) updateMap(mapView, state.cur ? t : null);
+  ganttView?.update(state.cur ? t : null);
 }
 
 function renderChecks() {
@@ -309,10 +323,10 @@ function renderLegend() {
 
 function renderData() {
   const inst = state.inst, N = inst.N;
-  $('ds-info').textContent = `${inst.R} descentes`;
-  $('runs-table').innerHTML = `<thead><tr><th>Code</th><th>Nom</th><th>Sommet (m)</th><th>Fond (m)</th><th>Dénivelé</th><th>Ski (min)</th><th>Diff.</th><th>Dist. base (km)</th><th>Vol base→sommet</th><th>Vol fond→base</th></tr></thead><tbody>` +
+  $('ds-info').textContent = `${inst.R} descentes · ${inst.dataset.source === 'terrain' ? 'relief réel' : 'synthétique'} · base ${inst.dataset.base.alt} m`;
+  $('runs-table').innerHTML = `<thead><tr><th>Code</th><th>Nom</th><th>Sommet (m)</th><th>Fond (m)</th><th>Dénivelé</th><th>Ski (min)</th><th>Diff.</th><th>Dist. base (km)</th><th>Vol base→sommet</th><th>Vol fond→base</th><th>Sommet (lat, lon)</th></tr></thead><tbody>` +
     inst.dataset.runs.map(r => `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.top.alt}</td><td>${r.bottom.alt}</td><td>${r.vert}</td><td>${r.skiMin}</td><td>${r.difficulty ?? ''}</td>
-      <td>${Math.hypot(r.top.x, r.top.y).toFixed(1)}</td><td>${inst.tau[1 + r.id].toFixed(1)}</td><td>${inst.tau[(1 + inst.R + r.id) * N].toFixed(1)}</td></tr>`).join('') + '</tbody>';
+      <td>${Math.hypot(r.top.x, r.top.y).toFixed(1)}</td><td>${inst.tau[1 + r.id].toFixed(1)}</td><td>${inst.tau[(1 + inst.R + r.id) * N].toFixed(1)}</td><td>${toLatLon(inst.dataset.origin, r.top.x, r.top.y).map(v => v.toFixed(5)).join(', ')}</td></tr>`).join('') + '</tbody>';
 }
 
 // ------------------------------------------------------------------ utilitaires
@@ -323,12 +337,33 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-function generate() {
-  state.dsOpts = { seed: +$('ds-seed').value || 1, nRuns: Math.max(5, +$('ds-n').value || 50), radiusKm: Math.max(5, +$('ds-radius').value || 15), nMassifs: Math.max(1, +$('ds-massifs').value || 6) };
-  state.ds = generateDataset(state.dsOpts);
+/** Nouveau jeu de données : relief réel (tuiles d'altitude) ou synthétique (repli hors ligne). */
+async function generate({ solve = true } = {}) {
+  const lat = parseFloat($('ds-lat').value), lon = parseFloat($('ds-lon').value);
+  const moved = Math.abs(lat - state.dsOpts.origin.lat) > 1e-6 || Math.abs(lon - state.dsOpts.origin.lon) > 1e-6;
+  const origin = Number.isFinite(lat) && Number.isFinite(lon)
+    ? { lat, lon, name: moved ? `${lat.toFixed(3)}, ${lon.toFixed(3)}` : state.dsOpts.origin.name } : { ...DEFAULT_ORIGIN };
+  state.dsOpts = { seed: +$('ds-seed').value || 1, nRuns: Math.max(5, +$('ds-n').value || 50), radiusKm: Math.max(5, Math.min(30, +$('ds-radius').value || 15)), source: $('ds-source').value, origin };
+  const btn = $('btn-gen'), info = $('ds-info');
+  btn.disabled = true;
+  try {
+    if (state.dsOpts.source === 'terrain') {
+      info.textContent = 'Téléchargement du relief…';
+      const dem = await loadDEM(origin, state.dsOpts.radiusKm, { onProgress: (k) => { info.textContent = `Relief ${Math.round(100 * k)} %`; } });
+      state.ds = generateTerrainDataset(dem, { ...state.dsOpts });
+      if (state.ds.runs.length < 5) throw new Error('trop peu de terrain skiable autour de cette base');
+    } else {
+      state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin };
+    }
+  } catch (e) {
+    alert(`Relief indisponible (${e.message}). Jeu de données synthétique utilisé à la place.`);
+    state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin };
+    $('ds-source').value = 'synthetic';
+  } finally { btn.disabled = false; }
   state.cur = null; state.results = []; state.selectedRun = null;
   save(); rebuild(); renderData(); renderAll();
   $('run-info').textContent = 'Cliquez sur une descente pour son détail.';
+  if (solve) solveHeuristic();
 }
 
 function importDataset(file) {
@@ -342,7 +377,7 @@ function importDataset(file) {
         r.vert ??= r.top.alt - r.bottom.alt; if (!(r.skiMin > 0)) throw new Error(`skiMin manquant pour ${r.code}`);
       });
       d.radiusKm ??= Math.ceil(Math.max(...d.runs.flatMap(r => [Math.hypot(r.top.x, r.top.y), Math.hypot(r.bottom.x, r.bottom.y)])));
-      d.custom = true; d.name ??= file.name;
+      d.custom = true; d.name ??= file.name; d.origin ??= { ...state.dsOpts.origin };
       state.ds = d; state.cur = null; state.results = [];
       save(); rebuild(); renderData(); renderAll();
     } catch (e) { alert('Fichier invalide : ' + e.message); }
@@ -361,7 +396,9 @@ function exportMatrix() {
 // ------------------------------------------------------------------ démarrage
 function init() {
   load();
-  if (!state.ds) state.ds = generateDataset(state.dsOpts);
+  const firstRun = !state.ds;
+  if (!state.ds) state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin: { ...state.dsOpts.origin } }; // provisoire
+  state.ds.origin ??= { ...DEFAULT_ORIGIN };
   rebuild();
   bindParams(); renderGroupsTable(); renderFocusSelect(); renderLegend(); renderData();
   $('view-formulation').innerHTML = FORMULATION_HTML;
@@ -369,13 +406,17 @@ function init() {
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === b));
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + b.dataset.view));
-    if (b.dataset.view === 'plan') renderGanttView(), updateTime();
+    if (b.dataset.view === 'plan') { mapView?.map.invalidateSize(); renderGanttView(); updateTime(); }
   });
   document.querySelectorAll('.subtab').forEach(b => b.onclick = () => {
     document.querySelectorAll('.subtab').forEach(x => x.classList.toggle('active', x === b));
     document.querySelectorAll('.sub').forEach(v => v.classList.toggle('active', v.id === 'sub-' + b.dataset.sub));
   });
-  $('btn-gen').onclick = generate;
+  $('btn-gen').onclick = () => generate();
+  $('btn-place-base').onclick = () => {
+    state.placingBase = !state.placingBase;
+    $('map').classList.toggle('placing', state.placingBase); $('btn-place-base').classList.toggle('active', state.placingBase);
+  };
   $('btn-add-group').onclick = () => { state.groups.push({ name: `Groupe ${String.fromCharCode(65 + state.groups.length)}`, packageM: 10000, days: 5 }); groupsChanged(true); };
   $('btn-solve').onclick = solveHeuristic;
   $('btn-milp').onclick = solveMilp;
@@ -412,7 +453,8 @@ function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   renderAll();
-  solveHeuristic(); // premier calcul automatique sur le scénario de test
+  // Premier lancement : descentes générées sur le relief réel, puis calcul du scénario de test.
+  if (firstRun) generate(); else solveHeuristic();
 }
 
 init();

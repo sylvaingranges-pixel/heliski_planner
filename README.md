@@ -27,17 +27,23 @@ Tests : `npm test` (Node ≥ 20). Banc d'essai MILP : `node tools/bench_milp.mjs
 
 ## Le scénario de test
 
-Jeu de données générique (graine 42) : 50 descentes réparties sur 6 massifs dans un rayon de 15 km autour de la base,
-dénivelés 520–1 430 m, temps de ski 13–49 min. Temps de vol = 1 min + max(distance / 180 km/h, montée / 300 m/min).
+**Carte** : fond [OpenTopoMap](https://opentopomap.org). **Descentes génériques sur le relief réel** : le modèle numérique
+de terrain (tuiles *Terrarium*, AWS Open Data, ~25 m) est téléchargé autour de la base ; les sommets sont des points
+hauts locaux entre 2 300 et 3 800 m, et chaque descente est tracée pas à pas dans la pente (pente plafonnée, virages
+limités) jusqu'à un dénivelé cible de 600–1 400 m ou jusqu'à 1 500 m d'altitude. Les altitudes réelles entrent dans
+les temps de vol (montée). Base par défaut : Le Châble (VS, 828 m), modifiable (lat/lon ou « Placer la base sur la carte »).
+Sans connexion, repli sur un jeu synthétique.
+
+Temps de vol = 1 min + max(distance / 180 km/h, montée / 300 m/min).
 4 groupes (forfaits 10 000 m / 5 j, 12 000 m / 5 j, 15 000 m / 5 j, 10 000 m / 4 j → 2 000, 2 400, 3 000, 2 500 m/jour),
 2 hélicoptères, 40.–/min en vol, 20.–/min en standby, 6 + 6 min de chargement / déchargement, standby ≤ 5 min, 9 h – 15 h.
 
-| Résultat | Valeur |
+| Résultat (relief réel, base Le Châble, graine 42) | Valeur |
 |---|---|
-| Coût hélicos (heuristique, ~1,5 s) | **CHF 6 800** (13 rotations, 92 min de vol dont 61 chargé, 0 min de standby) |
-| MILP « affectation hélicos » (descentes imposées) | 6 800 = **optimal prouvé** (écart 0,01 %, ~10 s) |
-| MILP complet, 8 descentes candidates, 300 s | meilleure solution 6 800, borne inférieure 6 336 → écart ≤ 6,8 % |
-| Avec « attente max au fond = 30 min » | CHF 6 806 |
+| Coût hélicos (heuristique, ~2 s) | **CHF 7 372** (14 rotations, 100 min de vol dont 69 chargé, 0 min de standby) |
+| MILP « affectation hélicos » (descentes imposées) | 7 372 = **optimal prouvé** (écart 0,01 %, ~20 s) |
+
+Sur le jeu synthétique (graine 42) : 6 800 CHF ; MILP complet sur 8 candidates, 300 s → borne 6 336 (écart ≤ 6,8 %).
 
 Constat : le coût étant facturé à la minute de vol, le second hélicoptère n'apporte presque rien au coût — il sert
 surtout à réduire l'attente des clients. Sans limite d'attente, l'optimum laisse un hélico faire l'essentiel des rotations.
@@ -47,15 +53,18 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 
 | Fichier | Rôle |
 |---|---|
-| `js/data.js` | générateur de jeu de données, paramètres par défaut |
+| `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
+| `js/data.js` | générateur synthétique, paramètres par défaut |
 | `js/model.js` | instance, matrice des temps de vol, décodeur (séquences → planning), coût |
 | `js/solver.js` | recuit simulé multi-départs + descente locale |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/milp.js` | génération du MILP (format CPLEX LP), démarrage à chaud, appel HiGHS |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |
 | `lib/highs/` | HiGHS 1.15.3 (WebAssembly, licence MIT) |
+| `lib/leaflet/` | Leaflet 1.9.4 (licence BSD-2) |
 
 Format d'import des descentes (onglet *Données*) :
-`{ base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin}], timeMatrix? }`
+`{ origin:{lat,lon}, base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin,path?}], timeMatrix? }`
+(x, y en km depuis la base, x vers l'est, y vers le nord)
 — `timeMatrix` (minutes, nœuds dans l'ordre base, sommets, fonds) remplace le calcul par distance si vous avez vos
 propres temps de vol.

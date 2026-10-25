@@ -1,9 +1,10 @@
 // Service worker : application utilisable hors ligne (cache de l'application, y compris HiGHS/WASM).
-const CACHE = 'heliski-planner-v1';
+const CACHE = 'heliski-planner-v2';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js', 'js/data.js', 'js/model.js', 'js/solver.js', 'js/solver.worker.js', 'js/validate.js',
-  'js/render.js', 'js/milp.js', 'js/milp.worker.js', 'js/formulation.js',
+  'js/render.js', 'js/milp.js', 'js/milp.worker.js', 'js/formulation.js', 'js/terrain.js',
+  'lib/leaflet/leaflet.js', 'lib/leaflet/leaflet.css',
   'lib/highs/highs.mjs', 'lib/highs/highs.wasm',
   'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-512-maskable.png',
 ];

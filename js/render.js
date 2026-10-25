@@ -1,6 +1,7 @@
 // Rendu SVG : carte des descentes + trajectoires, diagramme de Gantt hélicos / groupes.
 import { fmt } from './validate.js';
 import { BASE } from './model.js';
+import { toLatLon } from './terrain.js';
 
 export const HELI_COLORS = ['#2563eb', '#db2777', '#059669', '#9333ea'];
 export const GROUP_COLORS = ['#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#0ea5e9', '#84cc16', '#f97316', '#14b8a6'];
@@ -15,115 +16,117 @@ function el(tag, attrs = {}, parent = null, text = null) {
 }
 const title = (e, t) => { el('title', {}, e, t); return e; };
 
-// ---------------------------------------------------------------- Carte
-export function renderMap(svg, inst, sch, opts = {}) {
-  svg.innerHTML = '';
-  const R = inst.dataset.radiusKm ?? 15, pad = 1.2;
-  svg.setAttribute('viewBox', `${-R - pad} ${-R - pad} ${2 * (R + pad)} ${2 * (R + pad)}`);
-  const P = (n) => { const p = inst.pts[n]; return [p.x, -p.y]; };
+// ---------------------------------------------------------------- Carte (Leaflet + OpenTopoMap)
+const L = globalThis.L;
+const TOPO = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png';
+const TOPO_ATTR = 'Carte : © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA), données © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, SRTM · Relief : Terrarium (AWS Open Data)';
+
+export function createMapView(container, { onRunClick, onMapClick } = {}) {
+  const map = L.map(container, { zoomSnap: 0.25, preferCanvas: false });
+  L.tileLayer(TOPO, { maxZoom: 17, subdomains: 'abc', attribution: TOPO_ATTR, crossOrigin: true }).addTo(map);
+  L.control.scale({ imperial: false }).addTo(map);
+  const layers = { frame: L.layerGroup().addTo(map), runs: L.layerGroup().addTo(map), sol: L.layerGroup().addTo(map), live: L.layerGroup().addTo(map) };
+  map.on('click', (e) => onMapClick?.(e.latlng));
+  return { map, layers, onRunClick, key: null, liveMarkers: null, inst: null, sch: null };
+}
+
+export function drawMap(mv, inst, sch, opts = {}) {
+  const { map, layers } = mv;
+  const origin = inst.dataset.origin;
+  const ll = (x, y) => toLatLon(origin, x, y);
+  const llNode = (n) => { const p = inst.pts[n]; return ll(p.x, p.y); };
   const runs = inst.dataset.runs;
+  const R = inst.dataset.radiusKm ?? 15;
+  Object.values(layers).forEach(l => l.clearLayers());
+  mv.inst = inst; mv.sch = sch; mv.liveMarkers = null;
 
-  const defs = el('defs', {}, svg);
-  const mk = (id, color) => {
-    const m = el('marker', { id, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 4, markerHeight: 4, orient: 'auto-start-reverse' }, defs);
-    el('path', { d: 'M0,0 L10,5 L0,10 z', fill: color }, m);
-  };
-  mk('arr-run', '#94a3b8');
-  HELI_COLORS.forEach((c, h) => mk('arr-h' + h, c));
-  GROUP_COLORS.forEach((c, g) => mk('arr-g' + g, c));
+  // Cadre : rayon d'action + base
+  L.circle(ll(0, 0), { radius: R * 1000, color: '#0f2742', weight: 1.5, dashArray: '6 6', fill: false, interactive: false }).addTo(layers.frame);
+  for (const r of [5, 10]) L.circle(ll(0, 0), { radius: r * 1000, color: '#0f2742', weight: 0.8, opacity: 0.35, dashArray: '2 6', fill: false, interactive: false }).addTo(layers.frame);
+  L.marker(ll(0, 0), { icon: L.divIcon({ className: 'base-icon', html: 'H', iconSize: [24, 24] }), zIndexOffset: 1000 })
+    .bindTooltip(`Base · ${inst.dataset.base.alt} m`).addTo(layers.frame);
 
-  // Fond : anneaux de distance + quadrillage
-  const bg = el('g', { class: 'map-bg' }, svg);
-  for (let x = -15; x <= 15; x += 5) {
-    el('line', { x1: x, y1: -R - pad, x2: x, y2: R + pad, class: 'grid' }, bg);
-    el('line', { x1: -R - pad, y1: x, x2: R + pad, y2: x, class: 'grid' }, bg);
-  }
-  for (const r of [5, 10, 15]) {
-    el('circle', { cx: 0, cy: 0, r, class: r === 15 ? 'ring ring-outer' : 'ring' }, bg);
-    el('text', { x: 0.25, y: -r + 0.55, class: 'ring-label' }, bg, `${r} km`);
-  }
-  el('text', { x: R + pad - 0.4, y: -R - pad + 1.1, class: 'north', 'text-anchor': 'end' }, bg, 'N ↑');
-
-  const used = new Map(); // run -> [groups]
+  const used = new Map();
   if (sch) sch.groupSeg.forEach((segs, g) => segs.forEach(s => { if (s.type === 'ski') (used.get(s.run) ?? used.set(s.run, []).get(s.run)).push(g); }));
   const showAll = opts.showAllRuns !== false;
 
-  // Descentes
-  const gr = el('g', { class: 'runs' }, svg);
   runs.forEach((r, i) => {
     const isUsed = used.has(i);
     if (!showAll && !isUsed) return;
-    const [x1, y1] = P(1 + i), [x2, y2] = P(1 + inst.R + i);
-    const g = el('g', { class: 'run' + (isUsed ? ' used' : '') + (opts.selectedRun === i ? ' selected' : ''), 'data-run': i }, gr);
-    el('line', { x1, y1, x2, y2, class: 'run-hit' }, g);
-    el('line', { x1, y1, x2, y2, class: 'run-line', 'marker-end': 'url(#arr-run)', 'stroke-width': 0.08 + r.vert / 9000 }, g);
-    el('path', { d: `M${x1},${y1 - 0.32} l0.28,0.48 l-0.56,0 z`, class: 'run-top' }, g);
-    el('circle', { cx: x2, cy: y2, r: 0.14, class: 'run-bottom' }, g);
-    el('text', { x: x1 + 0.3, y: y1 - 0.25, class: 'run-label' }, g, r.code);
-    title(g, `${r.code} – ${r.name}\n${r.top.alt} → ${r.bottom.alt} m (${r.vert} m)\nSki : ${r.skiMin} min`);
+    const pts = runPath(r).map(([x, y]) => ll(x, y));
+    const sel = opts.selectedRun === i;
+    L.polyline(pts, { color: '#fff', weight: (sel ? 5 : isUsed ? 3.5 : 2.5) + 2.5, opacity: 0.8, interactive: false }).addTo(layers.runs); // liseré
+    const line = L.polyline(pts, { color: sel ? '#1d6fe0' : isUsed ? '#0b1f3a' : '#334a6b', weight: sel ? 5 : isUsed ? 3.5 : 2.5, opacity: 0.95 }).addTo(layers.runs);
+    const top = L.circleMarker(pts[0], { radius: 4, color: '#fff', weight: 1, fillColor: '#1e293b', fillOpacity: 1 }).addTo(layers.runs);
+    const bot = L.circleMarker(pts[pts.length - 1], { radius: 3.5, color: '#1e293b', weight: 1.5, fillColor: '#fff', fillOpacity: 1 }).addTo(layers.runs);
+    const tip = `<b>${r.code}</b> – ${r.name}<br>${r.top.alt} → ${r.bottom.alt} m (<b>${r.vert} m</b>) · ski ${r.skiMin} min`;
+    for (const m of [line, top, bot]) { m.bindTooltip(tip, { sticky: true }); m.on('click', (e) => { L.DomEvent.stopPropagation(e); mv.onRunClick?.(i); }); }
+    if (isUsed || sel) top.bindTooltip(r.code, { permanent: true, direction: 'right', className: 'run-code', offset: [4, 0] });
   });
 
-  // Solution : ski des groupes (épais) + vols (fins)
   if (sch) {
-    const gs = el('g', { class: 'ski-layer' }, svg);
     sch.groupSeg.forEach((segs, g) => {
       if (opts.focusGroup != null && opts.focusGroup !== g) return;
       segs.forEach(s => {
         if (s.type !== 'ski') return;
-        const [x1, y1] = P(s.from), [x2, y2] = P(s.to);
-        title(el('line', { x1, y1, x2, y2, class: 'ski-seg', stroke: GROUP_COLORS[g % GROUP_COLORS.length] }, gs),
-          `${inst.groups[g].name} : ${runs[s.run].code} ${fmt(s.t0)}–${fmt(s.t1)}`);
+        L.polyline(runPath(runs[s.run]).map(([x, y]) => ll(x, y)), { color: GROUP_COLORS[g % GROUP_COLORS.length], weight: 9, opacity: 0.55, lineCap: 'round' })
+          .bindTooltip(`${inst.groups[g].name} : ${runs[s.run].code} ${fmt(s.t0)}–${fmt(s.t1)}`, { sticky: true }).addTo(layers.sol);
       });
     });
-    const fl = el('g', { class: 'flight-layer' }, svg);
     sch.heliSeg.forEach((segs, h) => {
       if (opts.focusHeli != null && opts.focusHeli !== h) return;
       segs.forEach(s => {
-        if (s.type !== 'flight' && s.type !== 'flightLoaded') return;
+        if ((s.type !== 'flight' && s.type !== 'flightLoaded') || s.from === s.to) return;
         if (opts.focusGroup != null && s.group !== opts.focusGroup) return;
-        if (s.from === s.to) return;
-        const [x1, y1] = P(s.from), [x2, y2] = P(s.to);
-        // légère courbure pour distinguer aller / retour
-        const mx = (x1 + x2) / 2, my = (y1 + y2) / 2, dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1;
-        const off = 0.12 * L * (h % 2 ? -1 : 1) * 0.5;
-        const cx = mx - dy / L * off, cy = my + dx / L * off;
-        title(el('path', {
-          d: `M${x1},${y1} Q${cx},${cy} ${x2},${y2}`, class: 'flight ' + s.type,
-          stroke: HELI_COLORS[h % HELI_COLORS.length], 'marker-end': `url(#arr-h${h % HELI_COLORS.length})`,
-        }, fl), `H${h + 1} ${s.type === 'flightLoaded' ? 'chargé (' + inst.groups[s.group].name + ')' : 'à vide'} ${fmt(s.t0)}–${fmt(s.t1)}\n${(s.t1 - s.t0).toFixed(1)} min`);
+        const a = inst.pts[s.from], b = inst.pts[s.to];
+        // légère courbure pour distinguer les deux hélicos et l'aller / retour
+        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y, Ln = Math.hypot(dx, dy) || 1;
+        const off = 0.08 * Ln * (h % 2 ? -1 : 1);
+        const cx = mx - dy / Ln * off, cy = my + dx / Ln * off;
+        const pts = Array.from({ length: 13 }, (_, k) => { const u = k / 12; return ll((1 - u) ** 2 * a.x + 2 * u * (1 - u) * cx + u * u * b.x, (1 - u) ** 2 * a.y + 2 * u * (1 - u) * cy + u * u * b.y); });
+        const loaded = s.type === 'flightLoaded';
+        L.polyline(pts, { color: HELI_COLORS[h % HELI_COLORS.length], weight: loaded ? 3 : 2, opacity: 0.9, dashArray: loaded ? null : '6 5' })
+          .bindTooltip(`H${h + 1} ${loaded ? 'chargé (' + inst.groups[s.group].name + ')' : 'à vide'} ${fmt(s.t0)}–${fmt(s.t1)} · ${(s.t1 - s.t0).toFixed(1)} min<br>${nodeName(inst, s.from)} → ${nodeName(inst, s.to)}`, { sticky: true })
+          .addTo(layers.sol);
       });
     });
   }
 
-  // Base
-  const [bx, by] = P(BASE);
-  const b = el('g', { class: 'base' }, svg);
-  el('rect', { x: bx - 0.55, y: by - 0.55, width: 1.1, height: 1.1, rx: 0.2 }, b);
-  el('text', { x: bx, y: by + 0.34, 'text-anchor': 'middle' }, b, 'H');
-  title(b, 'Base hélicoptère');
-
-  // Couche « live » (positions à l'instant t)
-  const live = el('g', { class: 'live' }, svg);
-  const update = (t) => {
-    live.innerHTML = '';
-    if (!sch || t == null) return;
-    sch.groupSeg.forEach((segs, g) => {
-      const pos = groupPos(inst, segs, t);
-      if (!pos) return;
-      const c = el('g', { class: 'live-group' }, live);
-      el('circle', { cx: pos[0], cy: -pos[1], r: 0.42, fill: GROUP_COLORS[g % GROUP_COLORS.length] }, c);
-      el('text', { x: pos[0], y: -pos[1] + 0.17, 'text-anchor': 'middle' }, c, inst.groups[g].name.slice(-1));
-    });
-    sch.heliSeg.forEach((segs, h) => {
-      const pos = heliPos(inst, segs, t);
-      const c = el('g', { class: 'live-heli' }, live);
-      el('circle', { cx: pos[0], cy: -pos[1], r: 0.6, fill: HELI_COLORS[h % HELI_COLORS.length] }, c);
-      el('text', { x: pos[0], y: -pos[1] + 0.22, 'text-anchor': 'middle' }, c, 'H' + (h + 1));
-    });
-  };
-  update(opts.time);
-  return { update };
+  const key = `${origin.lat},${origin.lon},${R}`;
+  if (mv.key !== key) { map.fitBounds(L.latLng(ll(0, 0)).toBounds(2 * R * 1000 + 1500)); mv.key = key; }
+  updateMap(mv, opts.time);
 }
+
+/** Positions des hélicos et des groupes à l'instant t. */
+export function updateMap(mv, t) {
+  const { inst, sch, layers } = mv;
+  if (!inst) return;
+  if (!sch || t == null) { layers.live.clearLayers(); mv.liveMarkers = null; return; }
+  const origin = inst.dataset.origin;
+  if (!mv.liveMarkers) {
+    mv.liveMarkers = {
+      g: sch.groupSeg.map((_, g) => L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon live-group', html: `<span style="background:${GROUP_COLORS[g % GROUP_COLORS.length]}">${esc(inst.groups[g].name.slice(-1))}</span>`, iconSize: [20, 20] }), zIndexOffset: 1500, interactive: false }).addTo(layers.live)),
+      h: sch.heliSeg.map((_, h) => L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon live-heli', html: `<span style="background:${HELI_COLORS[h % HELI_COLORS.length]}">H${h + 1}</span>`, iconSize: [28, 28] }), zIndexOffset: 2000, interactive: false }).addTo(layers.live)),
+    };
+  }
+  sch.groupSeg.forEach((segs, g) => { const [x, y] = groupPos(inst, segs, t); mv.liveMarkers.g[g].setLatLng(toLatLon(origin, x, y)); });
+  sch.heliSeg.forEach((segs, h) => { const [x, y] = heliPos(inst, segs, t); mv.liveMarkers.h[h].setLatLng(toLatLon(origin, x, y)); });
+}
+
+function runPath(r) { return r.path?.length > 1 ? r.path : [[r.top.x, r.top.y], [r.bottom.x, r.bottom.y]]; }
+
+function alongPath(path, u) {
+  const segL = []; let tot = 0;
+  for (let k = 1; k < path.length; k++) { const l = Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]); segL.push(l); tot += l; }
+  let d = Math.max(0, Math.min(1, u)) * tot;
+  for (let k = 0; k < segL.length; k++) {
+    if (d <= segL[k] || k === segL.length - 1) { const w = segL[k] ? Math.min(1, d / segL[k]) : 0; return [path[k][0] + (path[k + 1][0] - path[k][0]) * w, path[k][1] + (path[k + 1][1] - path[k][1]) * w]; }
+    d -= segL[k];
+  }
+  return path[path.length - 1];
+}
+
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function lerp(a, b, u) { return [a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u]; }
 
@@ -145,7 +148,7 @@ function groupPos(inst, segs, t) {
   for (const s of segs) {
     if (t < s.t0 || t > s.t1) continue;
     const a = inst.pts[s.from], b = inst.pts[s.to];
-    if (s.type === 'ski') return lerp(a, b, (t - s.t0) / Math.max(1e-9, s.t1 - s.t0));
+    if (s.type === 'ski') return alongPath(runPath(inst.dataset.runs[s.run]), (t - s.t0) / Math.max(1e-9, s.t1 - s.t0));
     if (s.type === 'heli') {
       const f0 = s.t0 + p.loadMin, f1 = s.t1 - p.unloadMin;
       if (t <= f0) return [a.x, a.y];

@@ -9,6 +9,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="lib/leaflet/leaflet.css">
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -32,9 +33,20 @@
             <label>Graine <input type="number" id="ds-seed" value="42"></label>
             <label>Descentes <input type="number" id="ds-n" value="50" min="5" max="200"></label>
             <label>Rayon (km) <input type="number" id="ds-radius" value="15" min="5" max="40"></label>
-            <label>Massifs <input type="number" id="ds-massifs" value="6" min="1" max="12"></label>
+            <label>Relief
+              <select id="ds-source">
+                <option value="terrain">Réel (MNT)</option>
+                <option value="synthetic">Synthétique</option>
+              </select>
+            </label>
+            <label>Base – latitude <input type="number" id="ds-lat" step="0.0001"></label>
+            <label>Base – longitude <input type="number" id="ds-lon" step="0.0001"></label>
           </div>
-          <div class="row"><button id="btn-gen" class="btn">Générer</button><span id="ds-info" class="muted"></span></div>
+          <div class="row">
+            <button id="btn-gen" class="btn">Générer</button>
+            <button id="btn-place-base" class="btn btn-ghost" title="Puis cliquer sur la carte">Placer la base sur la carte</button>
+          </div>
+          <div id="ds-info" class="muted small"></div>
         </details>
 
         <details open>
@@ -113,7 +125,7 @@
                 <label class="check inline"><input type="checkbox" id="map-all" checked> toutes les descentes</label>
               </div>
             </div>
-            <svg id="map" class="map" role="img" aria-label="Carte des descentes"></svg>
+            <div id="map" class="map" role="img" aria-label="Carte des descentes"></div>
             <div class="timebar">
               <button id="btn-play" class="btn btn-small" title="Animer la journée">▶</button>
               <input type="range" id="time" min="540" max="900" step="0.5" value="540">
@@ -155,13 +167,14 @@
             <button id="btn-export-matrix" class="btn btn-ghost btn-small">Matrice des temps (CSV)</button>
           </div>
         </div>
-        <p class="muted small">Format JSON : <code>{ base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin}], timeMatrix? }</code>.
+        <p class="muted small">Format JSON : <code>{ origin:{lat,lon}, base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin,path?}], timeMatrix? }</code> (x, y en km depuis la base, vers l’est / le nord).
           Si <code>timeMatrix</code> (minutes, nœuds : base, sommets, fonds) est fourni, il remplace le calcul par distance.</p>
         <div class="table-wrap"><table class="data-table" id="runs-table"></table></div>
       </div>
     </section>
   </main>
 
+  <script src="lib/leaflet/leaflet.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
