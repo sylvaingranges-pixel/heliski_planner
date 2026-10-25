@@ -291,23 +291,35 @@ function ensureMapView() {
 }
 // ------------------------------------------------------------------ animation de la journée
 let playTimer = null;
+// Fin de l'animation : dernier mouvement (hélicos rentrés, groupes arrivés), borné par le curseur.
+function playEnd() {
+  const max = +$('time').max, sch = state.cur?.sch;
+  if (!sch) return max;
+  const last = Math.max(state.inst.params.dayStart, ...[...sch.heliSeg, ...sch.groupSeg].flat().map(s => s.t1));
+  return Math.min(max, Math.ceil(last));
+}
 function togglePlay() {
   if (playTimer) { stopPlay(); return; }
   if (!state.cur) return;
-  const max = +$('time').max;
-  if ((state.time ?? 0) >= max) state.time = state.inst.params.dayStart;
+  const end = playEnd();
+  if ((state.time ?? 0) >= end) state.time = state.inst.params.dayStart;
   playTimer = setInterval(() => {
-    state.time = Math.min(max, (state.time ?? state.inst.params.dayStart) + 1);
+    state.time = Math.min(end, (state.time ?? state.inst.params.dayStart) + 1);
     updateTime();
-    if (state.time >= max) stopPlay();
+    if (state.time >= end) stopPlay();
   }, 40);
   syncPlayButtons();
+}
+function restartPlay() {
+  if (!state.cur) return;
+  state.time = state.inst.params.dayStart;
+  updateTime();
 }
 function stopPlay() { clearInterval(playTimer); playTimer = null; syncPlayButtons(); }
 function syncPlayButtons() {
   const on = !!playTimer, r = $('btn-replay'), p = $('btn-play');
   r.hidden = !state.cur || state.sel.on;
-  r.textContent = on ? `❚❚ Pause · ${fmt(state.time)}` : (state.time > state.inst.params.dayStart && state.time < +$('time').max ? `▶ Reprendre la journée · ${fmt(state.time)}` : '▶ Jouer la journée');
+  r.textContent = on ? `❚❚ Pause · ${fmt(state.time)}` : (state.time > state.inst.params.dayStart && state.time < playEnd() ? `▶ Reprendre la journée · ${fmt(state.time)}` : '▶ Jouer la journée');
   p.textContent = on ? '❚❚ Pause' : '▶ Jouer';
   r.classList.toggle('playing', on); p.classList.toggle('playing', on);
 }
@@ -590,6 +602,7 @@ async function init() {
   $('btn-export-matrix').onclick = exportMatrix;
 
   $('btn-play').onclick = () => togglePlay();
+  $('btn-restart').onclick = () => restartPlay();
   $('btn-replay').onclick = () => {
     if (!playTimer) $('map').scrollIntoView({ block: 'nearest', behavior: 'smooth' });   // sur mobile, la carte est sous le panneau
     togglePlay();
