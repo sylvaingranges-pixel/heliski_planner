@@ -9,7 +9,7 @@ de son forfait. Le chiffre d’affaires étant fixé par les forfaits vendus, mi
 <tr><th>Symbole</th><th>Signification</th><th>Test</th></tr>
 <tr><td><i class="v">B</i></td><td>base hélicoptère</td><td>(0, 0)</td></tr>
 <tr><td><i class="v">ℛ</i></td><td>descentes ; pour <i class="v">r ∈ ℛ</i> : sommet <i class="v">T<sub>r</sub></i>, fond <i class="v">F<sub>r</sub></i>, dénivelé <i class="v">h<sub>r</sub></i>, temps de ski <i class="v">s<sub>r</sub></i></td><td>50 descentes génériques tracées sur le relief réel, rayon 15 km</td></tr>
-<tr><td><i class="v">ℛ<sub>j</sub> ⊆ ℛ</i></td><td>descentes du jour : réalisables aujourd’hui (neige, météo, risque d’avalanche) ; seules utilisées par les algorithmes</td><td>toutes, ou filtres (fond min., sommet max., difficulté max.) + tirage au hasard</td></tr>
+<tr><td><i class="v">ℛ<sub>j</sub> ⊆ ℛ</i></td><td>descentes du jour : réalisables aujourd’hui (neige, météo, risque d’avalanche) ; seules utilisées par les algorithmes</td><td>toutes, ou choix sur la carte (clic, rectangle, lasso) / filtres (altitudes, dénivelé, difficulté)</td></tr>
 <tr><td><i class="v">τ<sub>ij</sub></i></td><td>temps de vol entre deux points (base, sommets, fonds) ; issu de la matrice des distances :
   <i class="v">τ<sub>ij</sub> = τ<sub>0</sub> + max(d<sub>ij</sub>/v, (z<sub>j</sub>−z<sub>i</sub>)<sup>+</sup>/v<sub>z</sub>)</i></td><td>180 km/h, 300 m/min, τ<sub>0</sub> = 1 min</td></tr>
 <tr><td><i class="v">𝒢</i>, <i class="v">Q<sub>g</sub></i></td><td>groupes et dénivelé à skier dans la journée (forfait ÷ jours)</td><td>4 groupes</td></tr>

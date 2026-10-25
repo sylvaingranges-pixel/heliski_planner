@@ -25,9 +25,11 @@ export function createMapView(container, { onRunClick, onMapClick } = {}) {
   const map = L.map(container, { zoomSnap: 0.25, preferCanvas: false });
   L.tileLayer(TOPO, { maxZoom: 17, subdomains: 'abc', attribution: TOPO_ATTR, crossOrigin: true }).addTo(map);
   L.control.scale({ imperial: false }).addTo(map);
-  const layers = { frame: L.layerGroup().addTo(map), runs: L.layerGroup().addTo(map), sol: L.layerGroup().addTo(map), live: L.layerGroup().addTo(map) };
+  // Zones de clic des descentes au-dessus des tracés de la solution : une descente reste cliquable même sous un trajet.
+  map.createPane('runHit').style.zIndex = 450;
+  const layers = { frame: L.layerGroup().addTo(map), runs: L.layerGroup().addTo(map), sol: L.layerGroup().addTo(map), hit: L.layerGroup().addTo(map), live: L.layerGroup().addTo(map), tool: L.layerGroup().addTo(map) };
   map.on('click', (e) => onMapClick?.(e.latlng));
-  return { map, layers, onRunClick, key: null, liveMarkers: null, inst: null, sch: null };
+  return { map, layers, onRunClick, key: null, liveMarkers: null, inst: null, sch: null, areaTool: null };
 }
 
 export function drawMap(mv, inst, sch, opts = {}) {
@@ -37,8 +39,9 @@ export function drawMap(mv, inst, sch, opts = {}) {
   const llNode = (n) => { const p = inst.pts[n]; return ll(p.x, p.y); };
   const runs = inst.dataset.runs;
   const R = inst.dataset.radiusKm ?? 15;
-  Object.values(layers).forEach(l => l.clearLayers());
-  mv.inst = inst; mv.sch = sch; mv.liveMarkers = null;
+  const selMode = !!opts.selectMode;              // mode « sélection d'itinéraires » : pas de solution, ouvertes / fermées bien visibles
+  Object.values(layers).forEach(l => { if (l !== layers.tool) l.clearLayers(); });
+  mv.inst = inst; mv.sch = selMode ? null : sch; mv.liveMarkers = null;
 
   // Cadre : rayon d'action + base
   L.circle(ll(0, 0), { radius: R * 1000, color: '#0f2742', weight: 1.5, dashArray: '6 6', fill: false, interactive: false }).addTo(layers.frame);
@@ -47,25 +50,31 @@ export function drawMap(mv, inst, sch, opts = {}) {
     .bindTooltip(`Base · ${inst.dataset.base.alt} m`).addTo(layers.frame);
 
   const used = new Map();
-  if (sch) sch.groupSeg.forEach((segs, g) => segs.forEach(s => { if (s.type === 'ski') (used.get(s.run) ?? used.set(s.run, []).get(s.run)).push(g); }));
+  if (sch && !selMode) sch.groupSeg.forEach((segs, g) => segs.forEach(s => { if (s.type === 'ski') (used.get(s.run) ?? used.set(s.run, []).get(s.run)).push(g); }));
   const showAll = opts.showAllRuns !== false;
 
   runs.forEach((r, i) => {
     const isUsed = used.has(i), isOpen = !opts.open || opts.open[i];   // fermée = hors des descentes du jour
-    if (!showAll && !isUsed) return;
+    if (!selMode && !showAll && !isUsed) return;
     const pts = runPath(r).map(([x, y]) => ll(x, y));
     const sel = opts.selectedRun === i;
-    const w = sel ? 5 : isUsed ? 3.5 : isOpen ? 2.5 : 2;
-    L.polyline(pts, { color: '#fff', weight: w + 2.5, opacity: isOpen ? 0.8 : 0.45, interactive: false }).addTo(layers.runs); // liseré
-    const line = L.polyline(pts, { color: sel ? '#1d6fe0' : isUsed ? '#0b1f3a' : isOpen ? '#334a6b' : '#8a94a3', weight: w, opacity: isOpen ? 0.95 : 0.7, dashArray: isOpen ? null : '4 5' }).addTo(layers.runs);
-    const top = L.circleMarker(pts[0], { radius: 4, color: '#fff', weight: 1, fillColor: isOpen ? '#1e293b' : '#8a94a3', fillOpacity: 1 }).addTo(layers.runs);
-    const bot = L.circleMarker(pts[pts.length - 1], { radius: 3.5, color: isOpen ? '#1e293b' : '#8a94a3', weight: 1.5, fillColor: '#fff', fillOpacity: 1 }).addTo(layers.runs);
-    const tip = `<b>${r.code}</b> – ${r.name}${isOpen ? '' : ' <i>(fermée aujourd’hui)</i>'}<br>${r.top.alt} → ${r.bottom.alt} m (<b>${r.vert} m</b>) · ski ${r.skiMin} min`;
-    for (const m of [line, top, bot]) { m.bindTooltip(tip, { sticky: true }); m.on('click', (e) => { L.DomEvent.stopPropagation(e); mv.onRunClick?.(i); }); }
-    if (isUsed || sel) top.bindTooltip(r.code, { permanent: true, direction: 'right', className: 'run-code', offset: [4, 0] });
+    let color, w, op;
+    if (selMode) { color = isOpen ? '#0e9f4f' : '#7d8794'; w = isOpen ? 4.5 : 2.5; op = isOpen ? 1 : 0.75; }
+    else { color = sel ? '#1d6fe0' : isUsed ? '#0b1f3a' : isOpen ? '#334a6b' : '#9aa4b1'; w = sel ? 5 : isUsed ? 3.5 : isOpen ? 2.5 : 2; op = isOpen ? 0.95 : 0.6; }
+    L.polyline(pts, { color: '#fff', weight: w + 2.5, opacity: isOpen || selMode ? 0.85 : 0.45, interactive: false }).addTo(layers.runs); // liseré
+    L.polyline(pts, { color, weight: w, opacity: op, interactive: false }).addTo(layers.runs);
+    const dot = isOpen ? (selMode ? '#0e9f4f' : '#1e293b') : '#9aa4b1';
+    const top = L.circleMarker(pts[0], { radius: selMode && isOpen ? 5 : 4, color: '#fff', weight: 1, fillColor: dot, fillOpacity: 1, interactive: false }).addTo(layers.runs);
+    L.circleMarker(pts[pts.length - 1], { radius: 3.5, color: dot, weight: 1.5, fillColor: '#fff', fillOpacity: 1, interactive: false }).addTo(layers.runs);
+    const tip = `<b>${r.code}</b> – ${r.name}${isOpen ? '' : ' <i>(fermée aujourd’hui)</i>'}<br>${r.top.alt} → ${r.bottom.alt} m (<b>${r.vert} m</b>) · ski ${r.skiMin} min` +
+      (selMode ? `<br><i>clic : ${isOpen ? 'fermer' : 'ouvrir'}</i>` : '');
+    // zone de clic large et invisible
+    L.polyline(pts, { pane: 'runHit', color: '#000', weight: 18, opacity: 0, lineCap: 'round' }).bindTooltip(tip, { sticky: true })
+      .on('click', (e) => { L.DomEvent.stopPropagation(e); mv.onRunClick?.(i); }).addTo(layers.hit);
+    if (!selMode && (isUsed || sel)) top.bindTooltip(r.code, { permanent: true, direction: 'right', className: 'run-code', offset: [4, 0] });
   });
 
-  if (sch) {
+  if (sch && !selMode) {
     sch.groupSeg.forEach((segs, g) => {
       if (opts.focusGroup != null && opts.focusGroup !== g) return;
       segs.forEach(s => {
@@ -112,6 +121,74 @@ export function updateMap(mv, t) {
   }
   sch.groupSeg.forEach((segs, g) => { const [x, y] = groupPos(inst, segs, t); mv.liveMarkers.g[g].setLatLng(toLatLon(origin, x, y)); });
   sch.heliSeg.forEach((segs, h) => { const [x, y] = heliPos(inst, segs, t); mv.liveMarkers.h[h].setLatLng(toLatLon(origin, x, y)); });
+}
+
+/**
+ * Outil de zone sur la carte (mode sélection) : 'rect' (rectangle) ou 'lasso' (tracé à main levée) ; 'click' / 'none' rétablit
+ * le déplacement de la carte. onArea(indices des descentes dont au moins la moitié du tracé est dans la zone).
+ */
+export function setAreaTool(mv, tool, onArea) {
+  const { map } = mv, el = map.getContainer();
+  mv.areaTool?.off(); mv.areaTool = null;
+  const area = tool === 'rect' || tool === 'lasso';
+  el.classList.toggle('tool-area', area);
+  for (const h of [map.dragging, map.doubleClickZoom, map.boxZoom]) area ? h.disable() : h.enable();
+  if (!area) return;
+  let pts = null, pid = null, shape = null;
+  const cp = (e) => map.mouseEventToContainerPoint(e);
+  const poly = () => (tool === 'rect' ? (pts.length > 1 ? [pts[0], L.point(pts[1].x, pts[0].y), pts[1], L.point(pts[0].x, pts[1].y)] : pts) : pts);
+  const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
+  const down = (e) => {
+    if ((e.pointerType === 'mouse' && e.button !== 0) || e.target.closest?.('.leaflet-control')) return;
+    stop(e); pid = e.pointerId; pts = [cp(e)];
+    try { el.setPointerCapture(pid); } catch { /* pointeur déjà relâché */ }
+  };
+  const move = (e) => {
+    if (!pts || e.pointerId !== pid) return;
+    stop(e);
+    const p = cp(e);
+    if (tool === 'rect') pts[1] = p;
+    else { const q = pts[pts.length - 1]; if (Math.hypot(p.x - q.x, p.y - q.y) >= 3) pts.push(p); }
+    const ll = poly().map(q => map.containerPointToLatLng(q));
+    if (!shape || !mv.layers.tool.hasLayer(shape)) shape = L.polygon(ll, { color: '#0e9f4f', weight: 2, dashArray: '6 4', fillColor: '#0e9f4f', fillOpacity: 0.12, interactive: false }).addTo(mv.layers.tool);
+    else shape.setLatLngs(ll);
+  };
+  const up = (e) => {
+    if (!pts || e.pointerId !== pid) return;
+    stop(e);
+    const zone = poly(); pts = null;
+    try { el.releasePointerCapture(pid); } catch { /* déjà relâché */ }
+    if (shape) { shape.remove(); shape = null; }
+    if (zone.length >= 3) onArea(runsInZone(mv, zone));
+  };
+  const cancel = () => { pts = null; if (shape) { shape.remove(); shape = null; } };
+  const on = [['pointerdown', down], ['pointermove', move], ['pointerup', up], ['pointercancel', cancel]];
+  on.forEach(([t, f]) => el.addEventListener(t, f, true));
+  mv.areaTool = { off: () => { on.forEach(([t, f]) => el.removeEventListener(t, f, true)); cancel(); } };
+}
+
+/** Descentes dont au moins la moitié du tracé (11 points le long du chemin) est dans le polygone (coordonnées écran). */
+export function runsInZone(mv, zone) {
+  const { map, inst } = mv, origin = inst.dataset.origin, n = 11, out = [];
+  inst.dataset.runs.forEach((r, i) => {
+    const path = runPath(r);
+    let inside = 0;
+    for (let k = 0; k < n; k++) {
+      const [x, y] = alongPath(path, k / (n - 1));
+      if (pointInPolygon(map.latLngToContainerPoint(toLatLon(origin, x, y)), zone)) inside++;
+    }
+    if (2 * inside > n) out.push(i);
+  });
+  return out;
+}
+
+function pointInPolygon(p, poly) {
+  let ins = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) ins = !ins;
+  }
+  return ins;
 }
 
 function runPath(r) { return r.path?.length > 1 ? r.path : [[r.top.x, r.top.y], [r.bottom.x, r.bottom.y]]; }

@@ -1,7 +1,7 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
 import { buildInstance, decode, buildSchedule, seqFromLifts, nodeLabel, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
-import { createMapView, drawMap, updateMap, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
+import { createMapView, drawMap, updateMap, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
 import { buildMilp, candidateRuns, warmStart, liftsFromMilp } from './milp.js';
 import { SOLVERS, AUTO_ORDER, neosJobXml, parseSolverOutput, neosApi, neosJobUrl, isSolverRefused } from './neos.js';
@@ -15,14 +15,16 @@ const STORE = 'heliski-planner-v2';
 const state = {
   ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
-  dayRuns: null, dayOpts: { minBottom: 0, maxTop: 4500, maxDiff: 3, share: 100 },   // descentes du jour (null = toutes)
+  dayRuns: null,                                   // descentes du jour (null = toutes)
+  dayFilter: { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] },
+  sel: { on: false, tool: 'click', action: 'add', start: null },   // mode « sélection d'itinéraires » sur la carte
   inst: null, cur: null, results: [], time: null, selectedRun: null, focus: 'all',
   saWorkers: null, milpWorker: null,
 };
 
 // ------------------------------------------------------------------ persistance
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayOpts: state.dayOpts })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayFilter: state.dayFilter })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -32,7 +34,7 @@ function load() {
     if (Array.isArray(s.groups) && s.groups.length) state.groups = s.groups;
     if (s.dataset?.runs?.length) state.ds = s.dataset;
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
-    Object.assign(state.dayOpts, s.dayOpts);
+    if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
   } catch { /* ignore */ }
 }
 
@@ -61,10 +63,7 @@ function bindParams() {
   $('ds-seed').value = state.dsOpts.seed; $('ds-n').value = state.dsOpts.nRuns;
   $('ds-radius').value = state.dsOpts.radiusKm; $('ds-source').value = state.dsOpts.source;
   $('ds-lat').value = state.dsOpts.origin.lat.toFixed(5); $('ds-lon').value = state.dsOpts.origin.lon.toFixed(5);
-  for (const k of ['minBottom', 'maxTop', 'maxDiff', 'share']) {
-    const e = $('day-' + k); e.value = state.dayOpts[k];
-    e.onchange = () => { const v = parseFloat(e.value); if (!Number.isNaN(v)) { state.dayOpts[k] = v; save(); } };
-  }
+  bindDayFilter();
 }
 
 function renderGroupsTable() {
@@ -93,20 +92,36 @@ function groupsChanged(structural = false) {
 }
 
 // ------------------------------------------------------------------ descentes du jour
-/** Descentes retenues par les filtres du jour, puis tirage au hasard d'une part d'entre elles. */
-function pickDayRuns() {
-  const o = state.dayOpts, runs = state.ds.runs;
-  const ok = runs.filter(r => r.bottom.alt >= o.minBottom && r.top.alt <= o.maxTop && (r.difficulty ?? 1) <= o.maxDiff).map(r => r.id);
-  const n = Math.round(ok.length * Math.max(0, Math.min(100, o.share)) / 100);
-  for (let i = ok.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ok[i], ok[j]] = [ok[j], ok[i]]; }
-  setDayRuns(ok.slice(0, n), { solve: true });
+// Filtres (onglet Données) : altitude du sommet, du fond, dénivelé min., difficultés retenues ; champ vide = pas de limite.
+const FILTER_KEYS = ['topMin', 'topMax', 'bottomMin', 'bottomMax', 'vertMin'];
+function matchesFilter(r) {
+  const f = state.dayFilter, inR = (v, lo, hi) => (lo == null || v >= lo) && (hi == null || v <= hi);
+  return inR(r.top.alt, f.topMin, f.topMax) && inR(r.bottom.alt, f.bottomMin, f.bottomMax) && inR(r.vert, f.vertMin, null)
+    && f.diff.includes(r.difficulty ?? 1);
 }
+function bindDayFilter() {
+  const f = state.dayFilter, changed = () => { save(); renderData(); };
+  for (const k of FILTER_KEYS) {
+    const e = $('flt-' + k); e.value = f[k] ?? '';
+    e.oninput = () => { const v = parseFloat(e.value); f[k] = Number.isNaN(v) ? null : v; changed(); };
+  }
+  document.querySelectorAll('.filters input[data-diff]').forEach(c => {
+    c.checked = f.diff.includes(+c.dataset.diff);
+    c.onchange = () => { f.diff = [...document.querySelectorAll('.filters input[data-diff]:checked')].map(x => +x.dataset.diff); changed(); };
+  });
+  const matching = () => state.ds.runs.filter(matchesFilter).map(r => r.id);
+  $('flt-only').onclick = () => setDayRuns(matching(), { solve: true });
+  $('flt-add').onclick = () => setDayRuns([...state.inst.dayRuns, ...matching()], { solve: true });
+  $('flt-remove').onclick = () => { const m = new Set(matching()); setDayRuns([...state.inst.dayRuns].filter(r => !m.has(r)), { solve: true }); };
+  $('flt-reset').onclick = () => { Object.assign(f, { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] }); bindDayFilter(); changed(); };
+}
+
 function setDayRuns(list, { solve = false } = {}) {
   const R = state.ds.runs.length;
   state.dayRuns = list && list.length < R ? [...new Set(list)].filter(r => r >= 0 && r < R).sort((a, b) => a - b) : null;
   save(); rebuild(); renderData(); renderDayInfo();
   reevaluate();                                   // la solution courante perd les descentes fermées
-  if (solve && state.inst.dayRuns.length) solveHeuristic();
+  if (solve && state.inst.dayRuns.length && !state.sel.on) solveHeuristic();
 }
 function toggleDayRun(r) {
   const open = new Set(state.inst.dayRuns);
@@ -120,6 +135,39 @@ function renderDayInfo() {
   $('day-info').innerHTML = `<b>${n} / ${inst.R}</b> descentes ouvertes` + (n ? ` · dénivelé max. ${vmax} m` : '') +
     (n === 0 ? ' · <span class="bad-text">aucune descente : rien à planifier</span>'
       : n < Math.ceil(tmax / Math.max(1, vmax)) + 1 ? ' · <span class="bad-text">peu de choix pour les objectifs</span>' : '');
+  $('sel-count').textContent = `${n} / ${inst.R} ouvertes`;
+}
+
+/** Mode « sélection d'itinéraires » : la solution est masquée, ouvertes en vert / fermées en gris, outils clic / rectangle / lasso. */
+function setSelMode(on) {
+  const sel = state.sel;
+  if (on === sel.on) return;
+  sel.on = on;
+  $('sel-bar').hidden = !on; $('timebar').hidden = on;
+  $('btn-sel-mode').classList.toggle('active', on); $('map').classList.toggle('sel-mode', on);
+  if (on) { sel.start = JSON.stringify(state.dayRuns); setSelTool(sel.tool); setSelAction(sel.action); }
+  else setAreaTool(ensureMapView(), 'none');
+  renderMapView(); updateTime();
+  if (on) $('map').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  // En sortant : nouvelle optimisation si la sélection a changé (ou si la solution affichée a été réévaluée).
+  if (!on && (sel.start !== JSON.stringify(state.dayRuns) || state.cur?.stale) && state.inst.dayRuns.length) solveHeuristic();
+}
+function setSelTool(t) {
+  state.sel.tool = t;
+  document.querySelectorAll('#sel-bar [data-tool]').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
+  document.querySelectorAll('#sel-bar [data-action]').forEach(b => { b.disabled = t === 'click'; });
+  $('sel-hint').textContent = t === 'click' ? 'cliquez une descente pour l’ouvrir ou la fermer ; la carte reste déplaçable'
+    : `${t === 'rect' ? 'tracez un rectangle' : 'entourez une zone'} : les descentes dont la moitié du tracé est dedans sont ${state.sel.action === 'add' ? 'ouvertes' : 'fermées'} (« Clic » pour déplacer la carte)`;
+  setAreaTool(ensureMapView(), state.sel.on ? t : 'none', (ids) => {
+    const open = new Set(state.inst.dayRuns);
+    for (const r of ids) { if (state.sel.action === 'add') open.add(r); else open.delete(r); }
+    setDayRuns([...open]);
+  });
+}
+function setSelAction(a) {
+  state.sel.action = a;
+  document.querySelectorAll('#sel-bar [data-action]').forEach(b => b.classList.toggle('active', b.dataset.action === a));
+  setSelTool(state.sel.tool);
 }
 
 /** Après un changement de paramètres : on re-décode la solution courante (sans ré-optimiser). */
@@ -383,7 +431,7 @@ function ensureMapView() {
   mapView ??= createMapView($('map'), {
     onRunClick: (i) => {
       state.selectedRun = i;
-      if ($('day-edit').checked) toggleDayRun(i); else renderMapView();
+      if (state.sel.on) toggleDayRun(i); else renderMapView();
       showRunInfo();
     },
     onMapClick: (latlng) => {
@@ -422,7 +470,7 @@ function renderKpis() {
 }
 
 function renderMapView() {
-  const opts = { selectedRun: state.selectedRun, time: state.time, showAllRuns: $('map-all').checked, open: state.inst.open };
+  const opts = { selectedRun: state.selectedRun, time: state.time, showAllRuns: $('map-all').checked, open: state.inst.open, selectMode: state.sel.on };
   if (state.focus.startsWith('h')) opts.focusHeli = +state.focus.slice(1);
   if (state.focus.startsWith('g')) opts.focusGroup = +state.focus.slice(1);
   drawMap(ensureMapView(), state.inst, state.cur?.sch ?? null, opts);
@@ -516,12 +564,24 @@ function renderData() {
   const inst = state.inst, N = inst.N;
   $('ds-info').textContent = `${inst.R} descentes · ${inst.dataset.source === 'terrain' ? 'relief réel' : 'synthétique'} · base ${inst.dataset.base.alt} m`;
   $('runs-table').innerHTML = `<thead><tr><th title="Descente réalisable aujourd’hui">Jour</th><th>Code</th><th>Nom</th><th>Sommet (m)</th><th>Fond (m)</th><th>Dénivelé</th><th>Ski (min)</th><th>Diff.</th><th>Dist. base (km)</th><th>Vol base→sommet</th><th>Vol fond→base</th><th>Sommet (lat, lon)</th></tr></thead><tbody>` +
-    inst.dataset.runs.map(r => `<tr class="${inst.open[r.id] ? '' : 'closed'}"><td><input type="checkbox" data-run="${r.id}" ${inst.open[r.id] ? 'checked' : ''}></td><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.top.alt}</td><td>${r.bottom.alt}</td><td>${r.vert}</td><td>${r.skiMin}</td><td>${r.difficulty ?? ''}</td>
+    inst.dataset.runs.map(r => `<tr class="${inst.open[r.id] ? '' : 'closed'} ${matchesFilter(r) ? '' : 'nomatch'}"><td><input type="checkbox" data-run="${r.id}" ${inst.open[r.id] ? 'checked' : ''}></td><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.top.alt}</td><td>${r.bottom.alt}</td><td>${r.vert}</td><td>${r.skiMin}</td><td>${r.difficulty ?? ''}</td>
       <td>${Math.hypot(r.top.x, r.top.y).toFixed(1)}</td><td>${inst.tau[1 + r.id].toFixed(1)}</td><td>${inst.tau[(1 + inst.R + r.id) * N].toFixed(1)}</td><td>${toLatLon(inst.dataset.origin, r.top.x, r.top.y).map(v => v.toFixed(5)).join(', ')}</td></tr>`).join('') + '</tbody>';
   $('runs-table').querySelectorAll('input[data-run]').forEach(c => { c.onchange = () => toggleDayRun(+c.dataset.run); });
+  // Filtres : nombre de descentes qui correspondent, plage des données en indication.
+  const runs = inst.dataset.runs, m = runs.filter(matchesFilter);
+  $('flt-count').textContent = `${m.length} / ${runs.length} correspondent aux filtres · ${inst.dayRuns.length} ouvertes aujourd’hui`;
+  const range = (f) => `${Math.min(...runs.map(f))}–${Math.max(...runs.map(f))}`;
+  $('flt-topMin').placeholder = $('flt-topMax').placeholder = range(r => r.top.alt);
+  $('flt-bottomMin').placeholder = $('flt-bottomMax').placeholder = range(r => r.bottom.alt);
+  $('flt-vertMin').placeholder = range(r => r.vert);
 }
 
 // ------------------------------------------------------------------ utilitaires
+function activateTab(view) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.view === view));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
+  if (view === 'plan') { mapView?.map.invalidateSize(); renderGanttView(); updateTime(); }
+}
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function download(name, text, type) {
   const a = document.createElement('a');
@@ -595,11 +655,7 @@ function init() {
   bindParams(); renderGroupsTable(); renderFocusSelect(); renderLegend(); renderData(); renderDayInfo();
   $('view-formulation').innerHTML = FORMULATION_HTML;
 
-  document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
-    document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === b));
-    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + b.dataset.view));
-    if (b.dataset.view === 'plan') { mapView?.map.invalidateSize(); renderGanttView(); updateTime(); }
-  });
+  document.querySelectorAll('.tab').forEach(b => b.onclick = () => activateTab(b.dataset.view));
   document.querySelectorAll('.subtab').forEach(b => b.onclick = () => {
     document.querySelectorAll('.subtab').forEach(x => x.classList.toggle('active', x === b));
     document.querySelectorAll('.sub').forEach(v => v.classList.toggle('active', v.id === 'sub-' + b.dataset.sub));
@@ -611,8 +667,16 @@ function init() {
   };
   $('btn-add-group').onclick = () => { state.groups.push({ name: `Groupe ${String.fromCharCode(65 + state.groups.length)}`, packageM: 10000, days: 5 }); groupsChanged(true); };
   $('btn-solve').onclick = solveHeuristic;
-  $('btn-day-pick').onclick = pickDayRuns;
   $('btn-day-all').onclick = () => setDayRuns(null, { solve: true });
+  $('btn-day-select').onclick = () => { activateTab('plan'); setSelMode(true); };
+  $('btn-sel-mode').onclick = () => setSelMode(!state.sel.on);
+  $('sel-done').onclick = () => setSelMode(false);
+  document.querySelectorAll('#sel-bar [data-tool]').forEach(b => { b.onclick = () => setSelTool(b.dataset.tool); });
+  document.querySelectorAll('#sel-bar [data-action]').forEach(b => { b.onclick = () => setSelAction(b.dataset.action); });
+  $('sel-all').onclick = () => setDayRuns(null);
+  $('sel-none').onclick = () => setDayRuns([]);
+  $('sel-invert').onclick = () => setDayRuns(state.ds.runs.map(r => r.id).filter(r => !state.inst.open[r]));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.sel.on) setSelMode(false); });
   $('btn-milp').onclick = solveMilp;
   $('btn-milp-stop').onclick = () => { state.milpWorker?.terminate(); state.milpWorker = null; $('btn-milp').disabled = false; $('btn-milp-stop').hidden = true; $('milp-status').textContent = 'Arrêté.'; };
   $('btn-lp').onclick = exportLp;
