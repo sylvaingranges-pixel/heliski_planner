@@ -52,24 +52,11 @@
         <details open>
           <summary>Descentes du jour</summary>
           <p class="muted small" style="margin:0 0 6px">Sous-ensemble des descentes réalisables aujourd’hui (neige, météo, avalanches…) :
-            l’heuristique et le MILP ne travaillent que sur celles-ci.</p>
-          <div class="grid2">
-            <label title="Limite de la neige skiable">Fond min. (m) <input type="number" id="day-minBottom" step="50" min="0"></label>
-            <label title="Isotherme / vent en altitude">Sommet max. (m) <input type="number" id="day-maxTop" step="50" min="0"></label>
-            <label>Difficulté max.
-              <select id="day-maxDiff">
-                <option value="1">● facile</option>
-                <option value="2">●● moyen</option>
-                <option value="3">●●● difficile</option>
-              </select>
-            </label>
-            <label title="Part des descentes retenues par les filtres, tirée au hasard">Tirage (%) <input type="number" id="day-share" min="1" max="100" step="5"></label>
-          </div>
-          <div class="row">
-            <button id="btn-day-pick" class="btn" title="Filtres puis tirage au hasard, puis optimisation">Sélectionner</button>
+            l’heuristique et le MILP ne travaillent que sur celles-ci. Choix sur la carte, ou par filtres dans l’onglet <i>Données</i>.</p>
+          <div class="row" style="margin:0 0 6px">
+            <button id="btn-day-select" class="btn">Sélectionner sur la carte</button>
             <button id="btn-day-all" class="btn btn-ghost">Toutes</button>
           </div>
-          <label class="check"><input type="checkbox" id="day-edit"> Clic sur la carte : ouvrir / fermer une descente</label>
           <div id="day-info" class="muted small"></div>
         </details>
 
@@ -167,39 +154,58 @@
 
       <div class="content">
         <div class="kpis" id="kpis"></div>
-        <div class="panels">
-          <div class="card map-card">
-            <div class="card-head">
-              <h3>Carte</h3>
-              <div class="map-tools">
-                <select id="map-focus"></select>
-                <label class="check inline"><input type="checkbox" id="map-all" checked> toutes les descentes</label>
-              </div>
+        <div class="card map-card">
+          <div class="card-head">
+            <h3>Carte</h3>
+            <div class="map-tools">
+              <select id="map-focus"></select>
+              <label class="check inline"><input type="checkbox" id="map-all" checked> toutes les descentes</label>
+              <button id="btn-sel-mode" class="btn btn-small" title="Ouvrir / fermer des descentes du jour sur la carte">✎ Sélection d’itinéraires</button>
             </div>
-            <div id="map" class="map" role="img" aria-label="Carte des descentes"></div>
-            <div class="timebar">
-              <button id="btn-play" class="btn btn-small" title="Animer la journée">▶</button>
-              <input type="range" id="time" min="540" max="900" step="0.5" value="540">
-              <span id="time-label" class="mono">09:00</span>
-            </div>
-            <div id="run-info" class="run-info muted small">Cliquez sur une descente pour son détail.</div>
           </div>
-          <div class="card side-card">
-            <div class="subtabs">
-              <button class="subtab active" data-sub="checks">Contrôles</button>
-              <button class="subtab" data-sub="groups">Groupes</button>
-              <button class="subtab" data-sub="ops">Journal</button>
-              <button class="subtab" data-sub="compare">Comparaison</button>
+          <div id="sel-bar" class="sel-bar" hidden>
+            <div class="seg" role="group" aria-label="Outil">
+              <button class="btn btn-small" data-tool="click" title="Cliquer une descente pour l’ouvrir / la fermer (la carte reste déplaçable)">☝ Clic</button>
+              <button class="btn btn-small" data-tool="rect" title="Tracer un rectangle">▭ Rectangle</button>
+              <button class="btn btn-small" data-tool="lasso" title="Entourer une zone à main levée">◌ Lasso</button>
             </div>
-            <div class="sub active" id="sub-checks"></div>
-            <div class="sub" id="sub-groups"></div>
-            <div class="sub" id="sub-ops"></div>
-            <div class="sub" id="sub-compare"></div>
+            <div class="seg" role="group" aria-label="Action de la zone">
+              <button class="btn btn-small" data-action="add" title="Les descentes de la zone sont ouvertes">＋ Ajouter</button>
+              <button class="btn btn-small" data-action="remove" title="Les descentes de la zone sont fermées">－ Retirer</button>
+            </div>
+            <div class="seg">
+              <button id="sel-all" class="btn btn-small btn-ghost">Toutes</button>
+              <button id="sel-none" class="btn btn-small btn-ghost">Aucune</button>
+              <button id="sel-invert" class="btn btn-small btn-ghost">Inverser</button>
+            </div>
+            <span id="sel-count" class="sel-count"></span>
+            <button id="sel-done" class="btn btn-small btn-primary">Terminer et optimiser</button>
+            <div class="sel-legend small"><span class="sw on"></span>ouverte aujourd’hui <span class="sw off"></span>fermée ·
+              <span id="sel-hint" class="muted"></span></div>
           </div>
+          <div id="map" class="map" role="img" aria-label="Carte des descentes"></div>
+          <div class="timebar" id="timebar">
+            <button id="btn-play" class="btn btn-small" title="Animer la journée">▶</button>
+            <input type="range" id="time" min="540" max="900" step="0.5" value="540">
+            <span id="time-label" class="mono">09:00</span>
+          </div>
+          <div id="run-info" class="run-info muted small">Cliquez sur une descente pour son détail.</div>
         </div>
         <div class="card">
           <div class="card-head"><h3>Planning</h3><div class="legend" id="gantt-legend"></div></div>
           <div class="gantt-wrap"><svg id="gantt" class="gantt" role="img" aria-label="Diagramme de Gantt"></svg></div>
+        </div>
+        <div class="card side-card">
+          <div class="subtabs">
+            <button class="subtab active" data-sub="checks">Contrôles</button>
+            <button class="subtab" data-sub="groups">Groupes</button>
+            <button class="subtab" data-sub="ops">Journal</button>
+            <button class="subtab" data-sub="compare">Comparaison</button>
+          </div>
+          <div class="sub active" id="sub-checks"></div>
+          <div class="sub" id="sub-groups"></div>
+          <div class="sub" id="sub-ops"></div>
+          <div class="sub" id="sub-compare"></div>
         </div>
       </div>
     </section>
@@ -210,6 +216,31 @@
     <!-- ======================================================= DONNÉES -->
     <section id="view-data" class="view">
       <div class="card">
+        <div class="card-head"><h3>Descentes du jour – filtres</h3><span id="flt-count" class="muted small"></span></div>
+        <div class="filters">
+          <fieldset><legend>Sommet (m)</legend>
+            <label>min. <input type="number" id="flt-topMin" step="50" min="0"></label>
+            <label>max. <input type="number" id="flt-topMax" step="50" min="0"></label></fieldset>
+          <fieldset><legend>Fond (m)</legend>
+            <label>min. <input type="number" id="flt-bottomMin" step="50" min="0"></label>
+            <label>max. <input type="number" id="flt-bottomMax" step="50" min="0"></label></fieldset>
+          <fieldset><legend>Dénivelé (m)</legend>
+            <label>min. <input type="number" id="flt-vertMin" step="50" min="0"></label></fieldset>
+          <fieldset><legend>Difficulté</legend>
+            <label class="check"><input type="checkbox" data-diff="1"> ● facile</label>
+            <label class="check"><input type="checkbox" data-diff="2"> ●● moyen</label>
+            <label class="check"><input type="checkbox" data-diff="3"> ●●● difficile</label></fieldset>
+        </div>
+        <div class="row">
+          <button id="flt-only" class="btn btn-primary btn-small" title="Les descentes qui correspondent aux filtres deviennent les descentes du jour">Ouvrir uniquement celles-ci</button>
+          <button id="flt-add" class="btn btn-small">Ajouter à la sélection</button>
+          <button id="flt-remove" class="btn btn-small">Retirer de la sélection</button>
+          <button id="flt-reset" class="btn btn-small btn-ghost">Effacer les filtres</button>
+        </div>
+        <p class="muted small" style="margin:8px 0 0">Les lignes estompées ne correspondent pas aux filtres. Champs vides = pas de limite.
+          Après une action, l’optimisation est relancée sur les descentes du jour.</p>
+      </div>
+      <div class="card" style="margin-top:14px">
         <div class="card-head">
           <h3>Descentes</h3>
           <div class="row">

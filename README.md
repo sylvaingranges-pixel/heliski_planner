@@ -4,9 +4,10 @@ Application web installable (PWA) pour **minimiser le coût des hélicoptères**
 sous contrainte de dénivelé vendu aux clients (forfaits).
 
 - **Formulation** du problème (MILP) : voir l'onglet *Formulation* de l'app ou [`docs/FORMULATION.md`](docs/FORMULATION.md).
-- **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui (filtres fond min. / sommet max. / difficulté max.
-  + tirage au hasard, ou ouverture / fermeture une à une sur la carte ou dans l'onglet *Données*). L'heuristique et le MILP
-  ne travaillent que sur ce sous-ensemble ; le vérificateur le contrôle.
+- **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui. Sur la carte, mode *Sélection d'itinéraires*
+  (ouvertes en vert, fermées en gris, solution masquée) : clic, rectangle ou lasso pour ouvrir / fermer ; dans l'onglet
+  *Données*, filtres altitude du sommet / du fond, dénivelé min., difficulté. L'heuristique et le MILP ne travaillent que
+  sur ce sous-ensemble ; le vérificateur le contrôle.
 - **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s par hélico, en parallèle sur plusieurs cœurs).
   Avec H hélicos, les flottes de 1 à H sont explorées (mêmes graines) : plus d'hélicos ne donne jamais un plan plus cher.
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
