@@ -17,7 +17,7 @@ let BASE_DS = null;
 const baseDataset = () => ({ ...structuredClone(BASE_DS), isBase: true });
 
 const state = {
-  ds: null, dsOpts: structuredClone(BASE_OPTS), placingBase: false, effort: 'fast', playSpeed: 1,
+  ds: null, dsOpts: structuredClone(BASE_OPTS), placingBase: false, effort: 'fast', playSpeed: 0.5,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
   dayRuns: null,                                   // descentes du jour (null = toutes)
   dayFilter: { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] },
@@ -37,7 +37,7 @@ function keptParams(s) {
 function save() {
   // Le jeu de base n'est jamais recopié : seule la référence « base » est mémorisée, il est relu depuis le fichier.
   const dataset = state.ds?.isBase ? 'base' : state.ds;
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort, playSpeed: state.playSpeed })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort, speed: state.playSpeed })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -50,7 +50,7 @@ function load() {
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
     if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
     if (EFFORT[s.effort]) state.effort = s.effort;
-    if (PLAY_SPEEDS.includes(s.playSpeed)) state.playSpeed = s.playSpeed;
+    if (PLAY_SPEEDS.includes(s.speed)) state.playSpeed = s.speed;   // clé `speed` : l'ancien ×1 enregistré par défaut est ignoré
   } catch { /* ignore */ }
 }
 
@@ -157,7 +157,7 @@ function renderDayInfo() {
   $('sel-count').textContent = `${n} / ${inst.R} ouvertes`;
 }
 
-/** Mode « sélection d'itinéraires » : la solution est masquée, ouvertes en vert / fermées en gris, outils clic / rectangle / lasso. */
+/** Mode « sélection d'itinéraires » : la solution est masquée, ouvertes en vert / fermées en rouge, outils clic / rectangle / lasso. */
 function setSelMode(on) {
   const sel = state.sel;
   if (on === sel.on) return;
