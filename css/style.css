@@ -43,6 +43,10 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 .btn-play { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 600; white-space: nowrap; }
 .btn-play:hover { background: #0f7444; }
 .btn-play.playing { background: var(--navy); border-color: var(--navy); }
+.replay-row { display: flex; gap: 8px; }
+.replay-row[hidden] { display: none; }
+.replay-row .btn-play { flex: 1; }
+.replay-row .btn:not(.btn-play) { width: auto; white-space: nowrap; }
 input, select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); width: 100%; min-width: 0; }
 label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
 label.check { flex-direction: row; align-items: center; gap: 6px; margin-top: 6px; color: var(--ink); font-size: 13px; }

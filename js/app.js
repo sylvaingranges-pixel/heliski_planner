@@ -318,7 +318,7 @@ function restartPlay() {
 function stopPlay() { clearInterval(playTimer); playTimer = null; syncPlayButtons(); }
 function syncPlayButtons() {
   const on = !!playTimer, r = $('btn-replay'), p = $('btn-play');
-  r.hidden = !state.cur || state.sel.on;
+  $('replay-row').hidden = !state.cur || state.sel.on;
   r.textContent = on ? `❚❚ Pause · ${fmt(state.time)}` : (state.time > state.inst.params.dayStart && state.time < playEnd() ? `▶ Reprendre la journée · ${fmt(state.time)}` : '▶ Jouer la journée');
   p.textContent = on ? '❚❚ Pause' : '▶ Jouer';
   r.classList.toggle('playing', on); p.classList.toggle('playing', on);
@@ -603,6 +603,7 @@ async function init() {
 
   $('btn-play').onclick = () => togglePlay();
   $('btn-restart').onclick = () => restartPlay();
+  $('btn-replay-restart').onclick = () => restartPlay();
   $('btn-replay').onclick = () => {
     if (!playTimer) $('map').scrollIntoView({ block: 'nearest', behavior: 'smooth' });   // sur mobile, la carte est sous le panneau
     togglePlay();
