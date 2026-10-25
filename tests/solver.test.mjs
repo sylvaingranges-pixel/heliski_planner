@@ -36,8 +36,9 @@ test('heuristique : solution faisable, coût cohérent décodeur / planning / se
   assert.ok(sch.cost < 7500, `coût ${sch.cost}`);
 });
 
-test('variantes : attente client max, arrêt moteur à la base, 3 hélicos', () => {
-  for (const extra of [{ maxClientWait: 30 }, { allowBaseShutdown: true }, { allowBaseShutdown: true, heliStartCost: 300 },
+test('variantes : attente client max, arrêt moteur (base, dépose / reprise), 3 hélicos', () => {
+  for (const extra of [{ maxClientWait: 30 }, { allowFieldShutdown: false }, { allowBaseShutdown: true, allowFieldShutdown: false },
+    { allowBaseShutdown: true }, { allowBaseShutdown: true, heliStartCost: 300 },
     { heliStartCost: 0 }, { nHeli: 3, exclusiveRuns: false }]) {
     const { d, sch, checks } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 2);
     for (const c of checks) assert.ok(c.ok, `${JSON.stringify(extra)} ${c.label} : ${c.errors.join(', ')}`);
@@ -100,12 +101,13 @@ test('flotte : un planning à 1 hélico garde son coût avec 2 hélicos (le 2e r
   }
 });
 
-test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur à la base', async () => {
+test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur (base, dépose / reprise)', async () => {
   const highs = await loadHighs();
-  for (const extra of [{ heliStartCost: 50 }, { allowBaseShutdown: true, heliStartCost: 150 }]) {
+  for (const extra of [{ heliStartCost: 50, allowFieldShutdown: false }, { allowBaseShutdown: true, allowFieldShutdown: false, heliStartCost: 150 },
+    { heliStartCost: 50 }, { heliStartCost: 0 }, { allowBaseShutdown: true, heliStartCost: 150, maxClientWait: 30 }]) {
     const { inst, res, d, sch: s0 } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 4);
     assert.ok(s0.totals.starts >= new Set(d.lifts.map(l => l.heli)).size);   // au moins un démarrage par hélico utilisé
-    if (!extra.allowBaseShutdown) assert.equal(s0.totals.starts, new Set(d.lifts.map(l => l.heli)).size);
+    if (!extra.allowBaseShutdown && extra.allowFieldShutdown === false) assert.equal(s0.totals.starts, new Set(d.lifts.map(l => l.heli)).size);
     const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });
     const out = runHighs(highs, lp, { timeLimit: 60, warm: warmStart(inst, meta, d.lifts) });
     assert.ok(out.warmOk, JSON.stringify(extra));
@@ -150,4 +152,26 @@ test('MILP : chaque groupe skie une descente au plus une fois (complet sur candi
   const out = runHighs(highs, lp, { timeLimit: 10, warm: warmStart(inst, meta, d.lifts) });
   const sch = buildSchedule(inst, liftsFromMilp(inst, meta, out.value));
   for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+});
+
+test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standby long, jamais plus cher', () => {
+  const off = { ...DEFAULT_PARAMS, nHeli: 1, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
+  const one = DEFAULT_GROUPS.slice(0, 1);                    // 1 groupe, 1 hélico : l'hélico attend pendant chaque descente
+  const instOff = buildInstance(ds, off, one), instOn = buildInstance(ds, on, one);
+  const sol = solveSA(instOff, { seed: 1, iterations: 10000, restarts: 2 }).sol;
+  const dOff = decode(instOff, sol, true), sOff = buildSchedule(instOff, dOff.lifts);
+  assert.ok(sOff.totals.loiter > 0, 'le scénario de référence doit contenir du vol d’attente');
+  // Mêmes séquences : le décodeur peut couper le moteur au point de reprise au lieu de tourner en l'air.
+  const dOn = decode(instOn, sol, true), sOn = buildSchedule(instOn, dOn.lifts);
+  assert.ok(dOn.cost < dOff.cost, `${dOn.cost} ≥ ${dOff.cost}`);
+  assert.ok(Math.abs(dOn.cost - sOn.cost) < 1e-6);
+  assert.equal(sOn.totals.loiter, 0);
+  assert.ok(sOn.totals.starts > 1);
+  const offBase = sOn.heliSeg.flat().filter(s => s.type === 'parked' && s.from !== 0);
+  assert.ok(offBase.length > 0 && offBase.every(s => s.from > instOn.R), 'coupure au fond (point de reprise)');
+  for (const c of validateSchedule(instOn, sOn)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+  // Chaque coupure vaut le redémarrage : jamais pour une attente que le standby couvre moins cher.
+  for (const s of offBase) assert.ok(on.standbyRate * Math.min(s.t1 - s.t0, on.maxStandby) + on.flyRate * Math.max(0, s.t1 - s.t0 - on.maxStandby) > on.heliStartCost);
+  // Le même planning est refusé par le vérificateur si la coupure hors base n'est pas autorisée.
+  assert.ok(validateSchedule(instOff, sOn).some(c => !c.ok && /coupure moteur non autorisée/.test(c.errors.join(' '))));
 });

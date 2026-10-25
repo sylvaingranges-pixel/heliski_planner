@@ -247,7 +247,7 @@ export const SEG_STYLE = {
   unload: { label: 'Déchargement', cls: 'g-service' },
   standby: { label: 'Standby moteur allumé', cls: 'g-standby' },
   loiter: { label: 'Vol d’attente', cls: 'g-loiter' },
-  parked: { label: 'Base, moteur coupé', cls: 'g-parked' },
+  parked: { label: 'Moteur coupé', cls: 'g-parked' },
   wait: { label: 'Clients en attente', cls: 'g-wait' },
   heli: { label: 'Dans l’hélico', cls: 'g-inheli' },
   ski: { label: 'Ski', cls: 'g-ski' },

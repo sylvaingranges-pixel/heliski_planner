@@ -17,7 +17,7 @@ de son forfait. Le chiffre d’affaires étant fixé par les forfaits vendus, mi
 <tr><td><i class="v">c<sub>v</sub></i>, <i class="v">c<sub>s</sub></i></td><td>tarif en vol / en standby moteur allumé</td><td>40.– / 20.– par min</td></tr>
 <tr><td><i class="v">δ<sub>c</sub></i>, <i class="v">δ<sub>d</sub></i></td><td>durée de chargement / déchargement (moteur allumé, facturé <i class="v">c<sub>s</sub></i>)</td><td>6 / 6 min</td></tr>
 <tr><td><i class="v">w̄</i></td><td>attente maximale en standby</td><td>5 min</td></tr>
-<tr><td><i class="v">c<sub>d</sub></i></td><td>coût d’un démarrage moteur (cycle turbine) : 1<sup>er</sup> départ du jour de chaque hélico utilisé, et chaque redémarrage après une coupure à la base</td><td>50.–</td></tr>
+<tr><td><i class="v">c<sub>d</sub></i></td><td>coût d’un démarrage moteur (cycle turbine) : 1<sup>er</sup> départ du jour de chaque hélico utilisé, et chaque redémarrage après une coupure moteur (à la dépose, à la reprise ou à la base, si autorisée)</td><td>50.–</td></tr>
 <tr><td><i class="v">[a, b]</i></td><td>fenêtre de ski (départ et retour à la base)</td><td>09:00 – 15:00</td></tr>
 </table>
 
@@ -27,7 +27,8 @@ de son forfait. Le chiffre d’affaires étant fixé par les forfaits vendus, mi
 <p>Chaque transport est une <b>rotation</b> : chargement (δ<sub>c</sub>) + vol chargé + déchargement (δ<sub>d</sub>), assurée par un des
 <i class="v">H</i> hélicos. Un groupe qui skie <i class="v">k</i> descentes consomme <i class="v">k + 1</i> rotations. Entre deux rotations, l’hélico
 vole à vide vers le prochain point de chargement et peut y attendre : au plus <i class="v">w̄</i> min en standby (20.–/min) ; au-delà il doit
-rester en l’air (vol d’attente, 40.–/min). Pendant qu’un groupe skie, l’hélico peut aller servir un autre groupe ; les clients peuvent
+rester en l’air (vol d’attente, 40.–/min) — ou <b>couper le moteur</b> à la dépose / à la reprise (ou à la base) : l’attente est alors gratuite
+mais le redémarrage coûte <i class="v">c<sub>d</sub></i> ; c’est rentable dès que l’attente coûterait plus que <i class="v">c<sub>d</sub></i>. Pendant qu’un groupe skie, l’hélico peut aller servir un autre groupe ; les clients peuvent
 attendre au fond.</p>
 <div class="note"><b>Ordre de grandeur.</b> Chaque rotation coûte au minimum (δ<sub>c</sub>+δ<sub>d</sub>)·c<sub>s</sub> = 12 × 20 = 240.– au sol, plus le vol.
 Le levier principal est donc le <b>nombre de rotations</b> (peu de descentes, de grand dénivelé), puis la <b>géographie</b> (fond d’une descente
@@ -50,7 +51,7 @@ deux dépôts <i class="v">O</i> (départ des hélicos) et <i class="v">Z</i> (r
 <tr><td><i class="v">t<sub>i</sub> ∈ [e<sub>i</sub>, ℓ<sub>i</sub>]</i></td><td>début de l’opération <i class="v">i</i> (fenêtre déduite de [a, b])</td></tr>
 <tr><td><i class="v">σ<sub>i</sub> ∈ [0, w̄]</i>, <i class="v">λ<sub>i</sub> ≥ 0</i></td><td>standby et vol d’attente de l’hélico avant le chargement <i class="v">i</i></td></tr>
 <tr><td><i class="v">y<sub>gg′r</sub> ∈ {0,1}</i></td><td>ordre de passage de deux groupes sur la même descente</td></tr>
-<tr><td><i class="v">z<sub>j</sub> ∈ {0,1}</i></td><td>coupure moteur à la base puis redémarrage avant le chargement <i class="v">j</i> (si l’arrêt à la base est autorisé)</td></tr>
+<tr><td><i class="v">z<sub>j</sub> ∈ {0,1}</i></td><td>coupure moteur puis redémarrage avant le chargement <i class="v">j</i> (si l’arrêt moteur est autorisé à la dépose / reprise, ou à la base)</td></tr>
 </table>
 <h3>Objectif</h3>
 <div class="math">min&nbsp; Σ<sub>(i,j)∈𝒜</sub> c<sub>v</sub> τ<sub>ij</sub> x<sub>ij</sub>
@@ -65,7 +66,7 @@ coût de démarrage <i class="v">c<sub>d</sub></i> évite de mettre en route un 
 Σ<sub>j</sub> x<sub>ji</sub> = Σ<sub>j</sub> x<sub>ij</sub> = v<sub>i</sub> &nbsp;∀ i  &nbsp;&nbsp;(v<sub>S<sub>g</sub></sub> = v<sub>E<sub>g</sub></sub> = 1, v<sub>D<sub>gr</sub></sub> = v<sub>P<sub>gr</sub></sub> = v<sub>gr</sub>)<span class="tag">(1) flux</span><br>
 Σ<sub>j</sub> x<sub>Oj</sub> = Σ<sub>i</sub> x<sub>iZ</sub> = H<span class="tag">(2) flotte</span><br>
 x<sub>ij</sub> = 1 ⇒ t<sub>j</sub> = t<sub>i</sub> + δ<sub>c</sub> + τ<sub>ij</sub> &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>ch</sup><span class="tag">(3) vol chargé direct</span><br>
-x<sub>ij</sub> = 1 ⇒ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> ≤ t<sub>j</sub> ≤ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> + σ<sub>j</sub> + λ<sub>j</sub> (+ M z<sub>j</sub> si i est à la base) &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>v</sup><span class="tag">(4) attente payée</span><br>
+x<sub>ij</sub> = 1 ⇒ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> ≤ t<sub>j</sub> ≤ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> + σ<sub>j</sub> + λ<sub>j</sub> (+ M z<sub>j</sub> si la coupure est permise) &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>v</sup><span class="tag">(4) attente payée</span><br>
 x<sub>Oj</sub> = 1 ⇒ t<sub>j</sub> ≥ a + τ<sub>Bj</sub> &nbsp;&nbsp;(avant son 1<sup>er</sup> vol, l’hélico attend moteur coupé)<span class="tag">(5)</span><br>
 v<sub>gr</sub> = 1 ⇒ t<sub>P<sub>gr</sub></sub> ≥ t<sub>D<sub>gr</sub></sub> + δ<sub>d</sub> + s<sub>r</sub> &nbsp;&nbsp;(les clients peuvent attendre au fond)<span class="tag">(6) ski</span><br>
 Σ<sub>r∈C</sub> h<sub>r</sub> v<sub>gr</sub> ≥ Q<sub>g</sub> &nbsp;∀ g<span class="tag">(7) forfait</span><br>
@@ -93,8 +94,9 @@ le graphe complet compte ~40 000 arcs binaires : trop pour une résolution exact
   <li><b>Décodeur</b> (simulation événementielle) : pour des séquences données, on construit le planning des hélicos. À chaque étape on
   choisit le couple (groupe prêt, hélico) qui minimise
   <div class="math">début du chargement + prio<sub>g</sub> + β<sub>h</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
-  puis on exécute la rotation. L’attente de l’hélico est facturée au mieux : moteur coupé à la base (avant le premier vol, ou si autorisé),
-  standby si ≤ w̄, sinon vol d’attente (ou retour à la base si l’arrêt moteur y est autorisé et moins cher). L’exclusivité d’une descente
+  puis on exécute la rotation. L’attente de l’hélico est facturée au mieux : moteur coupé à la base avant le premier vol ; ensuite le moins cher entre
+  standby (≤ w̄) / vol d’attente et, si autorisé, coupure moteur au point de reprise ou à la base (un redémarrage <i class="v">c<sub>d</sub></i>),
+  ou retour à la base. L’exclusivité d’une descente
   retarde la dépose si nécessaire.</li>
 </ol>
 <p><b>Taille de flotte.</b> Un décodeur glouton mobilise tout hélico libre ; or un planning à <i class="v">k</i> hélicos reste
@@ -121,6 +123,8 @@ planning et contrôle toutes les contraintes ainsi que le coût.</p>
 <ul>
   <li>Un hélico transporte un seul groupe par rotation ; les hélicos sont identiques et partent / rentrent à la base.</li>
   <li>Le chargement et le déchargement se font moteur allumé (facturés au tarif standby) et ne comptent pas dans les 5 min de standby.</li>
+  <li>Coupure moteur : seul le coût <i class="v">c<sub>d</sub></i> du redémarrage est pris en compte (pas de durée minimale de coupure ni de temps
+  de démarrage / refroidissement). À la dépose ou à la reprise le coût est le même ; le planning place la coupure au point de reprise.</li>
   <li>L’attente des clients est gratuite (options : pénalité en CHF/min, et/ou attente maximale <i class="v">W</i> au fond :
   t<sub>P<sub>gr</sub></sub> − t<sub>D<sub>gr</sub></sub> − δ<sub>d</sub> − s<sub>r</sub> ≤ W). Les départs du matin sont supposés échelonnés
   (les clients sont convoqués à l’heure de leur premier vol).</li>

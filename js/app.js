@@ -56,7 +56,7 @@ function bindParams() {
     const e = $('p-' + k); e.value = fmt(state.params[k]);
     e.onchange = () => { const [h, m] = e.value.split(':').map(Number); if (!Number.isNaN(h)) { state.params[k] = h * 60 + (m || 0); paramsChanged(); } };
   }
-  for (const k of ['exclusiveRuns', 'allowBaseShutdown']) {
+  for (const k of ['exclusiveRuns', 'allowBaseShutdown', 'allowFieldShutdown']) {
     const e = $('p-' + k); e.checked = !!state.params[k];
     e.onchange = () => { state.params[k] = e.checked; paramsChanged(); };
   }

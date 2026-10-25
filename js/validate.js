@@ -54,9 +54,13 @@ export function validateSchedule(inst, sch) {
           e.push(`H${h + 1} ${fmt(s.t0)} : chargement non suivi d'un vol chargé + déchargement`);
         else if (Math.abs(u.t1 - u.t0 - p.unloadMin) > EPS) e.push(`H${h + 1} déchargement ${fmt(u.t0)} : durée`);
       }
-      if (s.type === 'parked' && s.from !== BASE) e.push(`H${h + 1} moteur coupé hors base à ${fmt(s.t0)}`);
-      if (s.type === 'parked' && p.allowBaseShutdown === false && segs.slice(0, i).some(x => x.type === 'load'))
-        e.push(`H${h + 1} coupure moteur en cours de journée (non autorisée) à ${fmt(s.t0)}`);
+      if (s.type === 'parked' && segs.slice(0, i).some(x => x.type === 'load')) {      // coupure en cours de journée
+        const atStop = segs[i - 1]?.type === 'unload' || segs[i + 1]?.type === 'load';     // à une dépose / reprise
+        if (!(p.allowFieldShutdown && atStop) && !(p.allowBaseShutdown && s.from === BASE))
+          e.push(`H${h + 1} coupure moteur non autorisée (${s.from === BASE ? 'base' : 'hors base'}) à ${fmt(s.t0)}`);
+      }
+      if (s.type === 'parked' && s.from !== BASE && !segs.slice(0, i).some(x => x.type === 'load'))
+        e.push(`H${h + 1} moteur coupé hors base à ${fmt(s.t0)}`);
     }));
     add(`Chargement ${p.loadMin} min / déchargement ${p.unloadMin} min, 1 groupe à bord`, e);
   }
