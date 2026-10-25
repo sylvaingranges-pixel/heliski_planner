@@ -83,7 +83,8 @@ export const DEFAULT_PARAMS = {
   heliSpeedKmh: 180,    // vitesse de croisière
   climbRate: 300,       // m/min en montée
   flightOverhead: 1,    // décollage + approche (min) par vol
-  allowBaseShutdown: false, // l'hélico peut couper le moteur à la base (0.-/min)
+  heliStartCost: 50,    // CHF par démarrage moteur (cycle turbine) : 1er départ du jour et chaque redémarrage
+  allowBaseShutdown: false, // l'hélico peut couper le moteur à la base (0.-/min, mais redémarrage payant)
   exclusiveRuns: true,  // une descente = un seul groupe à la fois
   clientWaitPenalty: 0, // CHF / min d'attente client (0 = coût pur hélico)
   maxClientWait: 0,     // attente max d'un groupe au fond d'une descente (min), 0 = illimitée

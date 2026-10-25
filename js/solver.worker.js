@@ -3,8 +3,11 @@ import { buildInstance, decode } from './model.js';
 import { solveSA } from './solver.js';
 
 self.onmessage = (ev) => {
-  const { dataset, params, groups, opts } = ev.data;
-  const inst = buildInstance(dataset, params, groups);
+  const { dataset, params, groups, available, opts } = ev.data;
+  // opts.fleet : nombre d'hélicos de cette chaîne (≤ nHeli). Un planning à k hélicos est valable avec plus d'hélicos
+  // (les autres restent à la base, sans coût) : l'app garde le meilleur sur k = 1…nHeli.
+  const fleet = Math.max(1, Math.min(params.nHeli, opts.fleet ?? params.nHeli));
+  const inst = buildInstance(dataset, { ...params, nHeli: fleet }, groups, available);
   let last = 0;
   const res = solveSA(inst, {
     ...opts,
@@ -13,6 +16,7 @@ self.onmessage = (ev) => {
       if (t - last > 80) { last = t; self.postMessage({ type: 'progress', info }); }
     },
   });
+  res.sol.nUse = Math.min(res.sol.nUse ?? fleet, fleet);
   const d = decode(inst, res.sol, true);
-  self.postMessage({ type: 'done', sol: res.sol, f: res.f, history: res.history, elapsedMs: res.elapsedMs, evals: res.evals, lifts: d.lifts });
+  self.postMessage({ type: 'done', fleet, sol: res.sol, f: res.f, history: res.history, elapsedMs: res.elapsedMs, evals: res.evals, lifts: d.lifts });
 };

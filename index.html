@@ -50,6 +50,30 @@
         </details>
 
         <details open>
+          <summary>Descentes du jour</summary>
+          <p class="muted small" style="margin:0 0 6px">Sous-ensemble des descentes réalisables aujourd’hui (neige, météo, avalanches…) :
+            l’heuristique et le MILP ne travaillent que sur celles-ci.</p>
+          <div class="grid2">
+            <label title="Limite de la neige skiable">Fond min. (m) <input type="number" id="day-minBottom" step="50" min="0"></label>
+            <label title="Isotherme / vent en altitude">Sommet max. (m) <input type="number" id="day-maxTop" step="50" min="0"></label>
+            <label>Difficulté max.
+              <select id="day-maxDiff">
+                <option value="1">● facile</option>
+                <option value="2">●● moyen</option>
+                <option value="3">●●● difficile</option>
+              </select>
+            </label>
+            <label title="Part des descentes retenues par les filtres, tirée au hasard">Tirage (%) <input type="number" id="day-share" min="1" max="100" step="5"></label>
+          </div>
+          <div class="row">
+            <button id="btn-day-pick" class="btn" title="Filtres puis tirage au hasard, puis optimisation">Sélectionner</button>
+            <button id="btn-day-all" class="btn btn-ghost">Toutes</button>
+          </div>
+          <label class="check"><input type="checkbox" id="day-edit"> Clic sur la carte : ouvrir / fermer une descente</label>
+          <div id="day-info" class="muted small"></div>
+        </details>
+
+        <details open>
           <summary>Groupes (objectif du jour)</summary>
           <table class="groups-table">
             <thead><tr><th>Nom</th><th>Forfait (m)</th><th>Jours</th><th>Obj. / j</th><th></th></tr></thead>
@@ -65,6 +89,7 @@
             <label>Vol (CHF/min) <input type="number" id="p-flyRate" step="1"></label>
             <label>Standby (CHF/min) <input type="number" id="p-standbyRate" step="1"></label>
             <label>Standby max (min) <input type="number" id="p-maxStandby" step="0.5"></label>
+            <label title="Cycle turbine : 1er départ du jour et chaque redémarrage après coupure à la base">Démarrage moteur (CHF) <input type="number" id="p-heliStartCost" step="10" min="0"></label>
             <label>Chargement (min) <input type="number" id="p-loadMin" step="0.5"></label>
             <label>Déchargement (min) <input type="number" id="p-unloadMin" step="0.5"></label>
             <label>Début <input type="time" id="p-dayStart"></label>
@@ -194,7 +219,8 @@
           </div>
         </div>
         <p class="muted small">Format JSON : <code>{ origin:{lat,lon}, base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin,path?}], timeMatrix? }</code> (x, y en km depuis la base, vers l’est / le nord).
-          Si <code>timeMatrix</code> (minutes, nœuds : base, sommets, fonds) est fourni, il remplace le calcul par distance.</p>
+          Si <code>timeMatrix</code> (minutes, nœuds : base, sommets, fonds) est fourni, il remplace le calcul par distance.
+          Colonne <b>Jour</b> : descentes réalisables aujourd’hui (seules utilisées par les algorithmes).</p>
         <div class="table-wrap"><table class="data-table" id="runs-table"></table></div>
       </div>
     </section>

@@ -111,6 +111,14 @@ export function validateSchedule(inst, sch) {
     });
     add('Dénivelé skié ≥ objectif du jour pour chaque groupe', e);
   }
+  // 7b. Descentes du jour uniquement.
+  {
+    const e = [];
+    sch.groupSeg.forEach((segs, g) => segs.forEach(s => {
+      if (s.type === 'ski' && !inst.open[s.run]) e.push(`${gname(inst, g)} : ${inst.dataset.runs[s.run].code} n’est pas ouverte aujourd’hui`);
+    }));
+    add(`Uniquement les descentes du jour (${inst.dayRuns.length} / ${R})`, e);
+  }
   // 8. Pas deux fois la même descente pour un groupe / exclusivité des descentes.
   {
     const e = [];
@@ -133,15 +141,20 @@ export function validateSchedule(inst, sch) {
   }
   // 9. Coût recalculé depuis les segments.
   {
-    let c = 0;
-    sch.heliSeg.forEach(segs => segs.forEach(s => {
-      const d = s.t1 - s.t0;
-      if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') c += p.flyRate * d;
-      else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload') c += p.standbyRate * d;
-    }));
+    let c = 0, starts = 0;
+    sch.heliSeg.forEach(segs => {
+      let engineOn = false;                              // moteur coupé au départ de la base
+      segs.forEach(s => {
+        const d = s.t1 - s.t0;
+        if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') c += p.flyRate * d;
+        else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload') c += p.standbyRate * d;
+        if (s.type === 'parked') engineOn = false; else if (!engineOn) { engineOn = true; starts++; }
+      });
+    });
+    c += (p.heliStartCost ?? 0) * starts;
     c += p.clientWaitPenalty * sch.gWait.reduce((a, b) => a + b, 0);
     const e = Math.abs(c - sch.cost) > 0.01 ? [`recalcul ${c.toFixed(2)} ≠ ${sch.cost.toFixed(2)}`] : [];
-    add(`Coût recalculé segment par segment : CHF ${c.toFixed(0)}`, e);
+    add(`Coût recalculé segment par segment : CHF ${c.toFixed(0)} (dont ${starts} démarrage${starts > 1 ? 's' : ''} moteur)`, e);
   }
   return checks;
 }

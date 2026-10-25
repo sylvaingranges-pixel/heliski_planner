@@ -9,6 +9,7 @@ de son forfait. Le chiffre d’affaires étant fixé par les forfaits vendus, mi
 <tr><th>Symbole</th><th>Signification</th><th>Test</th></tr>
 <tr><td><i class="v">B</i></td><td>base hélicoptère</td><td>(0, 0)</td></tr>
 <tr><td><i class="v">ℛ</i></td><td>descentes ; pour <i class="v">r ∈ ℛ</i> : sommet <i class="v">T<sub>r</sub></i>, fond <i class="v">F<sub>r</sub></i>, dénivelé <i class="v">h<sub>r</sub></i>, temps de ski <i class="v">s<sub>r</sub></i></td><td>50 descentes génériques tracées sur le relief réel, rayon 15 km</td></tr>
+<tr><td><i class="v">ℛ<sub>j</sub> ⊆ ℛ</i></td><td>descentes du jour : réalisables aujourd’hui (neige, météo, risque d’avalanche) ; seules utilisées par les algorithmes</td><td>toutes, ou filtres (fond min., sommet max., difficulté max.) + tirage au hasard</td></tr>
 <tr><td><i class="v">τ<sub>ij</sub></i></td><td>temps de vol entre deux points (base, sommets, fonds) ; issu de la matrice des distances :
   <i class="v">τ<sub>ij</sub> = τ<sub>0</sub> + max(d<sub>ij</sub>/v, (z<sub>j</sub>−z<sub>i</sub>)<sup>+</sup>/v<sub>z</sub>)</i></td><td>180 km/h, 300 m/min, τ<sub>0</sub> = 1 min</td></tr>
 <tr><td><i class="v">𝒢</i>, <i class="v">Q<sub>g</sub></i></td><td>groupes et dénivelé à skier dans la journée (forfait ÷ jours)</td><td>4 groupes</td></tr>
@@ -16,6 +17,7 @@ de son forfait. Le chiffre d’affaires étant fixé par les forfaits vendus, mi
 <tr><td><i class="v">c<sub>v</sub></i>, <i class="v">c<sub>s</sub></i></td><td>tarif en vol / en standby moteur allumé</td><td>40.– / 20.– par min</td></tr>
 <tr><td><i class="v">δ<sub>c</sub></i>, <i class="v">δ<sub>d</sub></i></td><td>durée de chargement / déchargement (moteur allumé, facturé <i class="v">c<sub>s</sub></i>)</td><td>6 / 6 min</td></tr>
 <tr><td><i class="v">w̄</i></td><td>attente maximale en standby</td><td>5 min</td></tr>
+<tr><td><i class="v">c<sub>d</sub></i></td><td>coût d’un démarrage moteur (cycle turbine) : 1<sup>er</sup> départ du jour de chaque hélico utilisé, et chaque redémarrage après une coupure à la base</td><td>50.–</td></tr>
 <tr><td><i class="v">[a, b]</i></td><td>fenêtre de ski (départ et retour à la base)</td><td>09:00 – 15:00</td></tr>
 </table>
 
@@ -33,7 +35,7 @@ proche du sommet de la suivante, groupes proches les uns des autres pour limiter
 (éviter que l’hélico attende).</div>
 
 <h2>3. Modèle MILP exact (graphe des opérations)</h2>
-<p>Pour un ensemble de descentes candidates <i class="v">C ⊆ ℛ</i>, on crée pour chaque groupe <i class="v">g</i> les opérations :
+<p>Pour un ensemble de descentes candidates <i class="v">C ⊆ ℛ<sub>j</sub></i>, on crée pour chaque groupe <i class="v">g</i> les opérations :
 <i class="v">S<sub>g</sub></i> (chargement à la base), <i class="v">E<sub>g</sub></i> (déchargement final à la base),
 <i class="v">D<sub>gr</sub></i> (déchargement au sommet de <i class="v">r</i>), <i class="v">P<sub>gr</sub></i> (chargement au fond de <i class="v">r</i>), plus
 deux dépôts <i class="v">O</i> (départ des hélicos) et <i class="v">Z</i> (retour). Les arcs sont de deux types :</p>
@@ -48,18 +50,22 @@ deux dépôts <i class="v">O</i> (départ des hélicos) et <i class="v">Z</i> (r
 <tr><td><i class="v">t<sub>i</sub> ∈ [e<sub>i</sub>, ℓ<sub>i</sub>]</i></td><td>début de l’opération <i class="v">i</i> (fenêtre déduite de [a, b])</td></tr>
 <tr><td><i class="v">σ<sub>i</sub> ∈ [0, w̄]</i>, <i class="v">λ<sub>i</sub> ≥ 0</i></td><td>standby et vol d’attente de l’hélico avant le chargement <i class="v">i</i></td></tr>
 <tr><td><i class="v">y<sub>gg′r</sub> ∈ {0,1}</i></td><td>ordre de passage de deux groupes sur la même descente</td></tr>
+<tr><td><i class="v">z<sub>j</sub> ∈ {0,1}</i></td><td>coupure moteur à la base puis redémarrage avant le chargement <i class="v">j</i> (si l’arrêt à la base est autorisé)</td></tr>
 </table>
 <h3>Objectif</h3>
 <div class="math">min&nbsp; Σ<sub>(i,j)∈𝒜</sub> c<sub>v</sub> τ<sub>ij</sub> x<sub>ij</sub>
  + Σ<sub>g,r</sub> c<sub>s</sub>(δ<sub>c</sub>+δ<sub>d</sub>) v<sub>gr</sub>
  + Σ<sub>i chargement</sub> (c<sub>s</sub> σ<sub>i</sub> + c<sub>v</sub> λ<sub>i</sub>)
+ + c<sub>d</sub> (Σ<sub>j≠Z</sub> x<sub>Oj</sub> + Σ<sub>j</sub> z<sub>j</sub>)
  + |𝒢| c<sub>s</sub>(δ<sub>c</sub>+δ<sub>d</sub>)</div>
+<p>Un hélico non utilisé emprunte l’arc O → Z (coût nul) : un planning à <i class="v">k &lt; H</i> hélicos est donc admissible, et le
+coût de démarrage <i class="v">c<sub>d</sub></i> évite de mettre en route un hélico de plus pour un gain marginal.</p>
 <h3>Contraintes</h3>
 <div class="math">
 Σ<sub>j</sub> x<sub>ji</sub> = Σ<sub>j</sub> x<sub>ij</sub> = v<sub>i</sub> &nbsp;∀ i  &nbsp;&nbsp;(v<sub>S<sub>g</sub></sub> = v<sub>E<sub>g</sub></sub> = 1, v<sub>D<sub>gr</sub></sub> = v<sub>P<sub>gr</sub></sub> = v<sub>gr</sub>)<span class="tag">(1) flux</span><br>
 Σ<sub>j</sub> x<sub>Oj</sub> = Σ<sub>i</sub> x<sub>iZ</sub> = H<span class="tag">(2) flotte</span><br>
 x<sub>ij</sub> = 1 ⇒ t<sub>j</sub> = t<sub>i</sub> + δ<sub>c</sub> + τ<sub>ij</sub> &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>ch</sup><span class="tag">(3) vol chargé direct</span><br>
-x<sub>ij</sub> = 1 ⇒ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> ≤ t<sub>j</sub> ≤ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> + σ<sub>j</sub> + λ<sub>j</sub> &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>v</sup><span class="tag">(4) attente payée</span><br>
+x<sub>ij</sub> = 1 ⇒ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> ≤ t<sub>j</sub> ≤ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> + σ<sub>j</sub> + λ<sub>j</sub> (+ M z<sub>j</sub> si i est à la base) &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>v</sup><span class="tag">(4) attente payée</span><br>
 x<sub>Oj</sub> = 1 ⇒ t<sub>j</sub> ≥ a + τ<sub>Bj</sub> &nbsp;&nbsp;(avant son 1<sup>er</sup> vol, l’hélico attend moteur coupé)<span class="tag">(5)</span><br>
 v<sub>gr</sub> = 1 ⇒ t<sub>P<sub>gr</sub></sub> ≥ t<sub>D<sub>gr</sub></sub> + δ<sub>d</sub> + s<sub>r</sub> &nbsp;&nbsp;(les clients peuvent attendre au fond)<span class="tag">(6) ski</span><br>
 Σ<sub>r∈C</sub> h<sub>r</sub> v<sub>gr</sub> ≥ Q<sub>g</sub> &nbsp;∀ g<span class="tag">(7) forfait</span><br>
@@ -79,15 +85,19 @@ le graphe complet compte ~40 000 arcs binaires : trop pour une résolution exact
 <ol>
   <li><b>Choix et ordre des descentes</b> par groupe — <b>recuit simulé</b> multi-départs. Mouvements : remplacer une descente (de préférence
   par une des 12 plus proches du point de départ), insérer, retirer, retirer + remplacer, permuter, inverser un segment, échanger ou déplacer
-  une descente entre groupes, modifier la priorité d’un groupe ou le poids λ du décodeur. Suivi d’une <b>descente locale exhaustive</b>
+  une descente entre groupes, modifier la priorité d’un groupe, le poids λ du décodeur, le nombre d’hélicos utilisés ou la pénalité
+  d’usage β<sub>h</sub> d’un hélico. Suivi d’une <b>descente locale exhaustive</b>
   (tous les remplacements / retraits / insertions / échanges).</li>
   <li><b>Décodeur</b> (simulation événementielle) : pour des séquences données, on construit le planning des hélicos. À chaque étape on
   choisit le couple (groupe prêt, hélico) qui minimise
-  <div class="math">début du chargement + prio<sub>g</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
+  <div class="math">début du chargement + prio<sub>g</sub> + β<sub>h</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
   puis on exécute la rotation. L’attente de l’hélico est facturée au mieux : moteur coupé à la base (avant le premier vol, ou si autorisé),
   standby si ≤ w̄, sinon vol d’attente (ou retour à la base si l’arrêt moteur y est autorisé et moins cher). L’exclusivité d’une descente
   retarde la dépose si nécessaire.</li>
 </ol>
+<p><b>Taille de flotte.</b> Un décodeur glouton mobilise tout hélico libre ; or un planning à <i class="v">k</i> hélicos reste
+valable avec <i class="v">H &gt; k</i> (les autres restent à la base, sans coût). L’app lance donc, avec les mêmes graines, des chaînes
+de recuit pour chaque flotte <i class="v">k = 1…H</i> et garde la meilleure : ajouter un hélico ne dégrade jamais le résultat.</p>
 <p>Les solutions qui ne tiennent pas le forfait ou la fenêtre sont pénalisées (1 500.– + 20.–/m manquant, 1 500.– + 200.–/min de
 retard) afin que la recherche puisse traverser des solutions infaisables. Un <b>vérificateur indépendant</b> relit ensuite chaque segment du
 planning et contrôle toutes les contraintes ainsi que le coût.</p>
@@ -117,6 +127,6 @@ planning et contrôle toutes les contraintes ainsi que le coût.</p>
   <li>Le forfait hebdomadaire est découpé en objectif journalier ; une extension naturelle est la planification sur la semaine
   (skier plus les jours « bon marché »).</li>
   <li>À ajouter selon les besoins : ravitaillement carburant, temps de service pilote, pause de midi, capacité des zones de poser,
-  préférences / niveau des groupes, météo (descentes fermées).</li>
+  préférences / niveau des groupes.</li>
 </ul>
 `;

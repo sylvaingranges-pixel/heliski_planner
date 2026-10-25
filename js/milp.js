@@ -6,15 +6,15 @@
 //   D_gr : déchargement au sommet de r ∈ C       P_gr : chargement au fond de r ∈ C
 // + dépôt O (départ des hélicos) et Z (retour).
 // Arcs « chargés » (pickup → drop du même groupe) et arcs « à vide » (drop → pickup, ou dépôt).
-import { BASE } from './model.js';
+import { BASE, waitPlan } from './model.js';
 
 export function candidateRuns(inst, seqs, size = 12) {
   const p = inst.params, N = inst.N, tau = inst.tau;
-  const C = new Set(seqs.flat());
-  while (C.size < Math.min(size, inst.R)) {
+  const C = new Set(seqs.flat().filter(r => inst.open[r]));   // uniquement les descentes du jour
+  while (C.size < Math.min(size, inst.dayRuns.length)) {
     const from = [BASE, ...[...C].map(r => 1 + inst.R + r)];
     let best = -1, bs = -Infinity;
-    for (let r = 0; r < inst.R; r++) {
+    for (const r of inst.dayRuns) {
       if (C.has(r)) continue;
       const d = Math.min(...from.map(f => tau[f * N + 1 + r]));
       const sc = inst.vert[r] / (p.flyRate * d + p.standbyRate * (p.loadMin + p.unloadMin));
@@ -74,6 +74,7 @@ export function buildMilp(inst, C, opts = {}) {
   const feasibleArc = (i, j) => i === O || j === Z || e[i] + svcOf(i) + tt(i, j) <= l[j] + 1e-9;
 
   // --- Arcs
+  const restart = p.heliStartCost ?? 0;                // CHF par démarrage moteur
   const arcs = [];
   for (let g = 0; g < G; g++) {
     const picks = [S[g], ...Cg(g).map(r => P[g][r])];
@@ -97,7 +98,7 @@ export function buildMilp(inst, C, opts = {}) {
       const a = nodes[i], b = nodes[j];
       if (a.kind !== 'O' && a.g === b.g && (b.kind === 'S' || a.kind === 'E')) continue; // impossible dans le temps
       if (!feasibleArc(i, j)) continue;
-      arcs.push({ i, j, loaded: false, cost: p.flyRate * tt(i, j) });
+      arcs.push({ i, j, loaded: false, cost: p.flyRate * tt(i, j) + (i === O ? restart : 0) });   // O → : démarrage moteur
     }
     arcs.push({ i, j: Z, loaded: false, cost: p.flyRate * tau[nodes[i].loc * N] });
   }
@@ -133,6 +134,7 @@ export function buildMilp(inst, C, opts = {}) {
   con(inA.get(Z).map(a => [1, X(a.i, a.j)]), '=', H);
 
   // --- Temps (big-M calculés arc par arc à partir des fenêtres)
+  const zs = new Set();
   for (const a of arcs) {
     const x = X(a.i, a.j), ni = nodes[a.i];
     if (a.j === Z) continue;
@@ -146,9 +148,16 @@ export function buildMilp(inst, C, opts = {}) {
     if (m1 > 1e-9) con([[1, T(a.j)], [-1, T(a.i)], [-m1, x]], '>=', d - m1);
     const m2 = l[a.j] - e[a.i] - d;                    // T_j - T_i (- attente) ≤ d + m2 (1 - x)
     if (a.loaded) con([[1, T(a.j)], [-1, T(a.i)], [m2, x]], '<=', d + m2);   // pas d'attente en vol chargé
-    else if (!(p.allowBaseShutdown && ni.loc === BASE))                      // attente = standby + vol d'attente
-      con([[1, T(a.j)], [-1, T(a.i)], [-1, 'sb' + a.j], [-1, 'lo' + a.j], [m2, x]], '<=', d + m2);
+    else {                                                                   // attente = standby + vol d'attente
+      const terms = [[1, T(a.j)], [-1, T(a.i)], [-1, 'sb' + a.j], [-1, 'lo' + a.j], [m2, x]];
+      if (p.allowBaseShutdown && ni.loc === BASE) {                         // ou coupure à la base + redémarrage (z)
+        if (!(restart > 0)) continue;
+        terms.push([-m2, 'z' + a.j]); zs.add(a.j);
+      }
+      con(terms, '<=', d + m2);
+    }
   }
+  for (const j of zs) obj.push([restart, 'z' + j]);
   // Ski : chargement au fond ≥ dépose au sommet + déchargement + temps de ski.
   for (let g = 0; g < G; g++) for (const r of Cg(g)) {
     const d = p.unloadMin + inst.ski[r], m = d + l[D[g][r]] - e[P[g][r]];
@@ -202,13 +211,13 @@ export function buildMilp(inst, C, opts = {}) {
   for (const j of pickLike) lines.push(` 0 <= sb${j} <= ${p.maxStandby}`);
   lines.push(' kconst = 1');
   lines.push('Binaries');
-  const bins = [...arcs.map(a => X(a.i, a.j)), ...[...Array(G).keys()].flatMap(g => Cg(g).map(r => V(g, r))), ...ys];
+  const bins = [...arcs.map(a => X(a.i, a.j)), ...[...Array(G).keys()].flatMap(g => Cg(g).map(r => V(g, r))), ...ys, ...[...zs].map(j => 'z' + j)];
   for (let k = 0; k < bins.length; k += 10) lines.push(' ' + bins.slice(k, k + 10).join(' '));
   lines.push('End');
 
   return {
     lp: lines.join('\n') + '\n',
-    meta: { nodes, arcs: arcs.map(a => ({ i: a.i, j: a.j, loaded: a.loaded })), O, Z, C, e: Array.from(e), S, E, D, P, ys, fixed: !!fixed, constant: svc * G },
+    meta: { nodes, arcs: arcs.map(a => ({ i: a.i, j: a.j, loaded: a.loaded })), O, Z, C, e: Array.from(e), S, E, D, P, ys, zs: [...zs], fixed: !!fixed, constant: svc * G },
     stats: { binaries: bins.length, constraints: cons.length, arcs: arcs.length, nodes: nodes.length },
   };
 }
@@ -259,9 +268,13 @@ export function warmStart(inst, meta, lifts) {
       val.set('t' + i, l.start);
       val.set('t' + j, l.start + p.loadMin + tau[l.from * N + l.to]);
       val.set(`x${i}_${j}`, 1);
-      if (prev !== O && !(p.allowBaseShutdown && prevLoc === BASE)) {
+      if (prev !== O) {
         const gap = Math.max(0, l.start - prevEnd - tau[prevLoc * N + l.from]);
-        val.set('sb' + i, Math.min(gap, p.maxStandby)); val.set('lo' + i, Math.max(0, gap - p.maxStandby));
+        if (p.allowBaseShutdown && prevLoc === BASE) {                  // coupure + redémarrage, ou attente moteur allumé
+          const w = waitPlan(inst, BASE, true, l.from, gap);
+          if (w.kind === 'parked') { if (meta.zs.includes(i)) val.set('z' + i, 1); }
+          else { val.set('sb' + i, w.standby); val.set('lo' + i, w.loiter); }
+        } else { val.set('sb' + i, Math.min(gap, p.maxStandby)); val.set('lo' + i, Math.max(0, gap - p.maxStandby)); }
       }
       const r = l.to === BASE ? -1 : l.to - 1;
       if (r >= 0) val.set(`v${l.group}_${r}`, 1);

@@ -9,12 +9,14 @@ Minimiser le coût des hélicoptères sur une journée en garantissant à chaque
 |---|---|---|
 | $B$ | base | (0,0) |
 | $\mathcal R$ | descentes ; sommet $T_r$, fond $F_r$, dénivelé $h_r$, temps de ski $s_r$ | 50 |
+| $\mathcal R_j\subseteq\mathcal R$ | descentes du jour (réalisables aujourd'hui : neige, météo, avalanches) — seules utilisées | toutes |
 | $\tau_{ij}$ | temps de vol entre deux points, $\tau_{ij}=\tau_0+\max(d_{ij}/v,\,(z_j-z_i)^+/v_z)$ | 1 min, 180 km/h, 300 m/min |
 | $\mathcal G,\ Q_g$ | groupes, dénivelé du jour (forfait / jours) | 4 |
 | $H$ | hélicoptères identiques | 2 |
 | $c_v,\ c_s$ | tarif en vol / en standby moteur allumé | 40 / 20 CHF/min |
 | $\delta_c,\ \delta_d$ | chargement / déchargement (moteur allumé, tarif $c_s$) | 6 / 6 min |
 | $\bar w$ | standby maximal | 5 min |
+| $c_d$ | démarrage moteur : 1er départ du jour de chaque hélico utilisé, chaque redémarrage après coupure à la base | 50 CHF |
 | $[a,b]$ | fenêtre de ski | 9:00–15:00 |
 
 Une journée de groupe : $B \to T_{r_1} \leadsto F_{r_1} \to T_{r_2} \leadsto \dots F_{r_k} \to B$.
@@ -23,14 +25,17 @@ soit au moins $k+1$ fois $12 \times 20 = 240$ CHF au sol. Au-delà de $\bar w$ m
 
 ## MILP sur un graphe d'opérations
 
-Pour des descentes candidates $C\subseteq\mathcal R$ et chaque groupe $g$ : opérations $S_g$ (chargement base),
+Pour des descentes candidates $C\subseteq\mathcal R_j$ et chaque groupe $g$ : opérations $S_g$ (chargement base),
 $E_g$ (déchargement base), $D_{gr}$ (déchargement au sommet de $r$), $P_{gr}$ (chargement au fond de $r$), dépôts $O, Z$.
 Arcs chargés $\mathcal A^{ch}$ : chargement $\to$ déchargement du **même** groupe ; arcs à vide $\mathcal A^{v}$ :
 déchargement (ou $O$) $\to$ chargement de n'importe quel groupe (ou $Z$).
 
-Variables : $x_{ij}\in\{0,1\}$, $v_{gr}\in\{0,1\}$, $t_i\in[e_i,\ell_i]$, $\sigma_i\in[0,\bar w]$, $\lambda_i\ge 0$, $y_{gg'r}\in\{0,1\}$.
+Variables : $x_{ij}\in\{0,1\}$, $v_{gr}\in\{0,1\}$, $t_i\in[e_i,\ell_i]$, $\sigma_i\in[0,\bar w]$, $\lambda_i\ge 0$, $y_{gg'r}\in\{0,1\}$, $z_j\in\{0,1\}$ (coupure à la base puis redémarrage avant $j$).
 
-$$\min \sum_{(i,j)\in\mathcal A} c_v\tau_{ij}x_{ij} + \sum_{g,r} c_s(\delta_c+\delta_d)v_{gr} + \sum_{i\ \text{charg.}}(c_s\sigma_i + c_v\lambda_i) + |\mathcal G|\,c_s(\delta_c+\delta_d)$$
+$$\min \sum_{(i,j)\in\mathcal A} c_v\tau_{ij}x_{ij} + \sum_{g,r} c_s(\delta_c+\delta_d)v_{gr} + \sum_{i\ \text{charg.}}(c_s\sigma_i + c_v\lambda_i) + c_d\big(\textstyle\sum_{j\ne Z} x_{Oj} + \sum_j z_j\big) + |\mathcal G|\,c_s(\delta_c+\delta_d)$$
+
+Un hélico non utilisé emprunte l'arc $O\to Z$ (coût nul) : un planning à $k<H$ hélicos est admissible ; $c_d$ évite d'en
+démarrer un de plus pour un gain marginal.
 
 s.c.
 
@@ -38,7 +43,7 @@ $$\textstyle\sum_j x_{ji} = \sum_j x_{ij} = v_i \quad (v_{S_g}=v_{E_g}=1,\ v_{D_
 
 $$x_{ij}=1 \Rightarrow t_j = t_i+\delta_c+\tau_{ij} \quad (i,j)\in\mathcal A^{ch}$$
 
-$$x_{ij}=1 \Rightarrow t_i+\delta_d+\tau_{ij} \le t_j \le t_i+\delta_d+\tau_{ij}+\sigma_j+\lambda_j \quad (i,j)\in\mathcal A^{v}$$
+$$x_{ij}=1 \Rightarrow t_i+\delta_d+\tau_{ij} \le t_j \le t_i+\delta_d+\tau_{ij}+\sigma_j+\lambda_j\ (+M z_j \text{ si } i \text{ est à la base}) \quad (i,j)\in\mathcal A^{v}$$
 
 $$x_{Oj}=1 \Rightarrow t_j \ge a+\tau_{Bj} \qquad v_{gr}=1 \Rightarrow t_{P_{gr}} \ge t_{D_{gr}}+\delta_d+s_r$$
 

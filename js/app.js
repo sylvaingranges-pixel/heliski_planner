@@ -9,19 +9,20 @@ import { FORMULATION_HTML } from './formulation.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
-const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
+const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
 const STORE = 'heliski-planner-v2';
 
 const state = {
   ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
+  dayRuns: null, dayOpts: { minBottom: 0, maxTop: 4500, maxDiff: 3, share: 100 },   // descentes du jour (null = toutes)
   inst: null, cur: null, results: [], time: null, selectedRun: null, focus: 'all',
   saWorkers: null, milpWorker: null,
 };
 
 // ------------------------------------------------------------------ persistance
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset: state.ds })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayOpts: state.dayOpts })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -30,15 +31,17 @@ function load() {
     Object.assign(state.dsOpts, s.dsOpts); Object.assign(state.params, s.params);
     if (Array.isArray(s.groups) && s.groups.length) state.groups = s.groups;
     if (s.dataset?.runs?.length) state.ds = s.dataset;
+    if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
+    Object.assign(state.dayOpts, s.dayOpts);
   } catch { /* ignore */ }
 }
 
 // ------------------------------------------------------------------ instance
 function rebuild() {
-  state.inst = buildInstance(state.ds, state.params, state.groups.map(g => ({ ...g, target: Math.round(g.packageM / g.days) })));
+  state.inst = buildInstance(state.ds, state.params, state.groups.map(g => ({ ...g, target: Math.round(g.packageM / g.days) })), state.dayRuns);
 }
 function snapshot() {
-  return { dataset: state.ds, params: { ...state.params }, groups: state.inst.groups };
+  return { dataset: state.ds, params: { ...state.params }, groups: state.inst.groups, available: state.dayRuns };
 }
 
 // ------------------------------------------------------------------ formulaire
@@ -58,6 +61,10 @@ function bindParams() {
   $('ds-seed').value = state.dsOpts.seed; $('ds-n').value = state.dsOpts.nRuns;
   $('ds-radius').value = state.dsOpts.radiusKm; $('ds-source').value = state.dsOpts.source;
   $('ds-lat').value = state.dsOpts.origin.lat.toFixed(5); $('ds-lon').value = state.dsOpts.origin.lon.toFixed(5);
+  for (const k of ['minBottom', 'maxTop', 'maxDiff', 'share']) {
+    const e = $('day-' + k); e.value = state.dayOpts[k];
+    e.onchange = () => { const v = parseFloat(e.value); if (!Number.isNaN(v)) { state.dayOpts[k] = v; save(); } };
+  }
 }
 
 function renderGroupsTable() {
@@ -80,15 +87,45 @@ function renderGroupsTable() {
 
 function paramsChanged() { save(); rebuild(); reevaluate(); }
 function groupsChanged(structural = false) {
-  save(); renderGroupsTable(); rebuild();
+  save(); renderGroupsTable(); rebuild(); renderDayInfo();
   if (structural) { state.cur = null; state.results = []; renderAll(); } else reevaluate();
   renderFocusSelect();
+}
+
+// ------------------------------------------------------------------ descentes du jour
+/** Descentes retenues par les filtres du jour, puis tirage au hasard d'une part d'entre elles. */
+function pickDayRuns() {
+  const o = state.dayOpts, runs = state.ds.runs;
+  const ok = runs.filter(r => r.bottom.alt >= o.minBottom && r.top.alt <= o.maxTop && (r.difficulty ?? 1) <= o.maxDiff).map(r => r.id);
+  const n = Math.round(ok.length * Math.max(0, Math.min(100, o.share)) / 100);
+  for (let i = ok.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ok[i], ok[j]] = [ok[j], ok[i]]; }
+  setDayRuns(ok.slice(0, n), { solve: true });
+}
+function setDayRuns(list, { solve = false } = {}) {
+  const R = state.ds.runs.length;
+  state.dayRuns = list && list.length < R ? [...new Set(list)].filter(r => r >= 0 && r < R).sort((a, b) => a - b) : null;
+  save(); rebuild(); renderData(); renderDayInfo();
+  reevaluate();                                   // la solution courante perd les descentes fermées
+  if (solve && state.inst.dayRuns.length) solveHeuristic();
+}
+function toggleDayRun(r) {
+  const open = new Set(state.inst.dayRuns);
+  if (open.has(r)) open.delete(r); else open.add(r);
+  setDayRuns([...open]);
+}
+function renderDayInfo() {
+  const inst = state.inst, n = inst.dayRuns.length;
+  const vmax = n ? Math.max(...[...inst.dayRuns].map(r => inst.vert[r])) : 0;
+  const tmax = inst.targets.length ? Math.max(...inst.targets) : 0;
+  $('day-info').innerHTML = `<b>${n} / ${inst.R}</b> descentes ouvertes` + (n ? ` · dénivelé max. ${vmax} m` : '') +
+    (n === 0 ? ' · <span class="bad-text">aucune descente : rien à planifier</span>'
+      : n < Math.ceil(tmax / Math.max(1, vmax)) + 1 ? ' · <span class="bad-text">peu de choix pour les objectifs</span>' : '');
 }
 
 /** Après un changement de paramètres : on re-décode la solution courante (sans ré-optimiser). */
 function reevaluate() {
   if (state.cur?.sol && state.cur.sol.seq.length === state.inst.groups.length) {
-    const sol = { ...state.cur.sol, seq: state.cur.sol.seq.map(q => q.filter(r => r < state.inst.R)) };
+    const sol = { ...state.cur.sol, seq: state.cur.sol.seq.map(q => q.filter(r => r < state.inst.R && state.inst.open[r])) };
     setSolution({ ...state.cur, sol, lifts: decode(state.inst, sol, true).lifts, stale: true, label: state.cur.label.replace(/ \(réévaluée\)$/, '') + ' (réévaluée)' }, false);
   } else { state.cur = null; renderAll(); }
 }
@@ -105,46 +142,62 @@ function setSolution(res, addToResults = true) {
 
 function solveHeuristic() {
   if (!state.inst) return;
+  if (!state.inst.dayRuns.length) { alert('Aucune descente ouverte aujourd’hui : sélectionnez des descentes du jour.'); return; }
   state.saWorkers?.forEach(w => w.terminate());
-  // Plusieurs chaînes de recuit indépendantes en parallèle (une par cœur), on garde la meilleure.
+  // Chaînes de recuit indépendantes (au plus une par cœur en même temps), on garde la meilleure.
+  // Pour chaque taille de flotte k = 1…nHeli, mêmes graines : un planning à k hélicos reste valable avec plus
+  // d'hélicos, donc ajouter un hélico ne peut jamais donner un résultat moins bon.
   const nW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+  const H = state.inst.params.nHeli;
   const btn = $('btn-solve'), bar = $('sa-progress');
   btn.disabled = true; btn.textContent = 'Optimisation…'; bar.hidden = false;
   const iterations = +$('sa-effort').value, restarts = 4, seed0 = +$('sa-seed').value || 1;
-  const prog = new Array(nW).fill(0), done = [];
-  let bestSeen = Infinity;
+  const jobs = [];
+  for (let k = H; k >= 1; k--) for (let w = 0; w < nW; w++) jobs.push({ fleet: k, seed: seed0 + 1000 * w });
+  const prog = new Array(jobs.length).fill(0), done = [];
+  let bestSeen = Infinity, next = 0;
   const t0 = performance.now();
   const reset = () => { btn.disabled = false; btn.textContent = 'Optimiser (heuristique)'; bar.hidden = true; };
-  state.saWorkers = Array.from({ length: nW }, (_, k) => {
+  const finish = () => {
+    state.saWorkers = null; reset();
+    const best = done.reduce((a, b) => (b.f < a.f - 1e-9 || (Math.abs(b.f - a.f) <= 1e-9 && b.fleet < a.fleet) ? b : a));
+    const evals = done.reduce((a, b) => a + b.evals, 0);
+    const perFleet = Array.from({ length: H }, (_, k) => Math.round(Math.min(...done.filter(d => d.fleet === k + 1).map(d => d.f))));
+    const used = new Set(best.lifts.map(l => l.heli)).size;
+    setSolution({ label: 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
+      history: best.history, info: `${jobs.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations ; ${used} hélico(s) utilisé(s) sur ${H}` +
+        (H > 1 ? ` ; meilleur coût par flotte : ${perFleet.map((c, k) => `${k + 1} → ${c}`).join(', ')}` : '') });
+  };
+  const launch = () => {
+    const k = next++, job = jobs[k];
     const w = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
     w.onmessage = (ev) => {
       const m = ev.data;
       if (m.type === 'progress') {
         prog[k] = (m.info.restart * m.info.iterations + m.info.it) / (m.info.iterations * m.info.restarts);
         bestSeen = Math.min(bestSeen, m.info.bestF);
-        bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / nW).toFixed(1) + '%';
+        bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / jobs.length).toFixed(1) + '%';
         btn.textContent = `Optimisation… ${chf(bestSeen)}`;
       } else if (m.type === 'done') {
-        w.terminate(); done.push(m);
-        if (done.length < nW) return;
-        state.saWorkers = null; reset();
-        const best = done.reduce((a, b) => (b.f < a.f ? b : a));
-        const evals = done.reduce((a, b) => a + b.evals, 0);
-        setSolution({ label: 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
-          history: best.history, info: `${nW} chaînes parallèles, ${evals.toLocaleString('fr-CH')} évaluations ; coûts : ${done.map(d => Math.round(d.f)).join(' / ')}` });
+        w.terminate(); state.saWorkers?.delete(w); done.push(m); prog[k] = 1;
+        if (next < jobs.length) launch();
+        else if (done.length === jobs.length) finish();
       }
     };
     w.onerror = (e) => { state.saWorkers?.forEach(x => x.terminate()); state.saWorkers = null; reset(); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: seed0 + 1000 * k } });
-    return w;
-  });
+    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: job.seed, fleet: job.fleet } });
+    state.saWorkers.add(w);
+  };
+  state.saWorkers = new Set();
+  for (let i = 0; i < Math.min(nW, jobs.length); i++) launch();
 }
 
 function milpRequest() {
   const mode = $('milp-mode').value;
   const seqs = state.cur?.sol?.seq ?? (state.cur ? seqFromLifts(state.inst.groups.length, state.cur.lifts) : null);
   if (!seqs) return null;
-  const C = candidateRuns(state.inst, mode === 'fixed' ? seqs : seqs, mode === 'fixed' ? 0 : Math.max(4, +$('milp-size').value || 10));
+  const C = candidateRuns(state.inst, seqs, mode === 'fixed' ? 0 : Math.max(4, +$('milp-size').value || 10));
+  if (!C.length) return null;
   return { mode, seqs, C };
 }
 
@@ -214,7 +267,7 @@ function neosSaveCred() {
 const neosJob = () => { try { return JSON.parse(localStorage.getItem(NEOS_JOB) || 'null'); } catch { return null; } };
 const setNeosJob = (j) => { try { j ? localStorage.setItem(NEOS_JOB, JSON.stringify(j)) : localStorage.removeItem(NEOS_JOB); } catch { /* ignore */ } };
 // Empreinte du scénario : le résultat NEOS n'est décodable que sur les mêmes données / paramètres.
-const scenarioKey = () => JSON.stringify([state.ds.name, state.ds.runs.length, state.inst.targets, state.params]);
+const scenarioKey = () => JSON.stringify([state.ds.name, state.ds.runs.length, state.inst.targets, state.params, state.dayRuns]);
 
 async function neosSubmit() {
   const st = $('neos-status');
@@ -283,7 +336,7 @@ async function neosFetch() {
     if (r.status !== 'Done') { st.textContent = `Travail n°${j.job} : ${statusNeosFr(r.status)}`; return; }
     if (j.key !== scenarioKey()) { st.textContent = `Résultat n°${j.job} reçu, mais les données ou paramètres ont changé depuis la soumission : impossible de l’afficher sur ce scénario.`; setNeosJob(null); neosWatch(); return; }
     const { lp, meta } = buildMilp(state.inst, j.C, j.fixedSeq ? { fixedSeq: j.fixedSeq } : {});
-    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|kconst)\b/g));
+    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|z\d+|kconst)\b/g));
     const solver = j.solver ?? 'COPT';
     let solText = '';
     if (SOLVERS[solver].solutionFile) {
@@ -328,7 +381,11 @@ function statusNeosFr(s) {
 let mapView = null, ganttView = null;
 function ensureMapView() {
   mapView ??= createMapView($('map'), {
-    onRunClick: (i) => { state.selectedRun = i; renderMapView(); showRunInfo(); },
+    onRunClick: (i) => {
+      state.selectedRun = i;
+      if ($('day-edit').checked) toggleDayRun(i); else renderMapView();
+      showRunInfo();
+    },
     onMapClick: (latlng) => {
       if (!state.placingBase) return;
       state.placingBase = false; $('map').classList.remove('placing'); $('btn-place-base').classList.remove('active');
@@ -356,6 +413,7 @@ function renderKpis() {
     card('Minutes de vol', `${s.flyMin.toFixed(0)} min`),
     card('dont vol chargé', `${t.flyLoaded.toFixed(0)} min`),
     card('Standby / attente en vol', `${t.standby.toFixed(1)} / ${t.loiter.toFixed(1)} min`),
+    card('Hélicos utilisés', `${new Set(s.lifts.map(l => l.heli)).size} / ${inst.params.nHeli} · ${t.starts} démarr.`),
     card('Rotations', `${s.lifts.length} × ${inst.params.loadMin + inst.params.unloadMin} min sol`),
     card('Dénivelé total', `${vert.toLocaleString('fr-CH')} m`),
     card('Dernier retour base', fmt(lastEnd)),
@@ -364,7 +422,7 @@ function renderKpis() {
 }
 
 function renderMapView() {
-  const opts = { selectedRun: state.selectedRun, time: state.time, showAllRuns: $('map-all').checked };
+  const opts = { selectedRun: state.selectedRun, time: state.time, showAllRuns: $('map-all').checked, open: state.inst.open };
   if (state.focus.startsWith('h')) opts.focusHeli = +state.focus.slice(1);
   if (state.focus.startsWith('g')) opts.focusGroup = +state.focus.slice(1);
   drawMap(ensureMapView(), state.inst, state.cur?.sch ?? null, opts);
@@ -374,7 +432,10 @@ function showRunInfo() {
   const r = state.inst.dataset.runs[state.selectedRun]; if (!r) return;
   const tau = state.inst.tau, N = state.inst.N;
   const users = state.cur ? state.cur.sch.groupSeg.map((segs, g) => segs.filter(s => s.type === 'ski' && s.run === r.id).map(s => `${state.inst.groups[g].name} ${fmt(s.t0)}`)).flat() : [];
-  $('run-info').innerHTML = `<b>${r.code} – ${esc(r.name)}</b> · ${r.top.alt} → ${r.bottom.alt} m · <b>${r.vert} m</b> · ski ${r.skiMin} min · difficulté ${'●'.repeat(r.difficulty)} · vol base→sommet ${tau[1 + r.id].toFixed(1)} min, fond→base ${tau[(1 + state.inst.R + r.id) * N].toFixed(1)} min` + (users.length ? ` · skiée par : ${users.join(', ')}` : '');
+  const open = state.inst.open[r.id];
+  $('run-info').innerHTML = `<button id="btn-run-toggle" class="btn btn-small ${open ? 'btn-ghost' : ''}">${open ? 'Fermer aujourd’hui' : 'Ouvrir aujourd’hui'}</button> ` +
+    `<b>${r.code} – ${esc(r.name)}</b>${open ? '' : ' <span class="bad-text">(fermée aujourd’hui)</span>'} · ${r.top.alt} → ${r.bottom.alt} m · <b>${r.vert} m</b> · ski ${r.skiMin} min · difficulté ${'●'.repeat(r.difficulty)} · vol base→sommet ${tau[1 + r.id].toFixed(1)} min, fond→base ${tau[(1 + state.inst.R + r.id) * N].toFixed(1)} min` + (users.length ? ` · skiée par : ${users.join(', ')}` : '');
+  $('btn-run-toggle').onclick = () => { toggleDayRun(r.id); showRunInfo(); };
 }
 
 function renderGanttView() {
@@ -454,9 +515,10 @@ function renderLegend() {
 function renderData() {
   const inst = state.inst, N = inst.N;
   $('ds-info').textContent = `${inst.R} descentes · ${inst.dataset.source === 'terrain' ? 'relief réel' : 'synthétique'} · base ${inst.dataset.base.alt} m`;
-  $('runs-table').innerHTML = `<thead><tr><th>Code</th><th>Nom</th><th>Sommet (m)</th><th>Fond (m)</th><th>Dénivelé</th><th>Ski (min)</th><th>Diff.</th><th>Dist. base (km)</th><th>Vol base→sommet</th><th>Vol fond→base</th><th>Sommet (lat, lon)</th></tr></thead><tbody>` +
-    inst.dataset.runs.map(r => `<tr><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.top.alt}</td><td>${r.bottom.alt}</td><td>${r.vert}</td><td>${r.skiMin}</td><td>${r.difficulty ?? ''}</td>
+  $('runs-table').innerHTML = `<thead><tr><th title="Descente réalisable aujourd’hui">Jour</th><th>Code</th><th>Nom</th><th>Sommet (m)</th><th>Fond (m)</th><th>Dénivelé</th><th>Ski (min)</th><th>Diff.</th><th>Dist. base (km)</th><th>Vol base→sommet</th><th>Vol fond→base</th><th>Sommet (lat, lon)</th></tr></thead><tbody>` +
+    inst.dataset.runs.map(r => `<tr class="${inst.open[r.id] ? '' : 'closed'}"><td><input type="checkbox" data-run="${r.id}" ${inst.open[r.id] ? 'checked' : ''}></td><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.top.alt}</td><td>${r.bottom.alt}</td><td>${r.vert}</td><td>${r.skiMin}</td><td>${r.difficulty ?? ''}</td>
       <td>${Math.hypot(r.top.x, r.top.y).toFixed(1)}</td><td>${inst.tau[1 + r.id].toFixed(1)}</td><td>${inst.tau[(1 + inst.R + r.id) * N].toFixed(1)}</td><td>${toLatLon(inst.dataset.origin, r.top.x, r.top.y).map(v => v.toFixed(5)).join(', ')}</td></tr>`).join('') + '</tbody>';
+  $('runs-table').querySelectorAll('input[data-run]').forEach(c => { c.onchange = () => toggleDayRun(+c.dataset.run); });
 }
 
 // ------------------------------------------------------------------ utilitaires
@@ -490,8 +552,8 @@ async function generate({ solve = true } = {}) {
     state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin };
     $('ds-source').value = 'synthetic';
   } finally { btn.disabled = false; }
-  state.cur = null; state.results = []; state.selectedRun = null;
-  save(); rebuild(); renderData(); renderAll();
+  state.cur = null; state.results = []; state.selectedRun = null; state.dayRuns = null;
+  save(); rebuild(); renderData(); renderDayInfo(); renderAll();
   $('run-info').textContent = 'Cliquez sur une descente pour son détail.';
   if (solve) solveHeuristic();
 }
@@ -508,8 +570,8 @@ function importDataset(file) {
       });
       d.radiusKm ??= Math.ceil(Math.max(...d.runs.flatMap(r => [Math.hypot(r.top.x, r.top.y), Math.hypot(r.bottom.x, r.bottom.y)])));
       d.custom = true; d.name ??= file.name; d.origin ??= { ...state.dsOpts.origin };
-      state.ds = d; state.cur = null; state.results = [];
-      save(); rebuild(); renderData(); renderAll();
+      state.ds = d; state.cur = null; state.results = []; state.dayRuns = null;
+      save(); rebuild(); renderData(); renderDayInfo(); renderAll();
     } catch (e) { alert('Fichier invalide : ' + e.message); }
   };
   rd.readAsText(file);
@@ -530,7 +592,7 @@ function init() {
   if (!state.ds) state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin: { ...state.dsOpts.origin } }; // provisoire
   state.ds.origin ??= { ...DEFAULT_ORIGIN };
   rebuild();
-  bindParams(); renderGroupsTable(); renderFocusSelect(); renderLegend(); renderData();
+  bindParams(); renderGroupsTable(); renderFocusSelect(); renderLegend(); renderData(); renderDayInfo();
   $('view-formulation').innerHTML = FORMULATION_HTML;
 
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
@@ -549,6 +611,8 @@ function init() {
   };
   $('btn-add-group').onclick = () => { state.groups.push({ name: `Groupe ${String.fromCharCode(65 + state.groups.length)}`, packageM: 10000, days: 5 }); groupsChanged(true); };
   $('btn-solve').onclick = solveHeuristic;
+  $('btn-day-pick').onclick = pickDayRuns;
+  $('btn-day-all').onclick = () => setDayRuns(null, { solve: true });
   $('btn-milp').onclick = solveMilp;
   $('btn-milp-stop').onclick = () => { state.milpWorker?.terminate(); state.milpWorker = null; $('btn-milp').disabled = false; $('btn-milp-stop').hidden = true; $('milp-status').textContent = 'Arrêté.'; };
   $('btn-lp').onclick = exportLp;
