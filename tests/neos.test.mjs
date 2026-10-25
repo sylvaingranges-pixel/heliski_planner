@@ -86,7 +86,10 @@ test('relais NEOS de bout en bout : Gurobi refusé, COPT (démarrage MIP + zip) 
       if (SOLVERS[solver].mipStart) assert.ok(out.objective <= d.cost + 1e-6, `${solver} : ${out.objective} > heuristique ${d.cost}`);
       assert.ok(Number.isFinite(out.bound) && out.bound <= out.objective + 1e-6 && out.bound <= d.cost + 1e-6, `${solver} : borne ${out.bound}`);
       const sch = buildSchedule(inst, liftsFromMilp(inst, meta, n => out.values.get(n) ?? 0));
-      assert.ok(Math.abs(sch.cost - out.objective) < 0.01, `${solver} : planning ${sch.cost} ≠ objectif ${out.objective}`);
+      // Arrêt sur limite de temps : la solution peut garder un redémarrage ou une attente superflus (z, sb, lo libres),
+      // que le planning recalculé élimine ; il n'est alors jamais plus cher que l'objectif.
+      if (out.status === 'optimal') assert.ok(Math.abs(sch.cost - out.objective) < 0.01, `${solver} : planning ${sch.cost} ≠ objectif ${out.objective}`);
+      else assert.ok(sch.cost <= out.objective + 0.01, `${solver} : planning ${sch.cost} > objectif ${out.objective}`);
       for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${solver} ${c.label} : ${c.errors.join(', ')}`);
     }
     assert.equal((await call({ action: 'outputFile', job: 1000, password: 'x', name: 'soln.sol' })).http, 404);

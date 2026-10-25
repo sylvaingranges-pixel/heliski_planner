@@ -73,20 +73,20 @@ export const DEFAULT_GROUPS = [
 
 export const DEFAULT_PARAMS = {
   nHeli: 2,
-  flyRate: 40,          // CHF / min en vol
-  standbyRate: 20,      // CHF / min au sol moteur allumé
+  flyRate: 20,          // CHF / min en vol
+  standbyRate: 8,       // CHF / min au sol moteur allumé
   loadMin: 6,           // chargement (min)
   unloadMin: 6,         // déchargement (min)
   maxStandby: 5,        // attente max moteur allumé (min)
   dayStart: 9 * 60,     // 09:00
   dayEnd: 15 * 60,      // 15:00
   heliSpeedKmh: 180,    // vitesse de croisière
-  climbRate: 300,       // m/min en montée
+  climbRate: 400,       // m/min en montée
   flightOverhead: 1,    // décollage + approche (min) par vol
-  heliStartCost: 50,    // CHF par démarrage moteur (cycle turbine) : 1er départ du jour et chaque redémarrage
+  heliStartCost: 100,   // CHF par démarrage moteur (cycle turbine) : 1er départ du jour et chaque redémarrage
   allowBaseShutdown: false, // l'hélico peut couper le moteur à la base (0.-/min, mais redémarrage payant)
   allowFieldShutdown: true, // … et à chaque dépose / reprise (sommets, fonds) : évite vols d'attente et standby longs
   exclusiveRuns: true,  // une descente = un seul groupe à la fois
   clientWaitPenalty: 0, // CHF / min d'attente client (0 = coût pur hélico)
-  maxClientWait: 0,     // attente max d'un groupe au fond d'une descente (min), 0 = illimitée
+  maxClientWait: 20,    // attente max d'un groupe au fond d'une descente (min), 0 = illimitée
 };

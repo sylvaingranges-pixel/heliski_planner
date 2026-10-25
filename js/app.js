@@ -1,7 +1,7 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
 import { buildInstance, decode, buildSchedule, seqFromLifts, nodeLabel, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
-import { createMapView, drawMap, updateMap, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
+import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
 import { buildMilp, candidateRuns, warmStart, liftsFromMilp } from './milp.js';
 import { SOLVERS, AUTO_ORDER, neosJobXml, parseSolverOutput, neosApi, neosJobUrl, isSolverRefused } from './neos.js';
@@ -694,12 +694,13 @@ function init() {
   $('file-ds').onchange = (e) => e.target.files[0] && importDataset(e.target.files[0]);
   $('btn-export-matrix').onclick = exportMatrix;
 
-  let timer = null;
+  let timer = null, pausedAt = null;
   $('btn-play').onclick = () => {
-    if (timer) { clearInterval(timer); timer = null; $('btn-play').textContent = '▶'; return; }
+    if (timer) { clearInterval(timer); timer = null; pausedAt = state.time; $('btn-play').textContent = '▶'; return; }
     if (!state.cur) return;
     const max = +$('time').max;
     if ((state.time ?? 0) >= max) state.time = state.inst.params.dayStart;
+    if (mapView && state.time !== pausedAt) fitActive(mapView);   // cadrage auto sur la partie active, sauf à la reprise après pause
     $('btn-play').textContent = '❚❚';
     timer = setInterval(() => {
       state.time = Math.min(max, (state.time ?? state.inst.params.dayStart) + 1);
