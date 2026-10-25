@@ -54,3 +54,31 @@ test('MILP (HiGHS) : affectation hélicos optimale ≤ heuristique, planning val
   assert.ok(Math.abs(sch.cost - out.objective) < 0.01, `planning ${sch.cost} ≠ MILP ${out.objective}`);
   for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
 });
+
+test('descentes du jour : heuristique et MILP ne travaillent que sur le sous-ensemble', () => {
+  const full = buildInstance(ds, DEFAULT_PARAMS, DEFAULT_GROUPS);
+  const { res } = solveAndCheck(DEFAULT_PARAMS);
+  const usedFull = new Set(res.sol.seq.flat());
+  // On ferme les descentes choisies sur le jeu complet : l'optimisation doit en trouver d'autres.
+  const available = [...full.dayRuns].filter(r => !usedFull.has(r));
+  const inst = buildInstance(ds, DEFAULT_PARAMS, DEFAULT_GROUPS, available);
+  assert.equal(inst.dayRuns.length, 50 - usedFull.size);
+  const r2 = solveSA(inst, { seed: 1, iterations: 20000, restarts: 3 });
+  const d = decode(inst, r2.sol, true);
+  for (const r of r2.sol.seq.flat()) assert.ok(inst.open[r], `descente fermée ${r} utilisée`);
+  const sch = buildSchedule(inst, d.lifts);
+  for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+  for (const r of candidateRuns(inst, r2.sol.seq, 20)) assert.ok(inst.open[r]);
+  // Une solution passant par une descente fermée est pénalisée et signalée par le vérificateur.
+  const bad = decode(inst, res.sol, true);
+  assert.ok(!bad.feasible && bad.closed > 0);
+  assert.ok(validateSchedule(inst, buildSchedule(inst, bad.lifts)).some(c => !c.ok && /du jour/.test(c.label)));
+});
+
+test('descentes du jour : aucune descente ouverte, pas de plantage', () => {
+  const inst = buildInstance(ds, DEFAULT_PARAMS, DEFAULT_GROUPS, []);
+  assert.equal(inst.dayRuns.length, 0);
+  const res = solveSA(inst, { seed: 1, iterations: 500, restarts: 1 });
+  assert.ok(res.sol.seq.every(q => q.length === 0));
+  assert.deepEqual(candidateRuns(inst, res.sol.seq, 10), []);
+});

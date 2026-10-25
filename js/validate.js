@@ -111,6 +111,14 @@ export function validateSchedule(inst, sch) {
     });
     add('Dénivelé skié ≥ objectif du jour pour chaque groupe', e);
   }
+  // 7b. Descentes du jour uniquement.
+  {
+    const e = [];
+    sch.groupSeg.forEach((segs, g) => segs.forEach(s => {
+      if (s.type === 'ski' && !inst.open[s.run]) e.push(`${gname(inst, g)} : ${inst.dataset.runs[s.run].code} n’est pas ouverte aujourd’hui`);
+    }));
+    add(`Uniquement les descentes du jour (${inst.dayRuns.length} / ${R})`, e);
+  }
   // 8. Pas deux fois la même descente pour un groupe / exclusivité des descentes.
   {
     const e = [];

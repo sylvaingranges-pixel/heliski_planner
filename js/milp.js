@@ -10,11 +10,11 @@ import { BASE } from './model.js';
 
 export function candidateRuns(inst, seqs, size = 12) {
   const p = inst.params, N = inst.N, tau = inst.tau;
-  const C = new Set(seqs.flat());
-  while (C.size < Math.min(size, inst.R)) {
+  const C = new Set(seqs.flat().filter(r => inst.open[r]));   // uniquement les descentes du jour
+  while (C.size < Math.min(size, inst.dayRuns.length)) {
     const from = [BASE, ...[...C].map(r => 1 + inst.R + r)];
     let best = -1, bs = -Infinity;
-    for (let r = 0; r < inst.R; r++) {
+    for (const r of inst.dayRuns) {
       if (C.has(r)) continue;
       const d = Math.min(...from.map(f => tau[f * N + 1 + r]));
       const sc = inst.vert[r] / (p.flyRate * d + p.standbyRate * (p.loadMin + p.unloadMin));

@@ -9,6 +9,7 @@ Minimiser le coût des hélicoptères sur une journée en garantissant à chaque
 |---|---|---|
 | $B$ | base | (0,0) |
 | $\mathcal R$ | descentes ; sommet $T_r$, fond $F_r$, dénivelé $h_r$, temps de ski $s_r$ | 50 |
+| $\mathcal R_j\subseteq\mathcal R$ | descentes du jour (réalisables aujourd'hui : neige, météo, avalanches) — seules utilisées | toutes |
 | $\tau_{ij}$ | temps de vol entre deux points, $\tau_{ij}=\tau_0+\max(d_{ij}/v,\,(z_j-z_i)^+/v_z)$ | 1 min, 180 km/h, 300 m/min |
 | $\mathcal G,\ Q_g$ | groupes, dénivelé du jour (forfait / jours) | 4 |
 | $H$ | hélicoptères identiques | 2 |
@@ -23,7 +24,7 @@ soit au moins $k+1$ fois $12 \times 20 = 240$ CHF au sol. Au-delà de $\bar w$ m
 
 ## MILP sur un graphe d'opérations
 
-Pour des descentes candidates $C\subseteq\mathcal R$ et chaque groupe $g$ : opérations $S_g$ (chargement base),
+Pour des descentes candidates $C\subseteq\mathcal R_j$ et chaque groupe $g$ : opérations $S_g$ (chargement base),
 $E_g$ (déchargement base), $D_{gr}$ (déchargement au sommet de $r$), $P_{gr}$ (chargement au fond de $r$), dépôts $O, Z$.
 Arcs chargés $\mathcal A^{ch}$ : chargement $\to$ déchargement du **même** groupe ; arcs à vide $\mathcal A^{v}$ :
 déchargement (ou $O$) $\to$ chargement de n'importe quel groupe (ou $Z$).

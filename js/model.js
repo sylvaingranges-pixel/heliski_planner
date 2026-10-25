@@ -3,10 +3,13 @@
 // Nœuds : 0 = base, 1+r = sommet de la descente r, 1+R+r = fond de la descente r.
 // Une « rotation » (lift) = un hélico charge un groupe en o, vole vers d, décharge.
 // Le planning d'un groupe : base -> sommet r1 (ski) fond r1 -> sommet r2 ... fond rk -> base.
+// Descentes du jour : sous-ensemble des descentes réalisables aujourd'hui (météo, neige, avalanches…) ;
+// les indices restent ceux du jeu complet, les algorithmes ne parcourent que inst.dayRuns.
 
 export const BASE = 0;
 
-export function buildInstance(dataset, params, groups) {
+/** available : indices des descentes réalisables aujourd'hui (null = toutes). */
+export function buildInstance(dataset, params, groups, available = null) {
   const runs = dataset.runs;
   const R = runs.length, N = 1 + 2 * R;
   const pts = [dataset.base, ...runs.map(r => r.top), ...runs.map(r => r.bottom)];
@@ -28,13 +31,16 @@ export function buildInstance(dataset, params, groups) {
   const vert = Int32Array.from(runs, r => r.vert);
   const ski = Float64Array.from(runs, r => r.skiMin);
   const targets = groups.map(g => g.target ?? Math.round(g.packageM / g.days));
+  const open = new Uint8Array(R).fill(available ? 0 : 1);
+  if (available) for (const r of available) if (r >= 0 && r < R) open[r] = 1;
+  const dayRuns = Int32Array.from([...runs.keys()].filter(r => open[r]));
 
-  // Pour chaque nœud de départ (base ou fond), descentes triées par temps de vol vers leur sommet.
+  // Pour chaque nœud de départ (base ou fond), descentes du jour triées par temps de vol vers leur sommet.
   const nearTop = new Array(N);
   for (const i of [0, ...runs.map((_, r) => 1 + R + r)]) {
-    nearTop[i] = Int32Array.from([...runs.keys()].sort((a, b) => tau[i * N + 1 + a] - tau[i * N + 1 + b]));
+    nearTop[i] = Int32Array.from([...dayRuns].sort((a, b) => tau[i * N + 1 + a] - tau[i * N + 1 + b]));
   }
-  return { dataset, params, groups, R, N, pts, tau, vert, ski, targets, nearTop };
+  return { dataset, params, groups, R, N, pts, tau, vert, ski, targets, nearTop, open, dayRuns };
 }
 
 export const top = (inst, r) => 1 + r;
@@ -70,6 +76,7 @@ export function waitPlan(inst, loc, started, o, gap) {
 export const SHORTFALL_PENALTY = { fixed: 1500, perUnit: 20 };  // par groupe sous l'objectif, par m manquant
 export const LATE_PENALTY = { fixed: 1500, perUnit: 200 };      // par groupe en retard, par min de retard
 export const WAIT_PENALTY = { fixed: 1500, perUnit: 100 };        // par attente client > max, par min de dépassement
+export const CLOSED_PENALTY = 5000;                                // par passage sur une descente hors du jour
 
 /**
  * Décodeur glouton événementiel.
@@ -86,7 +93,7 @@ export function decode(inst, sol, record = false) {
   const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
   const occEnd = new Float64Array(R).fill(-1e9);
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
-  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0;
+  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0;
   const lifts = record ? [] : null;
   for (let g = 0; g < G; g++) { if (sol.seq[g].length === 0) gDone[g] = 1; else pending++; }
 
@@ -127,6 +134,7 @@ export function decode(inst, sol, record = false) {
     if (d === BASE) { gDone[g] = 1; gEnd[g] = end; pending--; }
     else {
       const r = d - 1;
+      if (!inst.open[r]) closed++;
       gVert[g] += inst.vert[r];
       gReady[g] = end + inst.ski[r];
       gLoc[g] = 1 + R + r;
@@ -138,13 +146,13 @@ export function decode(inst, sol, record = false) {
   for (let h = 0; h < H; h++) cost += p.flyRate * tau[hL[h] * N];
   cost += p.clientWaitPenalty * clientWait;
 
-  let shortfall = 0, late = 0, penalty = waitPen;
+  let shortfall = 0, late = 0, penalty = waitPen + CLOSED_PENALTY * closed;
   for (let g = 0; g < G; g++) {
     const sf = inst.targets[g] - gVert[g], lt = gEnd[g] - p.dayEnd;
     if (sf > 1e-9) { shortfall += sf; penalty += SHORTFALL_PENALTY.fixed + SHORTFALL_PENALTY.perUnit * sf; }
     if (lt > 1e-9) { late += lt; penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * lt; }
   }
-  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6, lifts, clientWait, waitExcess };
+  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed, lifts, clientWait, waitExcess, closed };
 }
 
 /**

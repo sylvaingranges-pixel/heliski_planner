@@ -5,11 +5,11 @@ import { buildMilp, liftsFromMilp, warmStart, runHighs } from './milp.js';
 
 let highsP = null;
 self.onmessage = async (ev) => {
-  const { dataset, params, groups, C, fixedSeq, warmLifts, timeLimit } = ev.data;
+  const { dataset, params, groups, available, C, fixedSeq, warmLifts, timeLimit } = ev.data;
   try {
     highsP ??= loadHighs();
     const highs = await highsP;
-    const inst = buildInstance(dataset, params, groups);
+    const inst = buildInstance(dataset, params, groups, available);
     const { lp, meta, stats } = buildMilp(inst, C, fixedSeq ? { fixedSeq } : {});
     self.postMessage({ type: 'built', stats });
     const warm = warmLifts ? warmStart(inst, meta, warmLifts) : null;

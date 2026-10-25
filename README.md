@@ -4,6 +4,9 @@ Application web installable (PWA) pour **minimiser le coût des hélicoptères**
 sous contrainte de dénivelé vendu aux clients (forfaits).
 
 - **Formulation** du problème (MILP) : voir l'onglet *Formulation* de l'app ou [`docs/FORMULATION.md`](docs/FORMULATION.md).
+- **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui (filtres fond min. / sommet max. / difficulté max.
+  + tirage au hasard, ou ouverture / fermeture une à une sur la carte ou dans l'onglet *Données*). L'heuristique et le MILP
+  ne travaillent que sur ce sous-ensemble ; le vérificateur le contrôle.
 - **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s, en parallèle sur plusieurs cœurs).
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
 - **Résolution sur [NEOS](https://neos-server.org) avec COPT** (repli SCIP), directement depuis l'app (identifiant NEOS) :

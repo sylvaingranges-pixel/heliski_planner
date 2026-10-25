@@ -51,15 +51,16 @@ export function drawMap(mv, inst, sch, opts = {}) {
   const showAll = opts.showAllRuns !== false;
 
   runs.forEach((r, i) => {
-    const isUsed = used.has(i);
+    const isUsed = used.has(i), isOpen = !opts.open || opts.open[i];   // fermée = hors des descentes du jour
     if (!showAll && !isUsed) return;
     const pts = runPath(r).map(([x, y]) => ll(x, y));
     const sel = opts.selectedRun === i;
-    L.polyline(pts, { color: '#fff', weight: (sel ? 5 : isUsed ? 3.5 : 2.5) + 2.5, opacity: 0.8, interactive: false }).addTo(layers.runs); // liseré
-    const line = L.polyline(pts, { color: sel ? '#1d6fe0' : isUsed ? '#0b1f3a' : '#334a6b', weight: sel ? 5 : isUsed ? 3.5 : 2.5, opacity: 0.95 }).addTo(layers.runs);
-    const top = L.circleMarker(pts[0], { radius: 4, color: '#fff', weight: 1, fillColor: '#1e293b', fillOpacity: 1 }).addTo(layers.runs);
-    const bot = L.circleMarker(pts[pts.length - 1], { radius: 3.5, color: '#1e293b', weight: 1.5, fillColor: '#fff', fillOpacity: 1 }).addTo(layers.runs);
-    const tip = `<b>${r.code}</b> – ${r.name}<br>${r.top.alt} → ${r.bottom.alt} m (<b>${r.vert} m</b>) · ski ${r.skiMin} min`;
+    const w = sel ? 5 : isUsed ? 3.5 : isOpen ? 2.5 : 2;
+    L.polyline(pts, { color: '#fff', weight: w + 2.5, opacity: isOpen ? 0.8 : 0.45, interactive: false }).addTo(layers.runs); // liseré
+    const line = L.polyline(pts, { color: sel ? '#1d6fe0' : isUsed ? '#0b1f3a' : isOpen ? '#334a6b' : '#8a94a3', weight: w, opacity: isOpen ? 0.95 : 0.7, dashArray: isOpen ? null : '4 5' }).addTo(layers.runs);
+    const top = L.circleMarker(pts[0], { radius: 4, color: '#fff', weight: 1, fillColor: isOpen ? '#1e293b' : '#8a94a3', fillOpacity: 1 }).addTo(layers.runs);
+    const bot = L.circleMarker(pts[pts.length - 1], { radius: 3.5, color: isOpen ? '#1e293b' : '#8a94a3', weight: 1.5, fillColor: '#fff', fillOpacity: 1 }).addTo(layers.runs);
+    const tip = `<b>${r.code}</b> – ${r.name}${isOpen ? '' : ' <i>(fermée aujourd’hui)</i>'}<br>${r.top.alt} → ${r.bottom.alt} m (<b>${r.vert} m</b>) · ski ${r.skiMin} min`;
     for (const m of [line, top, bot]) { m.bindTooltip(tip, { sticky: true }); m.on('click', (e) => { L.DomEvent.stopPropagation(e); mv.onRunClick?.(i); }); }
     if (isUsed || sel) top.bindTooltip(r.code, { permanent: true, direction: 'right', className: 'run-code', offset: [4, 0] });
   });

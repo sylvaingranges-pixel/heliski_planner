@@ -3,8 +3,8 @@ import { buildInstance, decode } from './model.js';
 import { solveSA } from './solver.js';
 
 self.onmessage = (ev) => {
-  const { dataset, params, groups, opts } = ev.data;
-  const inst = buildInstance(dataset, params, groups);
+  const { dataset, params, groups, available, opts } = ev.data;
+  const inst = buildInstance(dataset, params, groups, available);
   let last = 0;
   const res = solveSA(inst, {
     ...opts,

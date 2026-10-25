@@ -16,7 +16,7 @@ export function initialSolution(inst, rnd = Math.random) {
     const s = []; let loc = BASE, v = 0;
     while (v < inst.targets[g]) {
       let best = -1, bScore = -Infinity;
-      for (let r = 0; r < inst.R; r++) {
+      for (const r of inst.dayRuns) {
         if (s.includes(r)) continue;
         const c = p.flyRate * tau[loc * N + 1 + r] + p.standbyRate * (p.loadMin + p.unloadMin);
         const sc = inst.vert[r] / c * (1 - 0.3 * Math.min(used[r], 2)) * (0.9 + 0.2 * rnd());
@@ -31,11 +31,13 @@ export function initialSolution(inst, rnd = Math.random) {
 }
 
 function pickRun(inst, rnd, prevNode, exclude) {
-  // 75 % : parmi les 12 descentes les plus proches du point de départ ; 25 % : au hasard.
+  // 75 % : parmi les 12 descentes du jour les plus proches du point de départ ; 25 % : au hasard.
+  const day = inst.dayRuns;
+  if (!day.length) return -1;
   let r;
   for (let tries = 0; tries < 20; tries++) {
     if (rnd() < 0.75) { const list = inst.nearTop[prevNode]; r = list[Math.floor(rnd() * Math.min(12, list.length))]; }
-    else r = Math.floor(rnd() * inst.R);
+    else r = day[Math.floor(rnd() * day.length)];
     if (!exclude.includes(r)) return r;
   }
   return -1;
@@ -101,7 +103,7 @@ export function polish(inst, sol, maxPasses = 6) {
           const c = cloneSol(best); c.seq[g].splice(k, 1);
           const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; continue; }
         }
-        for (let r = 0; r < inst.R; r++) {
+        for (const r of inst.dayRuns) {
           if (best.seq[g].includes(r)) continue;
           if (k < best.seq[g].length) {           // remplacement
             const c = cloneSol(best); c.seq[g][k] = r;
@@ -118,7 +120,7 @@ export function polish(inst, sol, maxPasses = 6) {
       // retrait d'une descente + remplacement d'une autre (moins de rotations, même dénivelé)
       for (let i = 0; i < best.seq[g].length; i++) for (let j = 0; j < best.seq[g].length; j++) {
         if (i === j) continue;
-        for (let r = 0; r < inst.R; r++) {
+        for (const r of inst.dayRuns) {
           if (best.seq[g].includes(r)) continue;
           const c = cloneSol(best); c.seq[g][j] = r; c.seq[g].splice(i, 1);
           const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; break; }
