@@ -154,6 +154,7 @@ function setSelMode(on) {
   const sel = state.sel;
   if (on === sel.on) return;
   sel.on = on;
+  if (on) stopPlay();
   $('sel-bar').hidden = !on; $('timebar').hidden = on;
   $('btn-sel-mode').classList.toggle('active', on); $('map').classList.toggle('sel-mode', on);
   if (on) { sel.start = JSON.stringify(state.dayRuns); setSelTool(sel.tool); setSelAction(sel.action); }
@@ -288,7 +289,31 @@ function ensureMapView() {
   });
   return mapView;
 }
+// ------------------------------------------------------------------ animation de la journée
+let playTimer = null;
+function togglePlay() {
+  if (playTimer) { stopPlay(); return; }
+  if (!state.cur) return;
+  const max = +$('time').max;
+  if ((state.time ?? 0) >= max) state.time = state.inst.params.dayStart;
+  playTimer = setInterval(() => {
+    state.time = Math.min(max, (state.time ?? state.inst.params.dayStart) + 1);
+    updateTime();
+    if (state.time >= max) stopPlay();
+  }, 40);
+  syncPlayButtons();
+}
+function stopPlay() { clearInterval(playTimer); playTimer = null; syncPlayButtons(); }
+function syncPlayButtons() {
+  const on = !!playTimer, r = $('btn-replay'), p = $('btn-play');
+  r.hidden = !state.cur || state.sel.on;
+  r.textContent = on ? `❚❚ Pause · ${fmt(state.time)}` : (state.time > state.inst.params.dayStart && state.time < +$('time').max ? `▶ Reprendre la journée · ${fmt(state.time)}` : '▶ Jouer la journée');
+  p.textContent = on ? '❚❚ Pause' : '▶ Jouer';
+  r.classList.toggle('playing', on); p.classList.toggle('playing', on);
+}
+
 function renderAll() {
+  if (!state.cur && playTimer) stopPlay();
   renderKpis(); renderMapView(); renderGanttView(); renderChecks(); renderGroupsSub(); renderOps(); renderCompare(); updateTime();
 }
 
@@ -342,6 +367,7 @@ function renderGanttView() {
 function updateTime() {
   const t = state.time ?? state.inst.params.dayStart;
   $('time').value = t; $('time-label').textContent = fmt(t);
+  syncPlayButtons();
   if (mapView) updateMap(mapView, state.cur ? t : null);
   ganttView?.update(state.cur ? t : null);
 }
@@ -563,18 +589,10 @@ async function init() {
   $('file-ds').onchange = (e) => e.target.files[0] && importDataset(e.target.files[0]);
   $('btn-export-matrix').onclick = exportMatrix;
 
-  let timer = null;
-  $('btn-play').onclick = () => {
-    if (timer) { clearInterval(timer); timer = null; $('btn-play').textContent = '▶'; return; }
-    if (!state.cur) return;
-    const max = +$('time').max;
-    if ((state.time ?? 0) >= max) state.time = state.inst.params.dayStart;
-    $('btn-play').textContent = '❚❚';
-    timer = setInterval(() => {
-      state.time = Math.min(max, (state.time ?? state.inst.params.dayStart) + 1);
-      updateTime();
-      if (state.time >= max) { clearInterval(timer); timer = null; $('btn-play').textContent = '▶'; }
-    }, 40);
+  $('btn-play').onclick = () => togglePlay();
+  $('btn-replay').onclick = () => {
+    if (!playTimer) $('map').scrollIntoView({ block: 'nearest', behavior: 'smooth' });   // sur mobile, la carte est sous le panneau
+    togglePlay();
   };
   window.addEventListener('resize', () => { if (state.cur) { renderGanttView(); updateTime(); } });
 
