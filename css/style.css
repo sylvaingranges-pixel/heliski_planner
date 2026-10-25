@@ -44,6 +44,7 @@ label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color:
 label.check { flex-direction: row; align-items: center; gap: 6px; margin-top: 6px; color: var(--ink); font-size: 13px; }
 label.check input { width: auto; }
 label.check.inline { margin: 0; font-size: 12.5px; }
+select.play-speed { width: auto; flex: none; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }
 /* aide « ? » : infobulle au survol / au focus, tenue dans la largeur de la grille (la barre latérale défile) */
 .grid2 > label, label.check { position: relative; }

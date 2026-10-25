@@ -13,7 +13,7 @@ const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'heliStartC
 const STORE = 'heliski-planner-v2';
 
 const state = {
-  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false,
+  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false, playSpeed: 1,
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
   dayRuns: null,                                   // descentes du jour (null = toutes)
   dayFilter: { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] },
@@ -31,8 +31,9 @@ function keptParams(s) {
   return Object.fromEntries(Object.entries(s.params ?? {}).filter(([k, v]) => !(k in defs) || v !== defs[k]));
 }
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayFilter: state.dayFilter })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayFilter: state.dayFilter, playSpeed: state.playSpeed })); } catch { /* stockage indisponible */ }
 }
+const PLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];         // ×1 : 1 min de journée toutes les 40 ms
 function load() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE) || 'null');
@@ -42,6 +43,7 @@ function load() {
     if (s.dataset?.runs?.length) state.ds = s.dataset;
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
     if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
+    if (PLAY_SPEEDS.includes(s.playSpeed)) state.playSpeed = s.playSpeed;
   } catch { /* ignore */ }
 }
 
@@ -701,6 +703,8 @@ function init() {
   $('file-ds').onchange = (e) => e.target.files[0] && importDataset(e.target.files[0]);
   $('btn-export-matrix').onclick = exportMatrix;
 
+  $('play-speed').value = String(state.playSpeed);
+  $('play-speed').onchange = (e) => { state.playSpeed = +e.target.value; save(); };   // pris en compte en cours de lecture
   let timer = null, pausedAt = null;
   $('btn-play').onclick = () => {
     if (timer) { clearInterval(timer); timer = null; pausedAt = state.time; $('btn-play').textContent = '▶'; return; }
@@ -710,7 +714,7 @@ function init() {
     if (mapView && state.time !== pausedAt) fitActive(mapView);   // cadrage auto sur la partie active, sauf à la reprise après pause
     $('btn-play').textContent = '❚❚';
     timer = setInterval(() => {
-      state.time = Math.min(max, (state.time ?? state.inst.params.dayStart) + 1);
+      state.time = Math.min(max, (state.time ?? state.inst.params.dayStart) + state.playSpeed);
       updateTime();
       if (state.time >= max) { clearInterval(timer); timer = null; $('btn-play').textContent = '▶'; }
     }, 40);
