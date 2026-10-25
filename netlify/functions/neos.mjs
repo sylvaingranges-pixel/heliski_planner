@@ -1,9 +1,12 @@
 // Relais vers l'API XML-RPC du serveur NEOS (https://neos-server.org:3333).
 // Le navigateur ne peut pas l'appeler directement (port 3333, pas de CORS) : cette fonction
 // n'expose que les quelques méthodes utiles et ne conserve aucun identifiant.
-// Corps JSON : { action: 'ping'|'submit'|'status'|'log'|'results'|'kill', ... }
+// Corps JSON : { action: 'ping'|'submit'|'status'|'log'|'results'|'outputFile'|'kill', ... }
+
+import { inflateRawSync } from 'node:zlib';
 
 const NEOS_URL = process.env.NEOS_URL || 'https://neos-server.org:3333';
+const NEOS_WEB = process.env.NEOS_WEB || 'https://neos-server.org';
 const MAX_XML = 8 * 1024 * 1024;
 
 export default async (req) => {
@@ -19,7 +22,7 @@ export default async (req) => {
         const [job, password] = body.username
           ? await call('authenticatedSubmitJob', [body.xml, String(body.username), String(body.password ?? '')])
           : await call('submitJob', [body.xml]);
-        if (!job) return json({ error: `NEOS a refusé le travail : ${password}` }, 502);
+        if (!job) return json({ error: `NEOS a refusé le travail : ${password}`, refused: /not allowed|unavailable|no such solver/i.test(password) }, 502);
         return json({ job, password });
       }
       case 'status':
@@ -32,6 +35,18 @@ export default async (req) => {
         const status = await call('getJobStatus', [int(body.job), str(body.password)]);
         if (status !== 'Done') return json({ status });
         return json({ status, text: decode(await call('getFinalResults', [int(body.job), str(body.password)])) });
+      }
+      case 'outputFile': {
+        // Fichiers annexes du solveur (ex. soln.sol de COPT) : archive publiée par NEOS avec le travail.
+        const job = int(body.job), pw = str(body.password), name = String(body.name ?? '');
+        if (!/^[\w.-]{1,64}$/.test(name) || !/^\w+$/.test(pw)) return json({ error: 'nom de fichier invalide' }, 400);
+        const url = `${NEOS_WEB}/neos/jobs/${Math.floor(job / 10000) * 10000}/${job}-${pw}-solver-output.zip`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(9000) });
+        if (!res.ok) return json({ error: `archive de sortie introuvable (HTTP ${res.status})` }, 404);
+        const files = unzip(new Uint8Array(await res.arrayBuffer()));
+        const hit = files.find(f => f.name === name || f.name.endsWith('/' + name));
+        if (!hit) return json({ error: `${name} absent de l'archive (${files.map(f => f.name).join(', ') || 'vide'})` }, 404);
+        return json({ name: hit.name, text: new TextDecoder().decode(hit.data) });
       }
       case 'kill':
         return json({ message: await call('killJob', [int(body.job), str(body.password), 'Annulé depuis Heliski Planner']) });
@@ -121,4 +136,28 @@ function findClose(s, from, tag) {
   while ((m = re.exec(s))) { depth += m[1] ? -1 : 1; if (depth === 0) return m.index; i = re.lastIndex; }
   void i;
   throw new Error(`XML-RPC : </${tag}> manquant`);
+}
+
+// ------------------------------------------------------------------ lecture zip (répertoire central)
+export function unzip(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('archive zip invalide');
+  const n = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const files = [];
+  for (let k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('zip : répertoire central invalide');
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), usize = dv.getUint32(p + 24, true);
+    const nlen = dv.getUint16(p + 28, true), elen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + elen + clen;
+    if (usize > 32 * 1024 * 1024) continue;                       // garde-fou
+    const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    const raw = buf.subarray(start, start + csize);
+    const data = method === 0 ? raw : method === 8 ? new Uint8Array(inflateRawSync(raw)) : null;
+    if (data) files.push({ name, data });
+  }
+  return files;
 }

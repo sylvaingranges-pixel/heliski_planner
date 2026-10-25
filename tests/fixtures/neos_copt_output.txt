@@ -1,0 +1,63 @@
+---------- Begin Solver Output -----------
+Condor submit: 'neos.submit'
+Condor submit: 'watchdog.submit'
+Job submitted to NEOS HTCondor pool.
+Executing on prod-exec-1.neos-server.org
+Cardinal Optimizer v8.0.4. Build date Apr 24 2026
+Copyright Cardinal Operations 2026. All Rights Reserved
+
+2026-10-25 07:00:34 [INFO] read client config: /opt/copt/client.ini
+2026-10-25 07:00:34 [INFO] initialize floating client
+  [INFO] connecting to floating server copt-lic.discovery.wisc.edu:7979
+  [INFO] connection to 144.92.142.130 is established at socket 5
+2026-10-25 07:00:35 [INFO] wait for server in 1 / 9 secs
+  [INFO] read scripts from '/var/lib/condor/execute/dir_1107129/copt.run'
+COPT> set threads 4
+Setting parameter 'Threads' to 4
+COPT> set TimeLimit 20
+Setting parameter 'TimeLimit' to 20
+COPT> set RelGap 0.0001
+Setting parameter 'RelGap' to 0.0001
+COPT> read copt.lp
+Reading from '/var/lib/condor/execute/dir_1107129/copt.lp'
+Warning at line 9: Unknown variable "kconst"
+Reading finished (0.00s)
+COPT> readmst copt.mst
+Reading solution as MIP start from '/var/lib/condor/execute/dir_1107129/copt.mst'
+COPT> opt
+Model fingerprint: e7233d92
+
+Using Cardinal Optimizer v8.0.4 on Linux (Rocky Linux 8.10 (Green Obsidian) - x86_64)
+The CPU model is Intel(R) Xeon(R) CPU E5-2698 v3 @ 2.30GHz
+Hardware has 32 physical cores and 64 logical cores. Using instruction set X86_AVX2 (10)
+Minimizing a MIP problem
+
+The original problem has:
+    2 rows, 4 columns and 4 non-zero elements
+    2 binaries
+
+Starting the MIP solver with 4 threads and 8 tasks
+
+Loading 1 initial MIP solution
+Initial MIP solution # 1 with objective value 2 was accepted
+
+Presolving the problem
+
+Problem was solved during presolve
+
+Best solution   : 2.000000000
+Best bound      : 2.000000000
+Best gap        : 0.0000%
+Solve time      : 0.00
+Solve node      : 0
+MIP status      : solved
+Solution status : integer optimal (relative gap limit 0.0001)
+
+Violations      :     absolute     relative
+    bounds      :            0            0
+    rows        :            0            0
+    integrality :            0
+COPT> writesol /dev/stdout
+Failed to open the file for writing
+COPT> quit
+  Exiting COPT ...

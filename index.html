@@ -108,18 +108,26 @@
           <div class="row">
             <button id="btn-milp" class="btn">Résoudre MILP</button>
             <button id="btn-milp-stop" class="btn btn-ghost" hidden>Arrêter</button>
-            <button id="btn-lp" class="btn btn-ghost" title="Fichier LP pour NEOS / CPLEX / Gurobi / CBC">Exporter .lp</button>
+            <button id="btn-lp" class="btn btn-ghost" title="Fichier LP (CPLEX LP) pour NEOS, COPT, CPLEX, Gurobi, SCIP…">Exporter .lp</button>
           </div>
           <div id="milp-status" class="muted small"></div>
 
-          <h4>Serveur NEOS (Gurobi)</h4>
-          <p class="muted small" style="margin:0 0 6px">Même modèle que ci-dessus (mode et candidates), résolu par Gurobi sur
-            <a href="https://neos-server.org" target="_blank" rel="noopener">neos-server.org</a>, démarré avec la solution heuristique.</p>
+          <h4>Serveur NEOS</h4>
+          <p class="muted small" style="margin:0 0 6px">Même modèle que ci-dessus (mode et candidates), résolu sur
+            <a href="https://neos-server.org" target="_blank" rel="noopener">neos-server.org</a> (COPT : démarré avec la solution heuristique).</p>
           <div class="grid2">
             <label>Identifiant NEOS <input type="text" id="neos-user" autocomplete="username"></label>
             <label>Mot de passe <input type="password" id="neos-pass" autocomplete="current-password"></label>
             <label>E-mail (optionnel) <input type="email" id="neos-email" autocomplete="email"></label>
             <label>Temps max (s) <input type="number" id="neos-time" value="300" min="10" max="28800"></label>
+            <label>Solveur
+              <select id="neos-solver">
+                <option value="auto">Auto : COPT, sinon SCIP</option>
+                <option value="COPT">COPT (Cardinal)</option>
+                <option value="scip">SCIP</option>
+                <option value="CPLEX">CPLEX (e-mail requis, non testé)</option>
+              </select>
+            </label>
           </div>
           <label class="check"><input type="checkbox" id="neos-remember"> Mémoriser sur cet appareil</label>
           <div class="row">

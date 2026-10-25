@@ -1,0 +1,79 @@
+---------- Begin Solver Output -----------
+Condor submit: 'neos.submit'
+Condor submit: 'watchdog.submit'
+Job submitted to NEOS HTCondor pool.
+Executing on prod-exec-1.neos-server.org
+SCIP version 10.0.0 [precision: 8 byte] [memory: block] [mode: optimized] [LP solver: SoPlex 8.0.0] [GitHash: 0c80fdd8e9]
+Copyright (c) 2002-2025 Zuse Institute Berlin (ZIB)
+
+External libraries: 
+  SoPlex 8.0.0         Linear programming solver developed at Zuse Institute Berlin (soplex.zib.de) [GitHash: 2207cfb2]
+  CppAD 20180000.0     Algorithmic Differentiation of C++ algorithms developed by B. Bell (github.com/coin-or/CppAD)
+  ZLIB 1.2.11          General purpose compression library by J. Gailly and M. Adler (zlib.net)
+  MPFR 3.1.6-p2        GNU Multiple Precision Floating-Point Reliable Library (mpfr.org)
+  Boost 1.89.0         Boost C++ Libraries (boost.org)
+  TinyCThread 1.2      small portable implementation of the C11 threads API (tinycthread.github.io)
+  GMP 6.1.2            GNU Multiple Precision Arithmetic Library developed by T. Granlund (gmplib.org)
+  ZIMPL 3.7.0          Zuse Institute Mathematical Programming Language developed by T. Koch (zimpl.zib.de)
+  AMPL/MP 4.0.3        AMPL .nl file reader library (github.com/ampl/mp)
+  PaPILO 3.0.0         parallel presolve for integer and linear optimization (github.com/scipopt/papilo) (built with TBB) [GitHash: 4cbdc327]
+  Nauty 2.8.8          Computing Graph Automorphism Groups by Brendan D. McKay (users.cecs.anu.edu.au/~bdm/nauty)
+  sassy 2.0            Symmetry preprocessor by Markus Anders (github.com/markusa4/sassy)
+  Ipopt 3.14.19        Interior Point Optimizer developed by A. Waechter et.al. (github.com/coin-or/Ipopt)
+
+reading user parameter file 
+
+read problem 
+============
+
+original problem has 4 variables (2 bin, 0 int, 2 cont) and 2 constraints
+
+solve problem
+=============
+
+feasible solution found by trivial heuristic after 0.0 seconds, objective value 1.050000e+02
+presolving:
+(round 1, fast)       3 del vars, 2 del conss, 0 add conss, 0 chg bounds, 0 chg sides, 0 chg coeffs, 0 upgd conss, 0 impls, 0 clqs, 0 implints
+presolving (2 rounds: 2 fast, 1 medium, 1 exhaustive):
+ 4 deleted vars, 2 deleted constraints, 0 added constraints, 0 tightened bounds, 0 added holes, 0 changed sides, 0 changed coefficients
+ 0 implications, 0 cliques, 0 implied integral variables (0 bin, 0 int, 0 cont)
+transformed 1/2 original solutions to the transformed problem space
+presolving solved problem
+Presolving Time: 0.00
+
+SCIP Status        : problem is solved [optimal solution found]
+Solving Time (sec) : 0.00
+Solving Nodes      : 0
+Primal Bound       : +2.00000000000000e+00 (2 solutions)
+Dual Bound         : +2.00000000000000e+00
+Gap                : 0.00 %
+
+primal solution (original space):
+=================================
+
+objective value:                                    2
+v0_1                                                1 	(obj:2)
+kconst                                              1 	(obj:0)
+
+Statistics
+==========
+
+SCIP Status        : problem is solved [optimal solution found]
+Total Time         :       0.00
+  solving          :       0.00
+  presolving       :       0.00 (included in solving)
+  reading          :       0.00
+  copying          :       0.00 (0 times copied the problem)
+Original Problem   :
+  Problem name     : scip.lp
+  Variables        : 4 (2 binary, 0 integer, 2 continuous)
+  Implied int vars : 0 (0 binary, 0 integer, 0 continuous)
+  Constraints      : 2 initial, 2 maximal
+  Objective        : minimize, 3 non-zeros (abs.min = 1, abs.max = 3)
+Presolved Problem  :
+  Problem name     : t_scip.lp
+  Variables        : 0 (0 binary, 0 integer, 0 continuous)
+  Implied int vars : 0 (0 binary, 0 integer, 0 continuous)
+  Constraints      : 0 initial, 0 maximal
+  Objective        : minimize, 0 non-zeros (abs.min = 1e+20, abs.max = -1e+20)
+  Nonzeros         : 0 constraint, 0 clique table

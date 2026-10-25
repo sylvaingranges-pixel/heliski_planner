@@ -1,5 +1,5 @@
 // Service worker : application utilisable hors ligne (cache de l'application, y compris HiGHS/WASM).
-const CACHE = 'heliski-planner-v3';
+const CACHE = 'heliski-planner-v4';
 const ASSETS = [
   './', 'index.html', 'manifest.webmanifest', 'css/style.css',
   'js/app.js', 'js/data.js', 'js/model.js', 'js/solver.js', 'js/solver.worker.js', 'js/validate.js',

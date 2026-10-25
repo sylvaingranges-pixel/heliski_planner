@@ -6,7 +6,7 @@ sous contrainte de dénivelé vendu aux clients (forfaits).
 - **Formulation** du problème (MILP) : voir l'onglet *Formulation* de l'app ou [`docs/FORMULATION.md`](docs/FORMULATION.md).
 - **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s, en parallèle sur plusieurs cœurs).
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
-- **Résolution sur [NEOS](https://neos-server.org) avec Gurobi**, directement depuis l'app (identifiant NEOS) :
+- **Résolution sur [NEOS](https://neos-server.org) avec COPT** (repli SCIP), directement depuis l'app (identifiant NEOS) :
   soumission, journal en direct, récupération et vérification du résultat. Export `.lp` aussi disponible.
 - **Vérification indépendante** de chaque planning (continuité, durées de vol, standby ≤ 5 min, chargement 6 min,
   dénivelé, fenêtre horaire, exclusivité des descentes, recalcul du coût).
@@ -50,23 +50,29 @@ Constat : le coût étant facturé à la minute de vol, le second hélicoptère 
 surtout à réduire l'attente des clients. Sans limite d'attente, l'optimum laisse un hélico faire l'essentiel des rotations.
 Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permettent d'arbitrer coût ↔ qualité de service.
 
-## NEOS (Gurobi)
+## NEOS
 
-Dans *Résolution → Serveur NEOS (Gurobi)* : saisir l'identifiant et le mot de passe NEOS, choisir le modèle
-(affectation hélicos ou complet sur N descentes candidates) et le temps max, puis « Soumettre à NEOS ».
+Dans *Résolution → Serveur NEOS* : saisir l'identifiant et le mot de passe NEOS, choisir le modèle
+(affectation hélicos ou complet sur N descentes candidates), le temps max et le solveur, puis « Soumettre à NEOS ».
 
-- **Solveur : Gurobi** (format LP), le solveur MILP le plus performant proposé par NEOS ; paramètres `TimeLimit`,
-  `MIPGap 1e-4`, `MIPFocus 1`. La solution heuristique est fournie comme **démarrage MIP** (`.mst`) : Gurobi part
-  d'une solution faisable et se concentre sur l'amélioration et la preuve (borne).
+- **NEOS refuse Gurobi via son API** (« this solver is not allowed to be used via this interface ») : Gurobi n'y est
+  utilisable que par le formulaire web.
+- **Solveur par défaut : COPT** (Cardinal Optimizer), parmi les plus rapides en MILP, au format LP. La solution
+  heuristique lui est fournie comme **démarrage MIP** (`.mst`) ; options `set TimeLimit`, `set RelGap 1e-4`.
+  Sa solution (`soln.sol`) est publiée par NEOS dans l'archive `<job>-<mdp>-solver-output.zip`, que le relais télécharge
+  et décompresse.
+- **Mode Auto** : COPT, puis **SCIP** si NEOS refuse COPT (SCIP : pas de démarrage MIP, solution lue dans le journal).
+  CPLEX est proposé en choix manuel (e-mail obligatoire, transmis à IBM par NEOS ; format non testé).
+- Formats relevés sur NEOS (mode « dry run » et petits travaux de test) ; sorties réelles dans `tests/fixtures/`.
 - File *short* (≤ 5 min CPU, plus prioritaire) si le temps max ≤ 240 s, sinon *long*.
 - Le navigateur ne peut pas joindre l'API XML-RPC de NEOS (port 3333, pas de CORS) : la fonction Netlify
   `netlify/functions/neos.mjs` (`/api/neos`) relaie uniquement `authenticatedSubmitJob`, `getJobStatus`,
-  `getIntermediateResults`, `getFinalResults` et `killJob`. Elle ne stocke rien ; les identifiants ne sont mémorisés
-  dans le navigateur que si la case « Mémoriser » est cochée.
-- Le travail en cours est conservé : après un rechargement, l'app reprend le suivi et récupère le résultat.
-  Le résultat (fichier `.sol` de Gurobi) est relu, transformé en planning et passé au vérificateur indépendant.
-- En local : `npm start` fournit le même relais. Pour tester sans NEOS : lancer le faux serveur
-  (`node tests/mock_neos.mjs 3999`) puis `NEOS_URL=http://localhost:3999 npm start` (identifiants `demo` / `demo`).
+  `getIntermediateResults`, `getFinalResults`, `killJob` et le téléchargement de l'archive de sortie. Elle ne stocke
+  rien ; les identifiants ne sont mémorisés dans le navigateur que si la case « Mémoriser » est cochée.
+- Le travail en cours est conservé : après un rechargement, l'app reprend le suivi et récupère le résultat, qui est
+  transformé en planning et passé au vérificateur indépendant.
+- En local : `npm start` fournit le même relais. Pour tester sans NEOS : `node tests/mock_neos.mjs 3999` puis
+  `NEOS_URL=http://localhost:3999 NEOS_WEB=http://localhost:3999 npm start` (identifiants `demo` / `demo`).
 
 ## Structure
 
@@ -78,7 +84,7 @@ Dans *Résolution → Serveur NEOS (Gurobi)* : saisir l'identifiant et le mot de
 | `js/solver.js` | recuit simulé multi-départs + descente locale |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/milp.js` | génération du MILP (format CPLEX LP), démarrage à chaud, appel HiGHS |
-| `js/neos.js`, `netlify/functions/neos.mjs` | travail NEOS (Gurobi, .mst), lecture du résultat ; relais XML-RPC |
+| `js/neos.js`, `netlify/functions/neos.mjs` | travaux NEOS (COPT / SCIP / CPLEX), lecture des résultats ; relais XML-RPC + zip |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |
 | `lib/highs/` | HiGHS 1.15.3 (WebAssembly, licence MIT) |
 | `lib/leaflet/` | Leaflet 1.9.4 (licence BSD-2) |

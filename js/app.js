@@ -4,7 +4,7 @@ import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
 import { buildMilp, candidateRuns, warmStart, liftsFromMilp } from './milp.js';
-import { neosJobXml, gurobiParams, gurobiMst, parseGurobiOutput, neosApi, neosJobUrl } from './neos.js';
+import { SOLVERS, AUTO_ORDER, neosJobXml, parseSolverOutput, neosApi, neosJobUrl, isSolverRefused } from './neos.js';
 import { FORMULATION_HTML } from './formulation.js';
 
 const $ = (id) => document.getElementById(id);
@@ -195,7 +195,7 @@ function exportLp() {
   $('milp-status').textContent = `Exporté : ${stats.binaries} binaires, ${stats.constraints} contraintes (format CPLEX LP).`;
 }
 
-// ------------------------------------------------------------------ NEOS (Gurobi)
+// ------------------------------------------------------------------ NEOS
 const NEOS_JOB = 'heliski-neos-job', NEOS_CRED = 'heliski-neos-cred';
 let neosTimer = null;
 
@@ -219,29 +219,35 @@ const scenarioKey = () => JSON.stringify([state.ds.name, state.ds.runs.length, s
 async function neosSubmit() {
   const st = $('neos-status');
   const req = milpRequest();
-  if (!req) { st.textContent = 'Lancez d’abord l’heuristique : sa solution sert de démarrage à Gurobi.'; return; }
+  if (!req) { st.textContent = 'Lancez d’abord l’heuristique : sa solution sert de point de départ.'; return; }
   const user = $('neos-user').value.trim(), pass = $('neos-pass').value, email = $('neos-email').value.trim();
   if (!user && !email) { st.textContent = 'Indiquez votre identifiant NEOS (ou au moins un e-mail pour une soumission anonyme).'; return; }
   neosSaveCred();
+  const choice = $('neos-solver').value;
+  const order = choice === 'auto' ? AUTO_ORDER : [choice];
+  if (order.some(k => SOLVERS[k].needsEmail) && !email) { st.textContent = `${SOLVERS[order[0]].label} : un e-mail est exigé par NEOS.`; return; }
   const fixedSeq = req.mode === 'fixed' ? req.seqs : null;
   const { lp, meta, stats } = buildMilp(state.inst, req.C, fixedSeq ? { fixedSeq } : {});
   const warm = warmStart(state.inst, meta, state.cur.lifts);
   const timeLimit = Math.max(10, +$('neos-time').value || 300);
-  const label = `NEOS Gurobi – ${req.mode === 'fixed' ? 'affectation hélicos' : `complet (${req.C.length} candidates)`}`;
-  const xml = neosJobXml({
-    lp, params: gurobiParams({ timeLimit }), mst: warm ? gurobiMst(warm) : null, email,
-    priority: timeLimit <= 240 ? 'short' : 'long', comments: `Heliski Planner – ${label}`,
-  });
+  const what = req.mode === 'fixed' ? 'affectation hélicos' : `complet (${req.C.length} candidates)`;
   $('btn-neos').disabled = true;
-  st.textContent = `Envoi du modèle (${stats.binaries} binaires, ${stats.constraints} contraintes)…`;
-  try {
-    const { job, password } = await neosApi.submit(xml, user, pass);
-    setNeosJob({ job, password, label, C: req.C, fixedSeq, key: scenarioKey(), submittedAt: Date.now(), startCost: state.cur.sch.cost, offset: 0 });
-    $('neos-log').textContent = ''; $('neos-log').hidden = false;
-    neosWatch();
-  } catch (e) {
-    st.textContent = 'Échec de la soumission : ' + e.message;
-    $('btn-neos').disabled = false;
+  const refused = [];
+  for (const solver of order) {
+    st.textContent = `Envoi à NEOS / ${SOLVERS[solver].label} (${stats.binaries} binaires, ${stats.constraints} contraintes)…`;
+    const xml = neosJobXml(solver, { lp, timeLimit, warm, email, priority: timeLimit <= 240 ? 'short' : 'long', comments: `Heliski Planner – ${what}` });
+    try {
+      const { job, password } = await neosApi.submit(xml, user, pass);
+      setNeosJob({ job, password, solver, label: `NEOS ${solver} – ${what}`, C: req.C, fixedSeq, key: scenarioKey(), submittedAt: Date.now(), startCost: state.cur.sch.cost, offset: 0, refused });
+      $('neos-log').textContent = refused.length ? `[${refused.join(', ')} refusé(s) par NEOS via l’API → ${solver}]\n` : ''; $('neos-log').hidden = false;
+      neosWatch();
+      return;
+    } catch (e) {
+      if ((e.refused || isSolverRefused(e.message)) && solver !== order[order.length - 1]) { refused.push(solver); continue; }
+      st.textContent = 'Échec de la soumission : ' + e.message + (refused.length ? ` (déjà refusés : ${refused.join(', ')})` : '');
+      $('btn-neos').disabled = false;
+      return;
+    }
   }
 }
 
@@ -278,17 +284,31 @@ async function neosFetch() {
     if (j.key !== scenarioKey()) { st.textContent = `Résultat n°${j.job} reçu, mais les données ou paramètres ont changé depuis la soumission : impossible de l’afficher sur ce scénario.`; setNeosJob(null); neosWatch(); return; }
     const { lp, meta } = buildMilp(state.inst, j.C, j.fixedSeq ? { fixedSeq: j.fixedSeq } : {});
     const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|kconst)\b/g));
-    const out = parseGurobiOutput(r.text, known);
-    const cut = r.text.search(/^#\s*Solution for model|^#\s*Objective value/m);
+    const solver = j.solver ?? 'COPT';
+    let solText = '';
+    if (SOLVERS[solver].solutionFile) {
+      try { solText = (await neosApi.outputFile(j.job, j.password, SOLVERS[solver].solutionFile)).text; }
+      catch (e) {
+        const tries = (j.fileTries ?? 0) + 1;
+        if (tries <= 8) {                      // l'archive est publiée quelques secondes après la fin du travail
+          setNeosJob({ ...j, fileTries: tries });
+          st.textContent = `Fichier de solution pas encore publié (${e.message}), nouvel essai ${tries}/8…`;
+          neosTimer = setTimeout(neosFetch, 8000); return;
+        }
+      }
+    }
+    const out = parseSolverOutput(solver, r.text, solText, known);
     const pre = $('neos-log'); pre.hidden = false;
-    pre.textContent = (cut > 0 ? r.text.slice(0, cut) : r.text).slice(-20000) + `\n[${out.values.size} valeurs de variables lues dans le fichier de solution]`;
+    pre.textContent = r.text.slice(-20000) + `\n[${out.values.size} valeurs de variables lues${solText ? ' dans ' + SOLVERS[solver].solutionFile : ' dans le journal'}]`;
     pre.scrollTop = pre.scrollHeight;
     setNeosJob(null); neosWatch();
     if (!out.values.size) { st.innerHTML = `Travail n°${j.job} terminé sans solution lisible (${esc(statusFr(out.status))}). Voir le journal ci-dessous ou <a href="${neosJobUrl(j.job, j.password)}" target="_blank" rel="noopener">sur NEOS</a>.`; return; }
     const lifts = liftsFromMilp(state.inst, meta, (n) => out.values.get(n) ?? 0);
     const gap = Number.isFinite(out.gap) ? (100 * out.gap).toFixed(2) + ' %' : '—';
     const secs = Number.isFinite(out.solverTime) ? out.solverTime : (Date.now() - j.submittedAt) / 1000;
-    st.innerHTML = `<b>${esc(statusFr(out.status))}</b> (Gurobi, n°${j.job}) · objectif ${chf(out.objective)} · borne inf. ${Number.isFinite(out.bound) ? chf(out.bound) : '—'} · écart ${gap} · départ ${chf(j.startCost)}`;
+    st.innerHTML = `<b>${esc(statusFr(out.status))}</b> (${esc(SOLVERS[solver].label)}, n°${j.job}) · objectif ${chf(out.objective)} · borne inf. ${Number.isFinite(out.bound) ? chf(out.bound) : '—'} · écart ${gap} · départ ${chf(j.startCost)}` +
+      (j.refused?.length ? ` · ${esc(j.refused.join(', '))} refusé(s) par NEOS via l’API` : '') +
+      (out.objective > j.startCost + 0.5 ? ' · <b>moins bon que l’heuristique</b> (solveur sans démarrage MIP : augmenter le temps max)' : '');
     setSolution({ label: j.label, lifts, sol: null, seconds: secs, bound: out.bound, info: `${statusFr(out.status)}, écart ${gap}, travail NEOS n°${j.job}` });
     state.cur.sol = { seq: seqFromLifts(state.inst.groups.length, lifts), prio: new Array(state.inst.groups.length).fill(0), lambda: 1, urgency: 1 };
   } catch (e) { st.textContent = 'Récupération NEOS : ' + e.message; }

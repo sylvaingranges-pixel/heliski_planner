@@ -39,7 +39,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("lp_file")
     ap.add_argument("--email", required=True)
-    ap.add_argument("--solver", default="CPLEX")
+    ap.add_argument("--solver", default="COPT", help="COPT, scip, CPLEX… (Gurobi est refusé par NEOS via XML-RPC)")
     ap.add_argument("--category", default="milp")
     ap.add_argument("--input", default="LP", help="méthode d'entrée NEOS (LP ou MPS)")
     args = ap.parse_args()
