@@ -64,7 +64,7 @@
             <label>Vol (CHF/min) <input type="number" id="p-flyRate" step="1"></label>
             <label>Standby (CHF/min) <input type="number" id="p-standbyRate" step="1"></label>
             <label>Standby max (min) <input type="number" id="p-maxStandby" step="0.5"></label>
-            <label title="Cycle turbine : 1er départ du jour et chaque redémarrage après coupure à la base">Démarrage moteur (CHF) <input type="number" id="p-heliStartCost" step="10" min="0"></label>
+            <label title="Cycle turbine : 1er départ du jour et chaque redémarrage après une coupure (base, dépose, reprise)">Démarrage moteur (CHF) <input type="number" id="p-heliStartCost" step="10" min="0"></label>
             <label>Chargement (min) <input type="number" id="p-loadMin" step="0.5"></label>
             <label>Déchargement (min) <input type="number" id="p-unloadMin" step="0.5"></label>
             <label>Début <input type="time" id="p-dayStart"></label>
@@ -77,6 +77,7 @@
           </div>
           <label class="check"><input type="checkbox" id="p-exclusiveRuns"> Une descente = un seul groupe à la fois</label>
           <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée</label>
+          <label class="check" title="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise</label>
         </details>
 
       </aside>

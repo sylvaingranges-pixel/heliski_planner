@@ -16,12 +16,14 @@ Minimiser le coût des hélicoptères sur une journée en garantissant à chaque
 | $c_v,\ c_s$ | tarif en vol / en standby moteur allumé | 40 / 20 CHF/min |
 | $\delta_c,\ \delta_d$ | chargement / déchargement (moteur allumé, tarif $c_s$) | 6 / 6 min |
 | $\bar w$ | standby maximal | 5 min |
-| $c_d$ | démarrage moteur : 1er départ du jour de chaque hélico utilisé, chaque redémarrage après coupure à la base | 50 CHF |
+| $c_d$ | démarrage moteur : 1er départ du jour de chaque hélico utilisé, chaque redémarrage après une coupure (dépose, reprise ou base, si autorisée) | 50 CHF |
 | $[a,b]$ | fenêtre de ski | 9:00–15:00 |
 
 Une journée de groupe : $B \to T_{r_1} \leadsto F_{r_1} \to T_{r_2} \leadsto \dots F_{r_k} \to B$.
 Chaque « $\to$ » est une **rotation** (chargement + vol chargé + déchargement) ; $k$ descentes = $k+1$ rotations,
-soit au moins $k+1$ fois $12 \times 20 = 240$ CHF au sol. Au-delà de $\bar w$ min d'attente, l'hélico doit voler (vol d'attente, $c_v$).
+soit au moins $k+1$ fois $12 \times 20 = 240$ CHF au sol. Au-delà de $\bar w$ min d'attente, l'hélico doit voler (vol d'attente, $c_v$),
+sauf s'il coupe le moteur à la dépose ou à la reprise : attente gratuite, mais un redémarrage $c_d$. La coupure est rentable dès que
+l'attente coûterait plus que $c_d$ (> 2,5 min de standby avec les valeurs du test) ; le chargement / déchargement reste moteur allumé.
 
 ## MILP sur un graphe d'opérations
 
@@ -30,7 +32,7 @@ $E_g$ (déchargement base), $D_{gr}$ (déchargement au sommet de $r$), $P_{gr}$ 
 Arcs chargés $\mathcal A^{ch}$ : chargement $\to$ déchargement du **même** groupe ; arcs à vide $\mathcal A^{v}$ :
 déchargement (ou $O$) $\to$ chargement de n'importe quel groupe (ou $Z$).
 
-Variables : $x_{ij}\in\{0,1\}$, $v_{gr}\in\{0,1\}$, $t_i\in[e_i,\ell_i]$, $\sigma_i\in[0,\bar w]$, $\lambda_i\ge 0$, $y_{gg'r}\in\{0,1\}$, $z_j\in\{0,1\}$ (coupure à la base puis redémarrage avant $j$).
+Variables : $x_{ij}\in\{0,1\}$, $v_{gr}\in\{0,1\}$, $t_i\in[e_i,\ell_i]$, $\sigma_i\in[0,\bar w]$, $\lambda_i\ge 0$, $y_{gg'r}\in\{0,1\}$, $z_j\in\{0,1\}$ (coupure moteur puis redémarrage avant le chargement $j$).
 
 $$\min \sum_{(i,j)\in\mathcal A} c_v\tau_{ij}x_{ij} + \sum_{g,r} c_s(\delta_c+\delta_d)v_{gr} + \sum_{i\ \text{charg.}}(c_s\sigma_i + c_v\lambda_i) + c_d\big(\textstyle\sum_{j\ne Z} x_{Oj} + \sum_j z_j\big) + |\mathcal G|\,c_s(\delta_c+\delta_d)$$
 
@@ -43,7 +45,7 @@ $$\textstyle\sum_j x_{ji} = \sum_j x_{ij} = v_i \quad (v_{S_g}=v_{E_g}=1,\ v_{D_
 
 $$x_{ij}=1 \Rightarrow t_j = t_i+\delta_c+\tau_{ij} \quad (i,j)\in\mathcal A^{ch}$$
 
-$$x_{ij}=1 \Rightarrow t_i+\delta_d+\tau_{ij} \le t_j \le t_i+\delta_d+\tau_{ij}+\sigma_j+\lambda_j\ (+M z_j \text{ si } i \text{ est à la base}) \quad (i,j)\in\mathcal A^{v}$$
+$$x_{ij}=1 \Rightarrow t_i+\delta_d+\tau_{ij} \le t_j \le t_i+\delta_d+\tau_{ij}+\sigma_j+\lambda_j\ (+M z_j \text{ si la coupure est permise}) \quad (i,j)\in\mathcal A^{v}$$
 
 $$x_{Oj}=1 \Rightarrow t_j \ge a+\tau_{Bj} \qquad v_{gr}=1 \Rightarrow t_{P_{gr}} \ge t_{D_{gr}}+\delta_d+s_r$$
 
@@ -67,6 +69,7 @@ Le problème généralise le PDPTW / *dial-a-ride* avec sélection des visites e
    à la fin ; plusieurs chaînes en parallèle.
 2. **Décodeur événementiel** : à chaque pas, le couple (groupe prêt, hélico) minimisant
    `début + prio_g + λ·coût marginal / c_v (− urgence·attente)` est exécuté ; l'attente de l'hélico est facturée au mieux
-   (moteur coupé à la base, standby ≤ 5 min, sinon vol d'attente ou retour base si autorisé).
+   (le moins cher entre standby ≤ 5 min / vol d'attente et, si autorisé, coupure moteur au point de reprise ou à la base
+   pour $c_d$, ou retour base).
 3. **MILP HiGHS** : (a) descentes imposées → affectation des hélicos exacte ; (b) modèle complet sur un sous-ensemble,
    démarré à chaud → borne inférieure et écart garanti. (c) Export `.lp` pour NEOS.

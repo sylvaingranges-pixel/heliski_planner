@@ -17,6 +17,9 @@ Cette branche est la version simplifiée pour l'utilisateur. La branche `main` r
   Le jeu modifié est mémorisé dans le navigateur ; le jeu de base n'est jamais modifié.
 - **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui. Sur la carte, mode *Sélection d'itinéraires*
   (clic, rectangle ou lasso) ; dans l'onglet *Données*, filtres altitude du sommet / du fond, dénivelé min., difficulté.
+- **Arrêt moteur** à chaque dépose / reprise (option, active par défaut) et / ou à la base : l'attente moteur coupé est
+  gratuite mais chaque redémarrage coûte le prix d'un démarrage ; l'heuristique ne coupe que si c'est moins cher que le
+  standby ou le vol d'attente, et le vérificateur le contrôle.
 - **Vérification indépendante** de chaque planning (continuité, durées de vol, standby ≤ 5 min, chargement 6 min,
   dénivelé, fenêtre horaire, exclusivité des descentes, recalcul du coût).
 - Carte des descentes (animation de la journée), diagramme de Gantt hélicos / groupes, contrôles, groupes, journal des rotations, comparaison.
@@ -53,14 +56,18 @@ réel, une connexion est nécessaire ; sans connexion, repli sur un jeu synthét
 Temps de vol = 1 min + max(distance / 180 km/h, montée / 300 m/min).
 4 groupes (forfaits 10 000 m / 5 j, 12 000 m / 5 j, 15 000 m / 5 j, 10 000 m / 4 j → 2 000, 2 400, 3 000, 2 500 m/jour),
 2 hélicoptères, 40.–/min en vol, 20.–/min en standby, 50.– par démarrage moteur, 6 + 6 min de chargement / déchargement, standby ≤ 5 min, 9 h – 15 h.
+L'hélico peut couper le moteur à chaque dépose / reprise (attente gratuite, redémarrage 50.–) : plus de vol d'attente ni de standby long.
 
 | Résultat sur le jeu de base (navigateur, 4 cœurs) | Coût hélicos |
 |---|---|
-| Rapide (1,8–2,1 s) | CHF 7 270 – 7 474 selon le tirage |
-| Moyen (~9 s) | ~CHF 7 340 |
+| Rapide (~1,9 s) | CHF 7 120 – 7 330 selon le tirage |
+| Moyen (~9 s) | ~CHF 7 120 (2 hélicos, ~10 démarrages, 0 min de vol d'attente) |
+| Sans arrêt moteur à la dépose / reprise, Moyen | ~CHF 7 430 (1 hélico, 1 démarrage) |
 
 Constat : le coût étant facturé à la minute de vol, le second hélicoptère n'apporte presque rien au coût — il sert
-surtout à réduire l'attente des clients. Sans limite d'attente, l'optimum laisse un hélico faire l'essentiel des rotations.
+surtout à réduire l'attente des clients. Sans arrêt moteur hors base ni limite d'attente, l'optimum laisse un hélico faire
+l'essentiel des rotations ; avec l'arrêt moteur à la dépose / reprise, attendre ne coûte qu'un redémarrage et le 2e hélico
+redevient utile.
 Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permettent d'arbitrer coût ↔ qualité de service.
 
 ## Structure

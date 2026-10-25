@@ -6,7 +6,7 @@
 //   D_gr : déchargement au sommet de r ∈ C       P_gr : chargement au fond de r ∈ C
 // + dépôt O (départ des hélicos) et Z (retour).
 // Arcs « chargés » (pickup → drop du même groupe) et arcs « à vide » (drop → pickup, ou dépôt).
-import { BASE, waitPlan } from './model.js';
+import { BASE, waitPlan, canShutdown } from './model.js';
 
 export function candidateRuns(inst, seqs, size = 12) {
   const p = inst.params, N = inst.N, tau = inst.tau;
@@ -150,7 +150,7 @@ export function buildMilp(inst, C, opts = {}) {
     if (a.loaded) con([[1, T(a.j)], [-1, T(a.i)], [m2, x]], '<=', d + m2);   // pas d'attente en vol chargé
     else {                                                                   // attente = standby + vol d'attente
       const terms = [[1, T(a.j)], [-1, T(a.i)], [-1, 'sb' + a.j], [-1, 'lo' + a.j], [m2, x]];
-      if (p.allowBaseShutdown && ni.loc === BASE) {                         // ou coupure à la base + redémarrage (z)
+      if (canShutdown(p, ni.loc)) {                                         // ou coupure moteur + redémarrage (z)
         if (!(restart > 0)) continue;
         terms.push([-m2, 'z' + a.j]); zs.add(a.j);
       }
@@ -270,9 +270,9 @@ export function warmStart(inst, meta, lifts) {
       val.set(`x${i}_${j}`, 1);
       if (prev !== O) {
         const gap = Math.max(0, l.start - prevEnd - tau[prevLoc * N + l.from]);
-        if (p.allowBaseShutdown && prevLoc === BASE) {                  // coupure + redémarrage, ou attente moteur allumé
-          const w = waitPlan(inst, BASE, true, l.from, gap);
-          if (w.kind === 'parked') { if (meta.zs.includes(i)) val.set('z' + i, 1); }
+        if (canShutdown(p, prevLoc)) {                                  // coupure + redémarrage, ou attente moteur allumé
+          const w = waitPlan(inst, prevLoc, true, l.from, gap);
+          if (w.kind === 'parked' || w.kind === 'parkedPickup') { if (meta.zs.includes(i)) val.set('z' + i, 1); }
           else { val.set('sb' + i, w.standby); val.set('lo' + i, w.loiter); }
         } else { val.set('sb' + i, Math.min(gap, p.maxStandby)); val.set('lo' + i, Math.max(0, gap - p.maxStandby)); }
       }

@@ -55,9 +55,10 @@ export function nodeLabel(inst, n) {
 /**
  * Comment l'hélico occupe un temps mort de `gap` minutes avant un chargement en o.
  * started = l'hélico a déjà quitté la base ce jour-là (avant : il attend moteur coupé).
- * Renvoie le coût et le type d'attente : 'parked' (base, moteur coupé : gratuit avant le 1er départ, sinon
- * un redémarrage), 'standby' (≤ maxStandby), 'loiter' (vol d'attente + standby), 'viaBase' (retour base,
- * coupure, redémarrage, retour). Le démarrage du 1er départ du jour est compté à part (startCost).
+ * Renvoie le coût et le type d'attente : 'parked' (moteur coupé là où il est : base, gratuit avant le 1er départ,
+ * sinon un redémarrage), 'parkedPickup' (vol vers o, coupure au point de reprise, redémarrage avant le chargement),
+ * 'standby' (≤ maxStandby), 'loiter' (vol d'attente + standby), 'viaBase' (retour base, coupure, redémarrage, retour).
+ * Le démarrage du 1er départ du jour est compté à part (startCost).
  */
 export function waitPlan(inst, loc, started, o, gap) {
   const p = inst.params, N = inst.N, tau = inst.tau, restart = p.heliStartCost ?? 0;
@@ -66,14 +67,18 @@ export function waitPlan(inst, loc, started, o, gap) {
   const sb = Math.min(gap, p.maxStandby), lo = gap - sb;
   const run = lo > 1e-9 ? { kind: 'loiter', cost: p.standbyRate * sb + p.flyRate * lo, standby: sb, loiter: lo, extraFly: 0 }
     : { kind: 'standby', cost: p.standbyRate * gap, standby: gap, loiter: 0, extraFly: 0 };
-  if (p.allowBaseShutdown && loc === BASE)                       // couper le moteur coûte un redémarrage
-    return restart < run.cost ? { kind: 'parked', cost: restart, standby: 0, loiter: 0, extraFly: 0 } : run;
+  if (restart >= run.cost) return run;                           // couper le moteur coûte un redémarrage
+  if (p.allowBaseShutdown && loc === BASE) return { kind: 'parked', cost: restart, standby: 0, loiter: 0, extraFly: 0 };
+  if (p.allowFieldShutdown) return { kind: 'parkedPickup', cost: restart, standby: 0, loiter: 0, extraFly: 0 };
   if (lo > 1e-9 && p.allowBaseShutdown && o !== BASE) {
     const extra = tau[loc * N] + tau[o] - tau[loc * N + o], c = p.flyRate * extra + restart;
     if (extra < gap - 1e-9 && c < run.cost) return { kind: 'viaBase', cost: c, standby: 0, loiter: 0, extraFly: extra };
   }
   return run;
 }
+
+/** L'hélico peut couper le moteur pendant le temps mort avant un chargement (hors 1er départ du jour). */
+export const canShutdown = (p, loc) => !!p.allowFieldShutdown || (!!p.allowBaseShutdown && loc === BASE);
 
 /** Démarrage moteur dû par une rotation : le 1er départ du jour de l'hélico. */
 export const startCost = (inst, started) => (started ? 0 : inst.params.heliStartCost ?? 0);
@@ -191,6 +196,10 @@ export function buildSchedule(inst, lifts) {
         push('parked', t, l.start - dh, loc, loc);
         if (dh > 0) push('flight', l.start - dh, l.start, loc, l.from);
         totals.parked += l.start - dh - t; totals.fly += dh;
+      } else if (w.kind === 'parkedPickup') {               // coupure au point de reprise
+        if (dh > 0) push('flight', t, t + dh, loc, l.from);
+        push('parked', t + dh, l.start, l.from, l.from);
+        totals.fly += dh; totals.parked += l.start - t - dh;
       } else if (w.kind === 'viaBase') {
         const t1 = t + tau[loc * N];
         push('flight', t, t1, loc, BASE);
