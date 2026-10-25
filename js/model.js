@@ -83,6 +83,7 @@ export const SHORTFALL_PENALTY = { fixed: 1500, perUnit: 20 };  // par groupe so
 export const LATE_PENALTY = { fixed: 1500, perUnit: 200 };      // par groupe en retard, par min de retard
 export const WAIT_PENALTY = { fixed: 1500, perUnit: 100 };        // par attente client > max, par min de dépassement
 export const CLOSED_PENALTY = 5000;                                // par passage sur une descente hors du jour
+export const REPEAT_PENALTY = 5000;                                // par descente refaite par le même groupe dans la journée
 
 /**
  * Décodeur glouton événementiel.
@@ -102,7 +103,7 @@ export function decode(inst, sol, record = false) {
   const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
   const occEnd = new Float64Array(R).fill(-1e9);
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
-  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0;
+  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0;
   const lifts = record ? [] : null;
   for (let g = 0; g < G; g++) { if (sol.seq[g].length === 0) gDone[g] = 1; else pending++; }
 
@@ -144,6 +145,7 @@ export function decode(inst, sol, record = false) {
     else {
       const r = d - 1;
       if (!inst.open[r]) closed++;
+      if (k > 0 && seq.lastIndexOf(r, k - 1) >= 0) repeats++;            // un groupe ne refait pas la même descente
       gVert[g] += inst.vert[r];
       gReady[g] = end + inst.ski[r];
       gLoc[g] = 1 + R + r;
@@ -155,13 +157,13 @@ export function decode(inst, sol, record = false) {
   for (let h = 0; h < H; h++) cost += p.flyRate * tau[hL[h] * N];
   cost += p.clientWaitPenalty * clientWait;
 
-  let shortfall = 0, late = 0, penalty = waitPen + CLOSED_PENALTY * closed;
+  let shortfall = 0, late = 0, penalty = waitPen + CLOSED_PENALTY * closed + REPEAT_PENALTY * repeats;
   for (let g = 0; g < G; g++) {
     const sf = inst.targets[g] - gVert[g], lt = gEnd[g] - p.dayEnd;
     if (sf > 1e-9) { shortfall += sf; penalty += SHORTFALL_PENALTY.fixed + SHORTFALL_PENALTY.perUnit * sf; }
     if (lt > 1e-9) { late += lt; penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * lt; }
   }
-  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed, lifts, clientWait, waitExcess, closed };
+  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats, lifts, clientWait, waitExcess, closed, repeats };
 }
 
 /**

@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from '../js/data.js';
 import { buildInstance, decode, buildSchedule } from '../js/model.js';
-import { solveSA } from '../js/solver.js';
+import { solveSA, initialSolution, mutate, polish } from '../js/solver.js';
+import { mulberry32 } from '../js/data.js';
 import { validateSchedule } from '../js/validate.js';
 import { buildMilp, candidateRuns, warmStart, runHighs, liftsFromMilp } from '../js/milp.js';
 import loadHighs from '../lib/highs/highs.mjs';
@@ -113,4 +114,40 @@ test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur
     assert.ok(Math.abs(sch.cost - out.objective) < 0.01, `${JSON.stringify(extra)} planning ${sch.cost} ≠ MILP ${out.objective}`);
     for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
   }
+});
+
+test('un groupe ne skie pas deux fois la même descente dans la journée', () => {
+  const noRepeat = (sol) => sol.seq.every(q => new Set(q).size === q.length);
+  // Aucun mouvement du recuit ni de la descente locale n'introduit de répétition.
+  for (const extra of [{}, { nHeli: 1 }, { maxClientWait: 30 }]) {
+    const inst = buildInstance(ds, { ...DEFAULT_PARAMS, ...extra }, DEFAULT_GROUPS, [...Array(12).keys()]);   // peu de choix
+    const rnd = mulberry32(5);
+    let sol = initialSolution(inst, rnd);
+    assert.ok(noRepeat(sol));
+    for (let i = 0; i < 50000; i++) { sol = mutate(inst, sol, rnd); assert.ok(noRepeat(sol), `mouvement ${i} : ${JSON.stringify(sol.seq)}`); }
+    assert.ok(noRepeat(polish(inst, sol, 2)));
+    assert.ok(noRepeat(solveSA(inst, { seed: 2, iterations: 5000, restarts: 2 }).sol));
+  }
+  // Une séquence qui répète une descente est infaisable pour le décodeur et rejetée par le vérificateur.
+  const inst = buildInstance(ds, DEFAULT_PARAMS, DEFAULT_GROUPS);
+  const sol = solveSA(inst, { seed: 1, iterations: 5000, restarts: 1 }).sol;
+  const q = sol.seq[0], bad = { ...sol, seq: sol.seq.map((s, g) => (g === 0 ? [...q, q[0]] : s)) };
+  const d = decode(inst, bad, true);
+  assert.equal(d.repeats, 1); assert.ok(!d.feasible);
+  assert.ok(decode(inst, bad).f > decode(inst, sol).f);
+  const chk = validateSchedule(inst, buildSchedule(inst, d.lifts)).find(c => /même descente dans la journée/.test(c.label));
+  assert.ok(chk && !chk.ok);
+});
+
+test('MILP : chaque groupe skie une descente au plus une fois (complet sur candidates)', async () => {
+  const highs = await loadHighs();
+  const { inst, res, d } = solveAndCheck(DEFAULT_PARAMS);
+  const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 8));
+  // Un seul nœud « dépose au sommet » par couple (groupe, descente), et pas d'arc fond r → sommet r.
+  const drops = meta.nodes.filter(n => n.kind === 'D').map(n => `${n.g}_${n.r}`);
+  assert.equal(new Set(drops).size, drops.length);
+  assert.ok(meta.arcs.every(a => !(meta.nodes[a.i].kind === 'P' && meta.nodes[a.j].kind === 'D' && meta.nodes[a.i].g === meta.nodes[a.j].g && meta.nodes[a.i].r === meta.nodes[a.j].r)));
+  const out = runHighs(highs, lp, { timeLimit: 10, warm: warmStart(inst, meta, d.lifts) });
+  const sch = buildSchedule(inst, liftsFromMilp(inst, meta, out.value));
+  for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
 });

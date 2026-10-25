@@ -51,6 +51,9 @@ $$\textstyle\sum_{r\in C} h_r v_{gr} \ge Q_g \qquad t_{S_g}\ge a,\ t_{E_g}+\delt
 
 $$v_{gr}=v_{g'r}=1 \Rightarrow t_{D_{g'r}} \ge t_{D_{gr}}+\delta_d+s_r \ \text{ou l'inverse (via } y_{gg'r})$$
 
+Pas de répétition : un seul nœud $D_{gr}$ par couple $(g,r)$ et $v_{gr}\in\{0,1\}$ (pas d'arc $P_{gr}\to D_{gr}$) —
+un groupe ne skie jamais deux fois la même descente dans la journée.
+
 Options : attente max au fond $t_{P_{gr}} - t_{D_{gr}} - \delta_d - s_r \le W$ ; pénalité d'attente client.
 Linéarisation par big-M calculés arc par arc à partir des fenêtres $[e_i,\ell_i]$, suppression des arcs impossibles,
 coupe $\sum_r v_{gr}\ge\lceil Q_g/\max_r h_r\rceil$. Les sous-tours sont exclus par les contraintes de temps.
