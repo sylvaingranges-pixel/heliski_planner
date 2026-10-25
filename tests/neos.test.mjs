@@ -10,7 +10,7 @@ import { buildInstance, decode, buildSchedule } from '../js/model.js';
 import { solveSA } from '../js/solver.js';
 import { validateSchedule } from '../js/validate.js';
 import { buildMilp, candidateRuns, warmStart, liftsFromMilp } from '../js/milp.js';
-import { neosJobXml, parseSolverOutput, isSolverRefused } from '../js/neos.js';
+import { SOLVERS, neosJobXml, parseSolverOutput, isSolverRefused } from '../js/neos.js';
 
 const PORT = 3980 + Math.floor(Math.random() * 15);
 process.env.NEOS_URL = `http://localhost:${PORT}`;
@@ -81,7 +81,10 @@ test('relais NEOS de bout en bout : Gurobi refusé, COPT (démarrage MIP + zip) 
       const solText = solver === 'COPT' ? (await call({ action: 'outputFile', job: sub.job, password: sub.password, name: 'soln.sol' })).text : '';
       const out = parseSolverOutput(solver, r.text, solText, known);
       assert.ok(out.values.size > 10, solver);
-      assert.ok(out.objective <= d.cost + 1e-6, solver);
+      // Démarrage MIP (COPT) : jamais moins bon que l'heuristique. Sans démarrage MIP (SCIP), le résultat dépend du temps
+      // de calcul (le faux serveur plafonne à 5 s) : seule la borne inférieure est garantie, et elle encadre les deux coûts.
+      if (SOLVERS[solver].mipStart) assert.ok(out.objective <= d.cost + 1e-6, `${solver} : ${out.objective} > heuristique ${d.cost}`);
+      assert.ok(Number.isFinite(out.bound) && out.bound <= out.objective + 1e-6 && out.bound <= d.cost + 1e-6, `${solver} : borne ${out.bound}`);
       const sch = buildSchedule(inst, liftsFromMilp(inst, meta, n => out.values.get(n) ?? 0));
       assert.ok(Math.abs(sch.cost - out.objective) < 0.01, `${solver} : planning ${sch.cost} ≠ objectif ${out.objective}`);
       for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${solver} ${c.label} : ${c.errors.join(', ')}`);
