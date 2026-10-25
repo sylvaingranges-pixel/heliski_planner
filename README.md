@@ -41,14 +41,14 @@ Sans connexion, repli sur un jeu synthétique.
 
 Temps de vol = 1 min + max(distance / 180 km/h, montée / 300 m/min).
 4 groupes (forfaits 10 000 m / 5 j, 12 000 m / 5 j, 15 000 m / 5 j, 10 000 m / 4 j → 2 000, 2 400, 3 000, 2 500 m/jour),
-2 hélicoptères, 40.–/min en vol, 20.–/min en standby, 6 + 6 min de chargement / déchargement, standby ≤ 5 min, 9 h – 15 h.
+2 hélicoptères, 40.–/min en vol, 20.–/min en standby, 50.– par démarrage moteur, 6 + 6 min de chargement / déchargement, standby ≤ 5 min, 9 h – 15 h.
 
 | Résultat (relief réel, base Le Châble, graine 42) | Valeur |
 |---|---|
-| Coût hélicos (heuristique, ~2 s) | **CHF 7 372** (14 rotations, 100 min de vol dont 69 chargé, 0 min de standby) |
-| MILP « affectation hélicos » (descentes imposées) | 7 372 = **optimal prouvé** (écart 0,01 %, ~20 s) |
+| Coût hélicos (heuristique, ~4 s) | **CHF 7 342** (15 rotations, 92 min de vol dont 65 chargé, 0 min de standby, 1 hélico utilisé sur 2, 1 démarrage) |
+| MILP « affectation hélicos » (descentes imposées) | 7 342 = **optimal prouvé** (écart 0,01 %, ~23 s) |
 
-Sur le jeu synthétique (graine 42) : 6 800 CHF ; MILP complet sur 8 candidates, 300 s → borne 6 336 (écart ≤ 6,8 %).
+Sur le jeu synthétique (graine 42, sans coût de démarrage) : 6 800 CHF ; MILP complet sur 8 candidates, 300 s → borne 6 336 (écart ≤ 6,8 %).
 
 Constat : le coût étant facturé à la minute de vol, le second hélicoptère n'apporte presque rien au coût — il sert
 surtout à réduire l'attente des clients. Sans limite d'attente, l'optimum laisse un hélico faire l'essentiel des rotations.

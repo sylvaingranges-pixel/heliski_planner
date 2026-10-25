@@ -59,7 +59,7 @@ test('relais NEOS de bout en bout : Gurobi refusé, COPT (démarrage MIP + zip) 
     const d = decode(inst, res.sol, true);
     const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });
     const warm = warmStart(inst, meta, d.lifts);
-    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|kconst)\b/g));
+    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|z\d+|kconst)\b/g));
     assert.match((await call({ action: 'ping' })).ok, /alive/);
 
     const gurobi = (await call({ action: 'submit', xml: neosJobXml('COPT', { lp }).replace('<solver>COPT', '<solver>Gurobi'), username: 'demo', password: 'demo' }));

@@ -17,6 +17,7 @@ de son forfait. Le chiffre d’affaires étant fixé par les forfaits vendus, mi
 <tr><td><i class="v">c<sub>v</sub></i>, <i class="v">c<sub>s</sub></i></td><td>tarif en vol / en standby moteur allumé</td><td>40.– / 20.– par min</td></tr>
 <tr><td><i class="v">δ<sub>c</sub></i>, <i class="v">δ<sub>d</sub></i></td><td>durée de chargement / déchargement (moteur allumé, facturé <i class="v">c<sub>s</sub></i>)</td><td>6 / 6 min</td></tr>
 <tr><td><i class="v">w̄</i></td><td>attente maximale en standby</td><td>5 min</td></tr>
+<tr><td><i class="v">c<sub>d</sub></i></td><td>coût d’un démarrage moteur (cycle turbine) : 1<sup>er</sup> départ du jour de chaque hélico utilisé, et chaque redémarrage après une coupure à la base</td><td>50.–</td></tr>
 <tr><td><i class="v">[a, b]</i></td><td>fenêtre de ski (départ et retour à la base)</td><td>09:00 – 15:00</td></tr>
 </table>
 
@@ -49,18 +50,22 @@ deux dépôts <i class="v">O</i> (départ des hélicos) et <i class="v">Z</i> (r
 <tr><td><i class="v">t<sub>i</sub> ∈ [e<sub>i</sub>, ℓ<sub>i</sub>]</i></td><td>début de l’opération <i class="v">i</i> (fenêtre déduite de [a, b])</td></tr>
 <tr><td><i class="v">σ<sub>i</sub> ∈ [0, w̄]</i>, <i class="v">λ<sub>i</sub> ≥ 0</i></td><td>standby et vol d’attente de l’hélico avant le chargement <i class="v">i</i></td></tr>
 <tr><td><i class="v">y<sub>gg′r</sub> ∈ {0,1}</i></td><td>ordre de passage de deux groupes sur la même descente</td></tr>
+<tr><td><i class="v">z<sub>j</sub> ∈ {0,1}</i></td><td>coupure moteur à la base puis redémarrage avant le chargement <i class="v">j</i> (si l’arrêt à la base est autorisé)</td></tr>
 </table>
 <h3>Objectif</h3>
 <div class="math">min&nbsp; Σ<sub>(i,j)∈𝒜</sub> c<sub>v</sub> τ<sub>ij</sub> x<sub>ij</sub>
  + Σ<sub>g,r</sub> c<sub>s</sub>(δ<sub>c</sub>+δ<sub>d</sub>) v<sub>gr</sub>
  + Σ<sub>i chargement</sub> (c<sub>s</sub> σ<sub>i</sub> + c<sub>v</sub> λ<sub>i</sub>)
+ + c<sub>d</sub> (Σ<sub>j≠Z</sub> x<sub>Oj</sub> + Σ<sub>j</sub> z<sub>j</sub>)
  + |𝒢| c<sub>s</sub>(δ<sub>c</sub>+δ<sub>d</sub>)</div>
+<p>Un hélico non utilisé emprunte l’arc O → Z (coût nul) : un planning à <i class="v">k &lt; H</i> hélicos est donc admissible, et le
+coût de démarrage <i class="v">c<sub>d</sub></i> évite de mettre en route un hélico de plus pour un gain marginal.</p>
 <h3>Contraintes</h3>
 <div class="math">
 Σ<sub>j</sub> x<sub>ji</sub> = Σ<sub>j</sub> x<sub>ij</sub> = v<sub>i</sub> &nbsp;∀ i  &nbsp;&nbsp;(v<sub>S<sub>g</sub></sub> = v<sub>E<sub>g</sub></sub> = 1, v<sub>D<sub>gr</sub></sub> = v<sub>P<sub>gr</sub></sub> = v<sub>gr</sub>)<span class="tag">(1) flux</span><br>
 Σ<sub>j</sub> x<sub>Oj</sub> = Σ<sub>i</sub> x<sub>iZ</sub> = H<span class="tag">(2) flotte</span><br>
 x<sub>ij</sub> = 1 ⇒ t<sub>j</sub> = t<sub>i</sub> + δ<sub>c</sub> + τ<sub>ij</sub> &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>ch</sup><span class="tag">(3) vol chargé direct</span><br>
-x<sub>ij</sub> = 1 ⇒ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> ≤ t<sub>j</sub> ≤ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> + σ<sub>j</sub> + λ<sub>j</sub> &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>v</sup><span class="tag">(4) attente payée</span><br>
+x<sub>ij</sub> = 1 ⇒ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> ≤ t<sub>j</sub> ≤ t<sub>i</sub> + δ<sub>d</sub> + τ<sub>ij</sub> + σ<sub>j</sub> + λ<sub>j</sub> (+ M z<sub>j</sub> si i est à la base) &nbsp;&nbsp;(i,j) ∈ 𝒜<sup>v</sup><span class="tag">(4) attente payée</span><br>
 x<sub>Oj</sub> = 1 ⇒ t<sub>j</sub> ≥ a + τ<sub>Bj</sub> &nbsp;&nbsp;(avant son 1<sup>er</sup> vol, l’hélico attend moteur coupé)<span class="tag">(5)</span><br>
 v<sub>gr</sub> = 1 ⇒ t<sub>P<sub>gr</sub></sub> ≥ t<sub>D<sub>gr</sub></sub> + δ<sub>d</sub> + s<sub>r</sub> &nbsp;&nbsp;(les clients peuvent attendre au fond)<span class="tag">(6) ski</span><br>
 Σ<sub>r∈C</sub> h<sub>r</sub> v<sub>gr</sub> ≥ Q<sub>g</sub> &nbsp;∀ g<span class="tag">(7) forfait</span><br>

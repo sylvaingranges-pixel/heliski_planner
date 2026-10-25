@@ -9,7 +9,7 @@ import { FORMULATION_HTML } from './formulation.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
-const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
+const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
 const STORE = 'heliski-planner-v2';
 
 const state = {
@@ -336,7 +336,7 @@ async function neosFetch() {
     if (r.status !== 'Done') { st.textContent = `Travail n°${j.job} : ${statusNeosFr(r.status)}`; return; }
     if (j.key !== scenarioKey()) { st.textContent = `Résultat n°${j.job} reçu, mais les données ou paramètres ont changé depuis la soumission : impossible de l’afficher sur ce scénario.`; setNeosJob(null); neosWatch(); return; }
     const { lp, meta } = buildMilp(state.inst, j.C, j.fixedSeq ? { fixedSeq: j.fixedSeq } : {});
-    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|kconst)\b/g));
+    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|z\d+|kconst)\b/g));
     const solver = j.solver ?? 'COPT';
     let solText = '';
     if (SOLVERS[solver].solutionFile) {
@@ -413,7 +413,7 @@ function renderKpis() {
     card('Minutes de vol', `${s.flyMin.toFixed(0)} min`),
     card('dont vol chargé', `${t.flyLoaded.toFixed(0)} min`),
     card('Standby / attente en vol', `${t.standby.toFixed(1)} / ${t.loiter.toFixed(1)} min`),
-    card('Hélicos utilisés', `${new Set(s.lifts.map(l => l.heli)).size} / ${inst.params.nHeli}`),
+    card('Hélicos utilisés', `${new Set(s.lifts.map(l => l.heli)).size} / ${inst.params.nHeli} · ${t.starts} démarr.`),
     card('Rotations', `${s.lifts.length} × ${inst.params.loadMin + inst.params.unloadMin} min sol`),
     card('Dénivelé total', `${vert.toLocaleString('fr-CH')} m`),
     card('Dernier retour base', fmt(lastEnd)),
