@@ -80,15 +80,19 @@ le graphe complet compte ~40 000 arcs binaires : trop pour une résolution exact
 <ol>
   <li><b>Choix et ordre des descentes</b> par groupe — <b>recuit simulé</b> multi-départs. Mouvements : remplacer une descente (de préférence
   par une des 12 plus proches du point de départ), insérer, retirer, retirer + remplacer, permuter, inverser un segment, échanger ou déplacer
-  une descente entre groupes, modifier la priorité d’un groupe ou le poids λ du décodeur. Suivi d’une <b>descente locale exhaustive</b>
+  une descente entre groupes, modifier la priorité d’un groupe, le poids λ du décodeur, le nombre d’hélicos utilisés ou la pénalité
+  d’usage β<sub>h</sub> d’un hélico. Suivi d’une <b>descente locale exhaustive</b>
   (tous les remplacements / retraits / insertions / échanges).</li>
   <li><b>Décodeur</b> (simulation événementielle) : pour des séquences données, on construit le planning des hélicos. À chaque étape on
   choisit le couple (groupe prêt, hélico) qui minimise
-  <div class="math">début du chargement + prio<sub>g</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
+  <div class="math">début du chargement + prio<sub>g</sub> + β<sub>h</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
   puis on exécute la rotation. L’attente de l’hélico est facturée au mieux : moteur coupé à la base (avant le premier vol, ou si autorisé),
   standby si ≤ w̄, sinon vol d’attente (ou retour à la base si l’arrêt moteur y est autorisé et moins cher). L’exclusivité d’une descente
   retarde la dépose si nécessaire.</li>
 </ol>
+<p><b>Taille de flotte.</b> Un décodeur glouton mobilise tout hélico libre ; or un planning à <i class="v">k</i> hélicos reste
+valable avec <i class="v">H &gt; k</i> (les autres restent à la base, sans coût). L’app lance donc, avec les mêmes graines, des chaînes
+de recuit pour chaque flotte <i class="v">k = 1…H</i> et garde la meilleure : ajouter un hélico ne dégrade jamais le résultat.</p>
 <p>Les solutions qui ne tiennent pas le forfait ou la fenêtre sont pénalisées (1 500.– + 20.–/m manquant, 1 500.– + 200.–/min de
 retard) afin que la recherche puisse traverser des solutions infaisables. Un <b>vérificateur indépendant</b> relit ensuite chaque segment du
 planning et contrôle toutes les contraintes ainsi que le coût.</p>

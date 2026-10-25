@@ -144,38 +144,52 @@ function solveHeuristic() {
   if (!state.inst) return;
   if (!state.inst.dayRuns.length) { alert('Aucune descente ouverte aujourd’hui : sélectionnez des descentes du jour.'); return; }
   state.saWorkers?.forEach(w => w.terminate());
-  // Plusieurs chaînes de recuit indépendantes en parallèle (une par cœur), on garde la meilleure.
+  // Chaînes de recuit indépendantes (au plus une par cœur en même temps), on garde la meilleure.
+  // Pour chaque taille de flotte k = 1…nHeli, mêmes graines : un planning à k hélicos reste valable avec plus
+  // d'hélicos, donc ajouter un hélico ne peut jamais donner un résultat moins bon.
   const nW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+  const H = state.inst.params.nHeli;
   const btn = $('btn-solve'), bar = $('sa-progress');
   btn.disabled = true; btn.textContent = 'Optimisation…'; bar.hidden = false;
   const iterations = +$('sa-effort').value, restarts = 4, seed0 = +$('sa-seed').value || 1;
-  const prog = new Array(nW).fill(0), done = [];
-  let bestSeen = Infinity;
+  const jobs = [];
+  for (let k = H; k >= 1; k--) for (let w = 0; w < nW; w++) jobs.push({ fleet: k, seed: seed0 + 1000 * w });
+  const prog = new Array(jobs.length).fill(0), done = [];
+  let bestSeen = Infinity, next = 0;
   const t0 = performance.now();
   const reset = () => { btn.disabled = false; btn.textContent = 'Optimiser (heuristique)'; bar.hidden = true; };
-  state.saWorkers = Array.from({ length: nW }, (_, k) => {
+  const finish = () => {
+    state.saWorkers = null; reset();
+    const best = done.reduce((a, b) => (b.f < a.f - 1e-9 || (Math.abs(b.f - a.f) <= 1e-9 && b.fleet < a.fleet) ? b : a));
+    const evals = done.reduce((a, b) => a + b.evals, 0);
+    const perFleet = Array.from({ length: H }, (_, k) => Math.round(Math.min(...done.filter(d => d.fleet === k + 1).map(d => d.f))));
+    const used = new Set(best.lifts.map(l => l.heli)).size;
+    setSolution({ label: 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
+      history: best.history, info: `${jobs.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations ; ${used} hélico(s) utilisé(s) sur ${H}` +
+        (H > 1 ? ` ; meilleur coût par flotte : ${perFleet.map((c, k) => `${k + 1} → ${c}`).join(', ')}` : '') });
+  };
+  const launch = () => {
+    const k = next++, job = jobs[k];
     const w = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
     w.onmessage = (ev) => {
       const m = ev.data;
       if (m.type === 'progress') {
         prog[k] = (m.info.restart * m.info.iterations + m.info.it) / (m.info.iterations * m.info.restarts);
         bestSeen = Math.min(bestSeen, m.info.bestF);
-        bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / nW).toFixed(1) + '%';
+        bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / jobs.length).toFixed(1) + '%';
         btn.textContent = `Optimisation… ${chf(bestSeen)}`;
       } else if (m.type === 'done') {
-        w.terminate(); done.push(m);
-        if (done.length < nW) return;
-        state.saWorkers = null; reset();
-        const best = done.reduce((a, b) => (b.f < a.f ? b : a));
-        const evals = done.reduce((a, b) => a + b.evals, 0);
-        setSolution({ label: 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
-          history: best.history, info: `${nW} chaînes parallèles, ${evals.toLocaleString('fr-CH')} évaluations ; coûts : ${done.map(d => Math.round(d.f)).join(' / ')}` });
+        w.terminate(); state.saWorkers?.delete(w); done.push(m); prog[k] = 1;
+        if (next < jobs.length) launch();
+        else if (done.length === jobs.length) finish();
       }
     };
     w.onerror = (e) => { state.saWorkers?.forEach(x => x.terminate()); state.saWorkers = null; reset(); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: seed0 + 1000 * k } });
-    return w;
-  });
+    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: job.seed, fleet: job.fleet } });
+    state.saWorkers.add(w);
+  };
+  state.saWorkers = new Set();
+  for (let i = 0; i < Math.min(nW, jobs.length); i++) launch();
 }
 
 function milpRequest() {
@@ -399,6 +413,7 @@ function renderKpis() {
     card('Minutes de vol', `${s.flyMin.toFixed(0)} min`),
     card('dont vol chargé', `${t.flyLoaded.toFixed(0)} min`),
     card('Standby / attente en vol', `${t.standby.toFixed(1)} / ${t.loiter.toFixed(1)} min`),
+    card('Hélicos utilisés', `${new Set(s.lifts.map(l => l.heli)).size} / ${inst.params.nHeli}`),
     card('Rotations', `${s.lifts.length} × ${inst.params.loadMin + inst.params.unloadMin} min sol`),
     card('Dénivelé total', `${vert.toLocaleString('fr-CH')} m`),
     card('Dernier retour base', fmt(lastEnd)),

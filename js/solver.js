@@ -4,7 +4,7 @@ import { decode, BASE } from './model.js';
 import { mulberry32 } from './data.js';
 
 export function cloneSol(s) {
-  return { seq: s.seq.map(a => a.slice()), prio: s.prio.slice(), lambda: s.lambda, urgency: s.urgency };
+  return { seq: s.seq.map(a => a.slice()), prio: s.prio.slice(), lambda: s.lambda, urgency: s.urgency, nUse: s.nUse, hBias: s.hBias?.slice() };
 }
 
 /** Solution initiale : pour chaque groupe, enchaîne les descentes au meilleur ratio dénivelé / coût. */
@@ -27,7 +27,7 @@ export function initialSolution(inst, rnd = Math.random) {
     }
     seq.push(s);
   }
-  return { seq, prio: new Array(G).fill(0), lambda: 1, urgency: 1 };
+  return { seq, prio: new Array(G).fill(0), lambda: 1, urgency: 1, nUse: p.nHeli, hBias: new Array(p.nHeli).fill(0) };
 }
 
 function pickRun(inst, rnd, prevNode, exclude) {
@@ -78,8 +78,13 @@ export function mutate(inst, sol, rnd) {
       const i = Math.floor(rnd() * q.length), j = Math.floor(rnd() * q2.length);
       if (!q.includes(q2[j]) && !q2.includes(q[i])) [q[i], q2[j]] = [q2[j], q[i]];
     }
-  } else if (u < 0.90) {                                // priorité d'un groupe
+  } else if (u < 0.88) {                                // priorité d'un groupe
     s.prio[g] = Math.max(-60, Math.min(60, s.prio[g] + (rnd() - 0.5) * 30));
+  } else if (u < 0.91 && inst.params.nHeli > 1) {      // flotte utilisée : nombre d'hélicos, pénalité d'un hélico
+    const H = inst.params.nHeli;
+    s.hBias ??= new Array(H).fill(0);
+    if (rnd() < 0.4) s.nUse = Math.max(1, Math.min(H, (s.nUse ?? H) + (rnd() < 0.5 ? -1 : 1)));
+    else { const h = Math.floor(rnd() * H); s.hBias[h] = Math.max(0, Math.min(120, (s.hBias[h] ?? 0) + (rnd() - 0.4) * 30)); }
   } else if (u < 0.94) {                                // poids du décodeur (coût / urgence)
     if (inst.params.maxClientWait > 0 && rnd() < 0.5) s.urgency = Math.max(0, Math.min(8, (s.urgency ?? 1) + (rnd() - 0.5) * 2));
     else s.lambda = Math.max(0, Math.min(10, s.lambda + (rnd() - 0.5) * 1.5));
@@ -128,7 +133,15 @@ export function polish(inst, sol, maxPasses = 6) {
         if (i >= best.seq[g].length) break;
       }
     }
-    // paramètres du décodeur
+    // paramètres du décodeur : flotte utilisée, poids coût / urgence
+    for (let k = 1; k <= inst.params.nHeli; k++) {
+      const c = cloneSol(best); c.nUse = k;
+      const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; }
+    }
+    if (best.hBias?.some(b => b > 0)) {
+      const c = cloneSol(best); c.hBias = c.hBias.map(() => 0);
+      const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; }
+    }
     for (const lam of [0, 0.5, 1, 2, 3, 5, 8, 10]) {
       const c = cloneSol(best); c.lambda = lam;
       const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; }

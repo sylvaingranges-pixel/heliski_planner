@@ -7,7 +7,8 @@ sous contrainte de dénivelé vendu aux clients (forfaits).
 - **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui (filtres fond min. / sommet max. / difficulté max.
   + tirage au hasard, ou ouverture / fermeture une à une sur la carte ou dans l'onglet *Données*). L'heuristique et le MILP
   ne travaillent que sur ce sous-ensemble ; le vérificateur le contrôle.
-- **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s, en parallèle sur plusieurs cœurs).
+- **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s par hélico, en parallèle sur plusieurs cœurs).
+  Avec H hélicos, les flottes de 1 à H sont explorées (mêmes graines) : plus d'hélicos ne donne jamais un plan plus cher.
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
 - **Résolution sur [NEOS](https://neos-server.org) avec COPT** (repli SCIP), directement depuis l'app (identifiant NEOS) :
   soumission, journal en direct, récupération et vérification du résultat. Export `.lp` aussi disponible.

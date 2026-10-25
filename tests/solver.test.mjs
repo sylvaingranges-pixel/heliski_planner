@@ -82,3 +82,18 @@ test('descentes du jour : aucune descente ouverte, pas de plantage', () => {
   assert.ok(res.sol.seq.every(q => q.length === 0));
   assert.deepEqual(candidateRuns(inst, res.sol.seq, 10), []);
 });
+
+test('flotte : un planning à 1 hélico garde son coût avec 2 hélicos (le 2e reste à la base)', () => {
+  for (const extra of [{}, { maxClientWait: 30 }]) {
+    const one = buildInstance(ds, { ...DEFAULT_PARAMS, ...extra, nHeli: 1 }, DEFAULT_GROUPS);
+    const two = buildInstance(ds, { ...DEFAULT_PARAMS, ...extra, nHeli: 2 }, DEFAULT_GROUPS);
+    const res = solveSA(one, { seed: 3, iterations: 10000, restarts: 2 });
+    const sol = { ...res.sol, nUse: 1 };
+    const d1 = decode(one, sol, true), d2 = decode(two, sol, true);
+    assert.ok(Math.abs(d1.f - d2.f) < 1e-9, `${d1.f} ≠ ${d2.f}`);
+    assert.ok(d2.lifts.every(l => l.heli === 0));
+    const sch = buildSchedule(two, d2.lifts);
+    assert.ok(Math.abs(sch.cost - d1.cost) < 1e-6);
+    if (d1.feasible) for (const c of validateSchedule(two, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+  }
+});

@@ -80,14 +80,17 @@ export const CLOSED_PENALTY = 5000;                                // par passag
 
 /**
  * Décodeur glouton événementiel.
- * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number }
+ * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number,
+ *         nUse: hélicos utilisables (≤ nHeli), hBias: number[] (min, pénalité d'usage par hélico) }
  * À chaque étape, on choisit le couple (groupe, hélico) qui minimise
- *   début du chargement + prio[g] + lambda * (coût marginal / tarif vol),
+ *   début du chargement + prio[g] + hBias[h] + lambda * (coût marginal / tarif vol),
+ * nUse / hBias permettent de laisser un hélico au sol : sans eux, un hélico libre serait toujours mobilisé
+ * et une flotte plus grande pourrait coûter plus cher qu'une plus petite.
  * puis on « exécute » la rotation. Renvoie le coût et, si record, la liste des rotations.
  */
 export function decode(inst, sol, record = false) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R;
-  const G = sol.seq.length, H = p.nHeli;
+  const G = sol.seq.length, H = p.nHeli, HU = Math.max(1, Math.min(H, sol.nUse ?? H)), hBias = sol.hBias;
   const hT = new Float64Array(H).fill(p.dayStart), hL = new Int32Array(H), hStarted = new Uint8Array(H);
   const gK = new Int32Array(G), gReady = new Float64Array(G).fill(p.dayStart), gLoc = new Int32Array(G);
   const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
@@ -106,13 +109,13 @@ export function decode(inst, sol, record = false) {
       const fl = tau[o * N + d];
       let ready = gReady[g];
       if (d !== BASE && p.exclusiveRuns) ready = Math.max(ready, occEnd[d - 1] - p.loadMin - fl);
-      for (let h = 0; h < H; h++) {
+      for (let h = 0; h < HU; h++) {
         const dh = tau[hL[h] * N + o];
         const a = hT[h] + dh;
         const start = a > ready ? a : ready;
         const w = waitPlan(inst, hL[h], hStarted[h], o, start - a);
         const c = p.flyRate * dh + w.cost + p.clientWaitPenalty * (start - gReady[g]);
-        let s = start + (prio ? prio[g] : 0) + lam * c / p.flyRate;
+        let s = start + (prio ? prio[g] : 0) + (hBias?.[h] ?? 0) + lam * c / p.flyRate;
         // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
         if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
         if (s < bS) { bS = s; bg = g; bh = h; bStart = start; bW = w; bC = c; }
