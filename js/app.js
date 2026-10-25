@@ -3,7 +3,8 @@ import { buildInstance, decode, buildSchedule, seqFromLifts, nodeLabel, BASE } f
 import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
-import { buildMilp, candidateRuns } from './milp.js';
+import { buildMilp, candidateRuns, warmStart, liftsFromMilp } from './milp.js';
+import { neosJobXml, gurobiParams, gurobiMst, parseGurobiOutput, neosApi, neosJobUrl } from './neos.js';
 import { FORMULATION_HTML } from './formulation.js';
 
 const $ = (id) => document.getElementById(id);
@@ -183,7 +184,7 @@ function solveMilp() {
 }
 
 function statusFr(s) {
-  return { optimal: 'Optimal', timeLimit: 'Limite de temps', infeasible: 'Infaisable', interrupt: 'Interrompu' }[s] ?? s;
+  return { optimal: 'Optimal', timeLimit: 'Limite de temps', infeasible: 'Infaisable', interrupt: 'Interrompu', done: 'Terminé', unknown: 'Terminé' }[s] ?? s;
 }
 
 function exportLp() {
@@ -192,6 +193,115 @@ function exportLp() {
   const { lp, stats } = buildMilp(state.inst, req.C, req.mode === 'fixed' ? { fixedSeq: req.seqs } : {});
   download(`heliski_${req.mode}_${req.C.length}.lp`, lp, 'text/plain');
   $('milp-status').textContent = `Exporté : ${stats.binaries} binaires, ${stats.constraints} contraintes (format CPLEX LP).`;
+}
+
+// ------------------------------------------------------------------ NEOS (Gurobi)
+const NEOS_JOB = 'heliski-neos-job', NEOS_CRED = 'heliski-neos-cred';
+let neosTimer = null;
+
+function neosLoadCred() {
+  try {
+    const c = JSON.parse(localStorage.getItem(NEOS_CRED) || 'null');
+    if (c) { $('neos-user').value = c.user ?? ''; $('neos-pass').value = c.pass ?? ''; $('neos-email').value = c.email ?? ''; $('neos-remember').checked = true; }
+  } catch { /* ignore */ }
+}
+function neosSaveCred() {
+  try {
+    if ($('neos-remember').checked) localStorage.setItem(NEOS_CRED, JSON.stringify({ user: $('neos-user').value, pass: $('neos-pass').value, email: $('neos-email').value }));
+    else localStorage.removeItem(NEOS_CRED);
+  } catch { /* ignore */ }
+}
+const neosJob = () => { try { return JSON.parse(localStorage.getItem(NEOS_JOB) || 'null'); } catch { return null; } };
+const setNeosJob = (j) => { try { j ? localStorage.setItem(NEOS_JOB, JSON.stringify(j)) : localStorage.removeItem(NEOS_JOB); } catch { /* ignore */ } };
+// Empreinte du scénario : le résultat NEOS n'est décodable que sur les mêmes données / paramètres.
+const scenarioKey = () => JSON.stringify([state.ds.name, state.ds.runs.length, state.inst.targets, state.params]);
+
+async function neosSubmit() {
+  const st = $('neos-status');
+  const req = milpRequest();
+  if (!req) { st.textContent = 'Lancez d’abord l’heuristique : sa solution sert de démarrage à Gurobi.'; return; }
+  const user = $('neos-user').value.trim(), pass = $('neos-pass').value, email = $('neos-email').value.trim();
+  if (!user && !email) { st.textContent = 'Indiquez votre identifiant NEOS (ou au moins un e-mail pour une soumission anonyme).'; return; }
+  neosSaveCred();
+  const fixedSeq = req.mode === 'fixed' ? req.seqs : null;
+  const { lp, meta, stats } = buildMilp(state.inst, req.C, fixedSeq ? { fixedSeq } : {});
+  const warm = warmStart(state.inst, meta, state.cur.lifts);
+  const timeLimit = Math.max(10, +$('neos-time').value || 300);
+  const label = `NEOS Gurobi – ${req.mode === 'fixed' ? 'affectation hélicos' : `complet (${req.C.length} candidates)`}`;
+  const xml = neosJobXml({
+    lp, params: gurobiParams({ timeLimit }), mst: warm ? gurobiMst(warm) : null, email,
+    priority: timeLimit <= 240 ? 'short' : 'long', comments: `Heliski Planner – ${label}`,
+  });
+  $('btn-neos').disabled = true;
+  st.textContent = `Envoi du modèle (${stats.binaries} binaires, ${stats.constraints} contraintes)…`;
+  try {
+    const { job, password } = await neosApi.submit(xml, user, pass);
+    setNeosJob({ job, password, label, C: req.C, fixedSeq, key: scenarioKey(), submittedAt: Date.now(), startCost: state.cur.sch.cost, offset: 0 });
+    $('neos-log').textContent = ''; $('neos-log').hidden = false;
+    neosWatch();
+  } catch (e) {
+    st.textContent = 'Échec de la soumission : ' + e.message;
+    $('btn-neos').disabled = false;
+  }
+}
+
+function neosWatch() {
+  clearTimeout(neosTimer);
+  const j = neosJob();
+  const st = $('neos-status');
+  $('btn-neos').disabled = !!j; $('btn-neos-fetch').hidden = !j; $('btn-neos-kill').hidden = !j;
+  if (!j) return;
+  const tick = async () => {
+    const cur = neosJob(); if (!cur || cur.job !== j.job) return;
+    try {
+      const { status } = await neosApi.status(cur.job, cur.password);
+      const el = Math.round((Date.now() - cur.submittedAt) / 1000);
+      st.innerHTML = `Travail <a href="${neosJobUrl(cur.job, cur.password)}" target="_blank" rel="noopener">n°${cur.job}</a> · ${esc(statusNeosFr(status))} · ${el} s`;
+      if (status === 'Running' || status === 'Done') {
+        const lg = await neosApi.log(cur.job, cur.password, cur.offset ?? 0).catch(() => null);
+        if (lg?.text) { const pre = $('neos-log'); pre.hidden = false; pre.textContent += lg.text; pre.scrollTop = pre.scrollHeight; setNeosJob({ ...cur, offset: lg.offset }); }
+      }
+      if (status === 'Done') { await neosFetch(); return; }
+      if (/Unknown|Bad Password/i.test(status)) { st.textContent = `NEOS : ${status}`; setNeosJob(null); neosWatch(); return; }
+    } catch (e) { st.textContent = `Suivi NEOS : ${e.message} (nouvel essai…)`; }
+    neosTimer = setTimeout(tick, 5000);
+  };
+  tick();
+}
+
+async function neosFetch() {
+  const j = neosJob(); const st = $('neos-status');
+  if (!j) return;
+  try {
+    const r = await neosApi.results(j.job, j.password);
+    if (r.status !== 'Done') { st.textContent = `Travail n°${j.job} : ${statusNeosFr(r.status)}`; return; }
+    if (j.key !== scenarioKey()) { st.textContent = `Résultat n°${j.job} reçu, mais les données ou paramètres ont changé depuis la soumission : impossible de l’afficher sur ce scénario.`; setNeosJob(null); neosWatch(); return; }
+    const { lp, meta } = buildMilp(state.inst, j.C, j.fixedSeq ? { fixedSeq: j.fixedSeq } : {});
+    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|kconst)\b/g));
+    const out = parseGurobiOutput(r.text, known);
+    const cut = r.text.search(/^#\s*Solution for model|^#\s*Objective value/m);
+    const pre = $('neos-log'); pre.hidden = false;
+    pre.textContent = (cut > 0 ? r.text.slice(0, cut) : r.text).slice(-20000) + `\n[${out.values.size} valeurs de variables lues dans le fichier de solution]`;
+    pre.scrollTop = pre.scrollHeight;
+    setNeosJob(null); neosWatch();
+    if (!out.values.size) { st.innerHTML = `Travail n°${j.job} terminé sans solution lisible (${esc(statusFr(out.status))}). Voir le journal ci-dessous ou <a href="${neosJobUrl(j.job, j.password)}" target="_blank" rel="noopener">sur NEOS</a>.`; return; }
+    const lifts = liftsFromMilp(state.inst, meta, (n) => out.values.get(n) ?? 0);
+    const gap = Number.isFinite(out.gap) ? (100 * out.gap).toFixed(2) + ' %' : '—';
+    const secs = Number.isFinite(out.solverTime) ? out.solverTime : (Date.now() - j.submittedAt) / 1000;
+    st.innerHTML = `<b>${esc(statusFr(out.status))}</b> (Gurobi, n°${j.job}) · objectif ${chf(out.objective)} · borne inf. ${Number.isFinite(out.bound) ? chf(out.bound) : '—'} · écart ${gap} · départ ${chf(j.startCost)}`;
+    setSolution({ label: j.label, lifts, sol: null, seconds: secs, bound: out.bound, info: `${statusFr(out.status)}, écart ${gap}, travail NEOS n°${j.job}` });
+    state.cur.sol = { seq: seqFromLifts(state.inst.groups.length, lifts), prio: new Array(state.inst.groups.length).fill(0), lambda: 1, urgency: 1 };
+  } catch (e) { st.textContent = 'Récupération NEOS : ' + e.message; }
+}
+
+async function neosKill() {
+  const j = neosJob(); if (!j) return;
+  try { await neosApi.kill(j.job, j.password); } catch { /* le travail est peut-être déjà fini */ }
+  setNeosJob(null); neosWatch(); $('neos-status').textContent = `Travail n°${j.job} annulé.`;
+}
+
+function statusNeosFr(s) {
+  return { Done: 'terminé', Running: 'en cours de résolution', Waiting: 'en file d’attente' }[s] ?? s;
 }
 
 // ------------------------------------------------------------------ rendu
@@ -422,6 +532,11 @@ function init() {
   $('btn-milp').onclick = solveMilp;
   $('btn-milp-stop').onclick = () => { state.milpWorker?.terminate(); state.milpWorker = null; $('btn-milp').disabled = false; $('btn-milp-stop').hidden = true; $('milp-status').textContent = 'Arrêté.'; };
   $('btn-lp').onclick = exportLp;
+  neosLoadCred();
+  $('neos-remember').onchange = neosSaveCred;
+  $('btn-neos').onclick = neosSubmit;
+  $('btn-neos-fetch').onclick = neosFetch;
+  $('btn-neos-kill').onclick = neosKill;
   $('milp-mode').onchange = () => { $('milp-size').disabled = $('milp-mode').value === 'fixed'; };
   $('milp-size').disabled = true;
   $('map-focus').onchange = (e) => { state.focus = e.target.value; renderMapView(); updateTime(); };
@@ -455,6 +570,7 @@ function init() {
   renderAll();
   // Premier lancement : descentes générées sur le relief réel, puis calcul du scénario de test.
   if (firstRun) generate(); else solveHeuristic();
+  neosWatch(); // reprise d'un travail NEOS soumis avant un rechargement
 }
 
 init();

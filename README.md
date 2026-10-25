@@ -6,7 +6,8 @@ sous contrainte de dénivelé vendu aux clients (forfaits).
 - **Formulation** du problème (MILP) : voir l'onglet *Formulation* de l'app ou [`docs/FORMULATION.md`](docs/FORMULATION.md).
 - **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s, en parallèle sur plusieurs cœurs).
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
-- **Export `.lp`** du même modèle pour [NEOS](https://neos-server.org) (CPLEX, Gurobi…) : `tools/neos_submit.py`.
+- **Résolution sur [NEOS](https://neos-server.org) avec Gurobi**, directement depuis l'app (identifiant NEOS) :
+  soumission, journal en direct, récupération et vérification du résultat. Export `.lp` aussi disponible.
 - **Vérification indépendante** de chaque planning (continuité, durées de vol, standby ≤ 5 min, chargement 6 min,
   dénivelé, fenêtre horaire, exclusivité des descentes, recalcul du coût).
 - Carte des descentes (animation de la journée), diagramme de Gantt hélicos / groupes, journal des rotations.
@@ -16,14 +17,14 @@ sous contrainte de dénivelé vendu aux clients (forfaits).
 Aucune compilation, aucune dépendance : c'est un site statique.
 
 ```sh
-python3 -m http.server 8080      # ou : npm start
+npm start                        # = node tools/dev_server.mjs 8080 (statique + relais NEOS)
 # puis ouvrir http://localhost:8080 et « Installer l'app » (Chrome / Edge / Safari « Sur l'écran d'accueil »)
 ```
 
 Pour l'installer sur un téléphone, il suffit de publier le dossier sur un hébergement HTTPS statique
 (GitHub Pages, Netlify…). L'app fonctionne ensuite hors ligne (service worker, HiGHS inclus).
 
-Tests : `npm test` (Node ≥ 20). Banc d'essai MILP : `node tools/bench_milp.mjs full 10 60`.
+Tests : `npm test` (Node ≥ 20 ; inclut la chaîne NEOS contre un faux serveur, `tests/mock_neos.mjs`). Banc d'essai MILP : `node tools/bench_milp.mjs full 10 60`.
 
 ## Le scénario de test
 
@@ -49,6 +50,24 @@ Constat : le coût étant facturé à la minute de vol, le second hélicoptère 
 surtout à réduire l'attente des clients. Sans limite d'attente, l'optimum laisse un hélico faire l'essentiel des rotations.
 Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permettent d'arbitrer coût ↔ qualité de service.
 
+## NEOS (Gurobi)
+
+Dans *Résolution → Serveur NEOS (Gurobi)* : saisir l'identifiant et le mot de passe NEOS, choisir le modèle
+(affectation hélicos ou complet sur N descentes candidates) et le temps max, puis « Soumettre à NEOS ».
+
+- **Solveur : Gurobi** (format LP), le solveur MILP le plus performant proposé par NEOS ; paramètres `TimeLimit`,
+  `MIPGap 1e-4`, `MIPFocus 1`. La solution heuristique est fournie comme **démarrage MIP** (`.mst`) : Gurobi part
+  d'une solution faisable et se concentre sur l'amélioration et la preuve (borne).
+- File *short* (≤ 5 min CPU, plus prioritaire) si le temps max ≤ 240 s, sinon *long*.
+- Le navigateur ne peut pas joindre l'API XML-RPC de NEOS (port 3333, pas de CORS) : la fonction Netlify
+  `netlify/functions/neos.mjs` (`/api/neos`) relaie uniquement `authenticatedSubmitJob`, `getJobStatus`,
+  `getIntermediateResults`, `getFinalResults` et `killJob`. Elle ne stocke rien ; les identifiants ne sont mémorisés
+  dans le navigateur que si la case « Mémoriser » est cochée.
+- Le travail en cours est conservé : après un rechargement, l'app reprend le suivi et récupère le résultat.
+  Le résultat (fichier `.sol` de Gurobi) est relu, transformé en planning et passé au vérificateur indépendant.
+- En local : `npm start` fournit le même relais. Pour tester sans NEOS : lancer le faux serveur
+  (`node tests/mock_neos.mjs 3999`) puis `NEOS_URL=http://localhost:3999 npm start` (identifiants `demo` / `demo`).
+
 ## Structure
 
 | Fichier | Rôle |
@@ -59,6 +78,7 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 | `js/solver.js` | recuit simulé multi-départs + descente locale |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/milp.js` | génération du MILP (format CPLEX LP), démarrage à chaud, appel HiGHS |
+| `js/neos.js`, `netlify/functions/neos.mjs` | travail NEOS (Gurobi, .mst), lecture du résultat ; relais XML-RPC |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |
 | `lib/highs/` | HiGHS 1.15.3 (WebAssembly, licence MIT) |
 | `lib/leaflet/` | Leaflet 1.9.4 (licence BSD-2) |

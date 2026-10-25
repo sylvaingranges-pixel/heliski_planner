@@ -5,8 +5,9 @@
   "type": "module",
   "description": "PWA d optimisation des rotations d helicopteres pour l heliski",
   "scripts": {
-    "start": "python3 -m http.server 8080",
+    "start": "node tools/dev_server.mjs 8080",
     "test": "node --test tests/*.test.mjs",
-    "bench": "node tools/bench_milp.mjs"
+    "bench": "node tools/bench_milp.mjs",
+    "dev": "node tools/dev_server.mjs 8080"
   }
 }

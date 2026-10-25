@@ -111,6 +111,24 @@
             <button id="btn-lp" class="btn btn-ghost" title="Fichier LP pour NEOS / CPLEX / Gurobi / CBC">Exporter .lp</button>
           </div>
           <div id="milp-status" class="muted small"></div>
+
+          <h4>Serveur NEOS (Gurobi)</h4>
+          <p class="muted small" style="margin:0 0 6px">Même modèle que ci-dessus (mode et candidates), résolu par Gurobi sur
+            <a href="https://neos-server.org" target="_blank" rel="noopener">neos-server.org</a>, démarré avec la solution heuristique.</p>
+          <div class="grid2">
+            <label>Identifiant NEOS <input type="text" id="neos-user" autocomplete="username"></label>
+            <label>Mot de passe <input type="password" id="neos-pass" autocomplete="current-password"></label>
+            <label>E-mail (optionnel) <input type="email" id="neos-email" autocomplete="email"></label>
+            <label>Temps max (s) <input type="number" id="neos-time" value="300" min="10" max="28800"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="neos-remember"> Mémoriser sur cet appareil</label>
+          <div class="row">
+            <button id="btn-neos" class="btn">Soumettre à NEOS</button>
+            <button id="btn-neos-fetch" class="btn btn-ghost" hidden>Récupérer le résultat</button>
+            <button id="btn-neos-kill" class="btn btn-ghost" hidden>Annuler</button>
+          </div>
+          <div id="neos-status" class="muted small"></div>
+          <pre id="neos-log" class="neos-log" hidden></pre>
         </details>
       </aside>
 

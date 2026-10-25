@@ -3,6 +3,11 @@
   publish = "."
   command = ""
 
+# Relais XML-RPC vers NEOS (port 3333, inaccessible depuis le navigateur)
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
 [[headers]]
   for = "/sw.js"
   [headers.values]

@@ -98,9 +98,10 @@ planning et contrôle toutes les contraintes ainsi que le coût.</p>
   <li><b>Complet sur candidates</b> : le modèle ci-dessus sur un sous-ensemble <i class="v">C</i> (descentes de la solution + meilleures voisines),
   démarré à chaud avec la solution heuristique. HiGHS fournit une <b>borne inférieure</b> et donc un <b>écart garanti</b> à l’optimum sur
   <i class="v">C</i>.</li>
-  <li><b>NEOS</b> : le bouton « Exporter .lp » produit le même modèle au format CPLEX LP, soumissible sur
-  <a href="https://neos-server.org/neos/solvers/index.html" target="_blank" rel="noopener">neos-server.org</a> (CPLEX, Gurobi, CBC, …) pour
-  des sous-ensembles plus grands. Voir <code>tools/neos_submit.py</code>.</li>
+  <li><b>NEOS / Gurobi</b> : le même modèle est soumis directement depuis l’app à
+  <a href="https://neos-server.org" target="_blank" rel="noopener">neos-server.org</a> et résolu par <b>Gurobi</b>, démarré avec la
+  solution heuristique (fichier MIP start). Gurobi, bien plus rapide que HiGHS sur ce type de modèle, permet de traiter des
+  sous-ensembles de descentes plus grands et de resserrer la borne. Le résultat est relu, vérifié et comparé.</li>
 </ul>
 
 <h2>5. Hypothèses et extensions possibles</h2>
