@@ -1,6 +1,7 @@
 // Tests : node --test tests/
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from '../js/data.js';
 import { buildInstance, decode, buildSchedule } from '../js/model.js';
 import { solveSA, initialSolution, mutate, polish } from '../js/solver.js';
@@ -150,4 +151,31 @@ test('MILP : chaque groupe skie une descente au plus une fois (complet sur candi
   const out = runHighs(highs, lp, { timeLimit: 10, warm: warmStart(inst, meta, d.lifts) });
   const sch = buildSchedule(inst, liftsFromMilp(inst, meta, out.value));
   for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+});
+
+test('jeu de base figé : Le Châble, 50 descentes sur le relief réel, toujours identique', () => {
+  const base = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
+  assert.equal(base.runs.length, 50);
+  assert.equal(base.source, 'terrain');
+  assert.equal(base.seed, 42);
+  assert.deepEqual([base.origin.lat, base.origin.lon], [46.0795, 7.2128]);
+  assert.deepEqual(base.base, { x: 0, y: 0, alt: 828, name: 'Base' });
+  base.runs.forEach((r, i) => {
+    assert.equal(r.id, i);
+    assert.equal(r.vert, r.top.alt - r.bottom.alt);
+    assert.ok(r.skiMin > 0 && r.path.length >= 2);
+  });
+});
+
+test('effort borné en temps (timeMs) : durée respectée, solution faisable', () => {
+  const base = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
+  const groups = DEFAULT_GROUPS.map(g => ({ ...g, target: Math.round(g.packageM / g.days) }));
+  const inst = buildInstance(base, DEFAULT_PARAMS, groups);
+  const t = Date.now();
+  const res = solveSA(inst, { timeMs: 800, restarts: 4, seed: 1 });
+  const ms = Date.now() - t;
+  assert.ok(ms >= 700 && ms < 1600, `durée ${ms} ms`);
+  const sch = buildSchedule(inst, decode(inst, res.sol, true).lifts);
+  for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+  assert.ok(sch.cost < 8000, `coût ${sch.cost}`);
 });

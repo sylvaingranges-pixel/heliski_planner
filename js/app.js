@@ -1,30 +1,36 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
-import { buildInstance, decode, buildSchedule, seqFromLifts, nodeLabel, BASE } from './model.js';
+import { buildInstance, decode, buildSchedule, nodeLabel, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
-import { buildMilp, candidateRuns, warmStart, liftsFromMilp } from './milp.js';
-import { SOLVERS, AUTO_ORDER, neosJobXml, parseSolverOutput, neosApi, neosJobUrl, isSolverRefused } from './neos.js';
-import { FORMULATION_HTML } from './formulation.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
 const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
-const STORE = 'heliski-planner-v2';
+const STORE = 'heliski-planner-prod-v1';
+// Niveaux d'effort de l'optimisation : durée totale visée (s). Le temps est réparti en chaînes de recuit d'environ 1 s,
+// en parallèle sur les cœurs disponibles : plus d'effort = plus de chaînes indépendantes, on garde la meilleure.
+const EFFORT = { fast: { label: 'Rapide', seconds: 2 }, medium: { label: 'Moyen', seconds: 10 }, max: { label: 'Max', seconds: 30 } };
+// Jeu de base : figé dans data/base-dataset.json (relief réel, Le Châble, graine 42, 50 descentes, rayon 15 km).
+const BASE_OPTS = { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } };
+let BASE_DS = null;
+const baseDataset = () => ({ ...structuredClone(BASE_DS), isBase: true });
 
 const state = {
-  ds: null, dsOpts: { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } }, placingBase: false,
+  ds: null, dsOpts: structuredClone(BASE_OPTS), placingBase: false, effort: 'fast',
   params: { ...DEFAULT_PARAMS }, groups: DEFAULT_GROUPS.map(g => ({ ...g })),
   dayRuns: null,                                   // descentes du jour (null = toutes)
   dayFilter: { topMin: null, topMax: null, bottomMin: null, bottomMax: null, vertMin: null, diff: [1, 2, 3] },
   sel: { on: false, tool: 'click', action: 'add', start: null },   // mode « sélection d'itinéraires » sur la carte
   inst: null, cur: null, results: [], time: null, selectedRun: null, focus: 'all',
-  saWorkers: null, milpWorker: null,
+  saWorkers: null, stopSolve: null,
 };
 
 // ------------------------------------------------------------------ persistance
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset: state.ds, dayRuns: state.dayRuns, dayFilter: state.dayFilter })); } catch { /* stockage indisponible */ }
+  // Le jeu de base n'est jamais recopié : seule la référence « base » est mémorisée, il est relu depuis le fichier.
+  const dataset = state.ds?.isBase ? 'base' : state.ds;
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -32,9 +38,11 @@ function load() {
     if (!s) return;
     Object.assign(state.dsOpts, s.dsOpts); Object.assign(state.params, s.params);
     if (Array.isArray(s.groups) && s.groups.length) state.groups = s.groups;
-    if (s.dataset?.runs?.length) state.ds = s.dataset;
+    if (s.dataset === 'base' && BASE_DS) state.ds = baseDataset();
+    else if (s.dataset?.runs?.length) state.ds = { ...s.dataset, isBase: false };
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
     if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
+    if (EFFORT[s.effort]) state.effort = s.effort;
   } catch { /* ignore */ }
 }
 
@@ -60,10 +68,13 @@ function bindParams() {
     const e = $('p-' + k); e.checked = !!state.params[k];
     e.onchange = () => { state.params[k] = e.checked; paramsChanged(); };
   }
+  fillDatasetForm();
+  bindDayFilter();
+}
+function fillDatasetForm() {
   $('ds-seed').value = state.dsOpts.seed; $('ds-n').value = state.dsOpts.nRuns;
   $('ds-radius').value = state.dsOpts.radiusKm; $('ds-source').value = state.dsOpts.source;
   $('ds-lat').value = state.dsOpts.origin.lat.toFixed(5); $('ds-lon').value = state.dsOpts.origin.lon.toFixed(5);
-  bindDayFilter();
 }
 
 function renderGroupsTable() {
@@ -183,246 +194,80 @@ function setSolution(res, addToResults = true) {
   const sch = buildSchedule(state.inst, res.lifts);
   const checks = validateSchedule(state.inst, sch);
   state.cur = { ...res, sch, checks, feasible: checks.every(c => c.ok) };
-  if (addToResults) state.results.push({ label: res.label, cost: sch.cost, bound: res.bound ?? null, seconds: res.seconds, feasible: state.cur.feasible, info: res.info ?? '' });
+  if (addToResults) state.results.push({ label: res.label, cost: sch.cost, seconds: res.seconds, feasible: state.cur.feasible, info: res.info ?? '' });
   if (state.time == null || state.time < state.inst.params.dayStart) state.time = state.inst.params.dayStart;
   renderAll();
+}
+
+function setEffort(e) {
+  state.effort = e; save();
+  document.querySelectorAll('[data-effort]').forEach(b => b.classList.toggle('active', b.dataset.effort === e));
 }
 
 function solveHeuristic() {
   if (!state.inst) return;
   if (!state.inst.dayRuns.length) { alert('Aucune descente ouverte aujourd’hui : sélectionnez des descentes du jour.'); return; }
-  state.saWorkers?.forEach(w => w.terminate());
+  state.stopSolve?.(false);
   // Chaînes de recuit indépendantes (au plus une par cœur en même temps), on garde la meilleure.
   // Pour chaque taille de flotte k = 1…nHeli, mêmes graines : un planning à k hélicos reste valable avec plus
   // d'hélicos, donc ajouter un hélico ne peut jamais donner un résultat moins bon.
   const nW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
   const H = state.inst.params.nHeli;
-  const btn = $('btn-solve'), bar = $('sa-progress');
-  btn.disabled = true; btn.textContent = 'Optimisation…'; bar.hidden = false;
-  const iterations = +$('sa-effort').value, restarts = 4, seed0 = +$('sa-seed').value || 1;
+  const effort = EFFORT[state.effort], btn = $('btn-solve'), bar = $('sa-progress');
+  // Budget : chaînes d'environ 1 s, autant que les cœurs en font tenir dans la durée visée, réparties sur les flottes.
+  const perFleet = Math.max(1, Math.floor(effort.seconds * nW / H));
+  const waves = Math.ceil(H * perFleet / nW);
+  const timeMs = Math.max(150, 0.92 * 1000 * effort.seconds / waves - 60);   // marge : démarrage des workers, descente locale
+  const restarts = timeMs >= 600 ? 4 : 2, seed0 = 1;
   const jobs = [];
-  for (let k = H; k >= 1; k--) for (let w = 0; w < nW; w++) jobs.push({ fleet: k, seed: seed0 + 1000 * w });
+  for (let k = H; k >= 1; k--) for (let w = 0; w < perFleet; w++) jobs.push({ fleet: k, seed: seed0 + 1000 * w });
   const prog = new Array(jobs.length).fill(0), done = [];
   let bestSeen = Infinity, next = 0;
   const t0 = performance.now();
-  const reset = () => { btn.disabled = false; btn.textContent = 'Optimiser (heuristique)'; bar.hidden = true; };
+  btn.classList.add('running'); btn.textContent = 'Optimisation… (arrêter)'; bar.hidden = false;
+  bar.firstElementChild.style.width = '0%';
+  const reset = () => { btn.classList.remove('running'); btn.textContent = 'Optimiser'; bar.hidden = true; state.stopSolve = null; };
   const finish = () => {
-    state.saWorkers = null; reset();
+    reset();
+    if (!done.length) return;
     const best = done.reduce((a, b) => (b.f < a.f - 1e-9 || (Math.abs(b.f - a.f) <= 1e-9 && b.fleet < a.fleet) ? b : a));
     const evals = done.reduce((a, b) => a + b.evals, 0);
-    const perFleet = Array.from({ length: H }, (_, k) => Math.round(Math.min(...done.filter(d => d.fleet === k + 1).map(d => d.f))));
+    const fleets = Array.from({ length: H }, (_, k) => done.filter(d => d.fleet === k + 1).map(d => d.f))
+      .map((fs, k) => (fs.length ? `${k + 1} → ${Math.round(Math.min(...fs))}` : null)).filter(Boolean);
     const used = new Set(best.lifts.map(l => l.heli)).size;
-    setSolution({ label: 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
-      history: best.history, info: `${jobs.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations ; ${used} hélico(s) utilisé(s) sur ${H}` +
-        (H > 1 ? ` ; meilleur coût par flotte : ${perFleet.map((c, k) => `${k + 1} → ${c}`).join(', ')}` : '') });
+    const partial = done.length < jobs.length ? ` (arrêtée, ${done.length} / ${jobs.length} chaînes)` : '';
+    setSolution({ label: `Optimisation ${effort.label}${partial}`, sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
+      history: best.history, info: `${done.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations ; ${used} hélico(s) utilisé(s) sur ${H}` +
+        (H > 1 ? ` ; meilleur coût par flotte : ${fleets.join(', ')}` : '') });
+  };
+  // Arrêt par le bouton : on garde la meilleure des chaînes déjà terminées ; remplacé par un nouveau calcul : on jette tout.
+  state.stopSolve = (keep = true) => {
+    state.saWorkers?.forEach(x => x.terminate()); state.saWorkers = null;
+    if (keep) finish(); else reset();
   };
   const launch = () => {
     const k = next++, job = jobs[k];
     const w = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
     w.onmessage = (ev) => {
       const m = ev.data;
+      if (!state.saWorkers?.has(w)) return;        // calcul arrêté ou remplacé entre-temps
       if (m.type === 'progress') {
-        prog[k] = (m.info.restart * m.info.iterations + m.info.it) / (m.info.iterations * m.info.restarts);
+        prog[k] = m.info.frac;
         bestSeen = Math.min(bestSeen, m.info.bestF);
         bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / jobs.length).toFixed(1) + '%';
-        btn.textContent = `Optimisation… ${chf(bestSeen)}`;
+        btn.textContent = `Optimisation… ${chf(bestSeen)} (arrêter)`;
       } else if (m.type === 'done') {
         w.terminate(); state.saWorkers?.delete(w); done.push(m); prog[k] = 1;
         if (next < jobs.length) launch();
-        else if (done.length === jobs.length) finish();
+        else if (done.length === jobs.length) { state.saWorkers = null; finish(); }
       }
     };
-    w.onerror = (e) => { state.saWorkers?.forEach(x => x.terminate()); state.saWorkers = null; reset(); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: job.seed, fleet: job.fleet } });
+    w.onerror = (e) => { state.stopSolve?.(false); alert('Erreur du solveur : ' + e.message); };
+    w.postMessage({ ...snapshot(), opts: { timeMs, restarts, seed: job.seed, fleet: job.fleet } });
     state.saWorkers.add(w);
   };
   state.saWorkers = new Set();
   for (let i = 0; i < Math.min(nW, jobs.length); i++) launch();
-}
-
-function milpRequest() {
-  const mode = $('milp-mode').value;
-  const seqs = state.cur?.sol?.seq ?? (state.cur ? seqFromLifts(state.inst.groups.length, state.cur.lifts) : null);
-  if (!seqs) return null;
-  const C = candidateRuns(state.inst, seqs, mode === 'fixed' ? 0 : Math.max(4, +$('milp-size').value || 10));
-  if (!C.length) return null;
-  return { mode, seqs, C };
-}
-
-function solveMilp() {
-  const req = milpRequest();
-  const st = $('milp-status');
-  if (!req) { st.textContent = 'Lancez d’abord l’heuristique : sa solution sert de point de départ.'; return; }
-  state.milpWorker?.terminate();
-  const w = new Worker(new URL('./milp.worker.js', import.meta.url), { type: 'module' });
-  state.milpWorker = w;
-  const tl = Math.max(5, +$('milp-time').value || 30);
-  $('btn-milp').disabled = true; $('btn-milp-stop').hidden = false;
-  st.textContent = 'Chargement de HiGHS…';
-  const label = req.mode === 'fixed' ? 'MILP affectation hélicos' : `MILP complet (${req.C.length} candidates)`;
-  const startedFrom = state.cur.sch.cost;
-  let stats = null;
-  const finish = () => { $('btn-milp').disabled = false; $('btn-milp-stop').hidden = true; w.terminate(); state.milpWorker = null; };
-  w.onmessage = (ev) => {
-    const m = ev.data;
-    if (m.type === 'built') { stats = m.stats; st.textContent = `Modèle : ${m.stats.binaries} binaires, ${m.stats.constraints} contraintes. Résolution…`; }
-    else if (m.type === 'log') {
-      const l = m.log;
-      st.textContent = `${l.time?.toFixed(0)} s · meilleure ${isFinite(l.primal) ? chf(l.primal) : '—'} · borne ${isFinite(l.dual) ? chf(l.dual) : '—'} · écart ${isFinite(l.gap) ? (100 * l.gap).toFixed(2) + ' %' : '—'} · ${l.nodes} nœuds`;
-    } else if (m.type === 'done') {
-      finish();
-      const gap = isFinite(m.gap) ? (100 * m.gap).toFixed(2) + ' %' : '—';
-      st.innerHTML = `<b>${statusFr(m.status)}</b> en ${m.seconds.toFixed(1)} s · objectif ${chf(m.objective)} · borne inf. ${chf(m.dualBound)} · écart ${gap}` +
-        (m.warmOk ? ` · démarré à chaud depuis ${chf(startedFrom)}` : '') + (stats ? ` · ${stats.binaries} binaires` : '');
-      if (m.lifts.length) {
-        setSolution({ label, lifts: m.lifts, sol: null, seconds: m.seconds, bound: m.dualBound, info: `${statusFr(m.status)}, écart ${gap}` });
-        state.cur.sol = { seq: seqFromLifts(state.inst.groups.length, m.lifts), prio: new Array(state.inst.groups.length).fill(0), lambda: 1, urgency: 1 };
-      }
-    } else if (m.type === 'error') { finish(); st.textContent = 'Erreur HiGHS : ' + m.message; }
-  };
-  w.onerror = (e) => { finish(); st.textContent = 'Erreur : ' + e.message; };
-  w.postMessage({ ...snapshot(), C: req.C, fixedSeq: req.mode === 'fixed' ? req.seqs : null, warmLifts: state.cur.lifts, timeLimit: tl });
-}
-
-function statusFr(s) {
-  return { optimal: 'Optimal', timeLimit: 'Limite de temps', infeasible: 'Infaisable', interrupt: 'Interrompu', done: 'Terminé', unknown: 'Terminé' }[s] ?? s;
-}
-
-function exportLp() {
-  const req = milpRequest();
-  if (!req) { $('milp-status').textContent = 'Lancez d’abord l’heuristique.'; return; }
-  const { lp, stats } = buildMilp(state.inst, req.C, req.mode === 'fixed' ? { fixedSeq: req.seqs } : {});
-  download(`heliski_${req.mode}_${req.C.length}.lp`, lp, 'text/plain');
-  $('milp-status').textContent = `Exporté : ${stats.binaries} binaires, ${stats.constraints} contraintes (format CPLEX LP).`;
-}
-
-// ------------------------------------------------------------------ NEOS
-const NEOS_JOB = 'heliski-neos-job', NEOS_CRED = 'heliski-neos-cred';
-let neosTimer = null;
-
-function neosLoadCred() {
-  try {
-    const c = JSON.parse(localStorage.getItem(NEOS_CRED) || 'null');
-    if (c) { $('neos-user').value = c.user ?? ''; $('neos-pass').value = c.pass ?? ''; $('neos-email').value = c.email ?? ''; $('neos-remember').checked = true; }
-  } catch { /* ignore */ }
-}
-function neosSaveCred() {
-  try {
-    if ($('neos-remember').checked) localStorage.setItem(NEOS_CRED, JSON.stringify({ user: $('neos-user').value, pass: $('neos-pass').value, email: $('neos-email').value }));
-    else localStorage.removeItem(NEOS_CRED);
-  } catch { /* ignore */ }
-}
-const neosJob = () => { try { return JSON.parse(localStorage.getItem(NEOS_JOB) || 'null'); } catch { return null; } };
-const setNeosJob = (j) => { try { j ? localStorage.setItem(NEOS_JOB, JSON.stringify(j)) : localStorage.removeItem(NEOS_JOB); } catch { /* ignore */ } };
-// Empreinte du scénario : le résultat NEOS n'est décodable que sur les mêmes données / paramètres.
-const scenarioKey = () => JSON.stringify([state.ds.name, state.ds.runs.length, state.inst.targets, state.params, state.dayRuns]);
-
-async function neosSubmit() {
-  const st = $('neos-status');
-  const req = milpRequest();
-  if (!req) { st.textContent = 'Lancez d’abord l’heuristique : sa solution sert de point de départ.'; return; }
-  const user = $('neos-user').value.trim(), pass = $('neos-pass').value, email = $('neos-email').value.trim();
-  if (!user && !email) { st.textContent = 'Indiquez votre identifiant NEOS (ou au moins un e-mail pour une soumission anonyme).'; return; }
-  neosSaveCred();
-  const choice = $('neos-solver').value;
-  const order = choice === 'auto' ? AUTO_ORDER : [choice];
-  if (order.some(k => SOLVERS[k].needsEmail) && !email) { st.textContent = `${SOLVERS[order[0]].label} : un e-mail est exigé par NEOS.`; return; }
-  const fixedSeq = req.mode === 'fixed' ? req.seqs : null;
-  const { lp, meta, stats } = buildMilp(state.inst, req.C, fixedSeq ? { fixedSeq } : {});
-  const warm = warmStart(state.inst, meta, state.cur.lifts);
-  const timeLimit = Math.max(10, +$('neos-time').value || 300);
-  const what = req.mode === 'fixed' ? 'affectation hélicos' : `complet (${req.C.length} candidates)`;
-  $('btn-neos').disabled = true;
-  const refused = [];
-  for (const solver of order) {
-    st.textContent = `Envoi à NEOS / ${SOLVERS[solver].label} (${stats.binaries} binaires, ${stats.constraints} contraintes)…`;
-    const xml = neosJobXml(solver, { lp, timeLimit, warm, email, priority: timeLimit <= 240 ? 'short' : 'long', comments: `Heliski Planner – ${what}` });
-    try {
-      const { job, password } = await neosApi.submit(xml, user, pass);
-      setNeosJob({ job, password, solver, label: `NEOS ${solver} – ${what}`, C: req.C, fixedSeq, key: scenarioKey(), submittedAt: Date.now(), startCost: state.cur.sch.cost, offset: 0, refused });
-      $('neos-log').textContent = refused.length ? `[${refused.join(', ')} refusé(s) par NEOS via l’API → ${solver}]\n` : ''; $('neos-log').hidden = false;
-      neosWatch();
-      return;
-    } catch (e) {
-      if ((e.refused || isSolverRefused(e.message)) && solver !== order[order.length - 1]) { refused.push(solver); continue; }
-      st.textContent = 'Échec de la soumission : ' + e.message + (refused.length ? ` (déjà refusés : ${refused.join(', ')})` : '');
-      $('btn-neos').disabled = false;
-      return;
-    }
-  }
-}
-
-function neosWatch() {
-  clearTimeout(neosTimer);
-  const j = neosJob();
-  const st = $('neos-status');
-  $('btn-neos').disabled = !!j; $('btn-neos-fetch').hidden = !j; $('btn-neos-kill').hidden = !j;
-  if (!j) return;
-  const tick = async () => {
-    const cur = neosJob(); if (!cur || cur.job !== j.job) return;
-    try {
-      const { status } = await neosApi.status(cur.job, cur.password);
-      const el = Math.round((Date.now() - cur.submittedAt) / 1000);
-      st.innerHTML = `Travail <a href="${neosJobUrl(cur.job, cur.password)}" target="_blank" rel="noopener">n°${cur.job}</a> · ${esc(statusNeosFr(status))} · ${el} s`;
-      if (status === 'Running' || status === 'Done') {
-        const lg = await neosApi.log(cur.job, cur.password, cur.offset ?? 0).catch(() => null);
-        if (lg?.text) { const pre = $('neos-log'); pre.hidden = false; pre.textContent += lg.text; pre.scrollTop = pre.scrollHeight; setNeosJob({ ...cur, offset: lg.offset }); }
-      }
-      if (status === 'Done') { await neosFetch(); return; }
-      if (/Unknown|Bad Password/i.test(status)) { st.textContent = `NEOS : ${status}`; setNeosJob(null); neosWatch(); return; }
-    } catch (e) { st.textContent = `Suivi NEOS : ${e.message} (nouvel essai…)`; }
-    neosTimer = setTimeout(tick, 5000);
-  };
-  tick();
-}
-
-async function neosFetch() {
-  const j = neosJob(); const st = $('neos-status');
-  if (!j) return;
-  try {
-    const r = await neosApi.results(j.job, j.password);
-    if (r.status !== 'Done') { st.textContent = `Travail n°${j.job} : ${statusNeosFr(r.status)}`; return; }
-    if (j.key !== scenarioKey()) { st.textContent = `Résultat n°${j.job} reçu, mais les données ou paramètres ont changé depuis la soumission : impossible de l’afficher sur ce scénario.`; setNeosJob(null); neosWatch(); return; }
-    const { lp, meta } = buildMilp(state.inst, j.C, j.fixedSeq ? { fixedSeq: j.fixedSeq } : {});
-    const known = new Set(lp.match(/\b(?:x\d+_\d+|v\d+_\d+|y\d+_\d+_\d+|t\d+|sb\d+|lo\d+|cw\d+|z\d+|kconst)\b/g));
-    const solver = j.solver ?? 'COPT';
-    let solText = '';
-    if (SOLVERS[solver].solutionFile) {
-      try { solText = (await neosApi.outputFile(j.job, j.password, SOLVERS[solver].solutionFile)).text; }
-      catch (e) {
-        const tries = (j.fileTries ?? 0) + 1;
-        if (tries <= 8) {                      // l'archive est publiée quelques secondes après la fin du travail
-          setNeosJob({ ...j, fileTries: tries });
-          st.textContent = `Fichier de solution pas encore publié (${e.message}), nouvel essai ${tries}/8…`;
-          neosTimer = setTimeout(neosFetch, 8000); return;
-        }
-      }
-    }
-    const out = parseSolverOutput(solver, r.text, solText, known);
-    const pre = $('neos-log'); pre.hidden = false;
-    pre.textContent = r.text.slice(-20000) + `\n[${out.values.size} valeurs de variables lues${solText ? ' dans ' + SOLVERS[solver].solutionFile : ' dans le journal'}]`;
-    pre.scrollTop = pre.scrollHeight;
-    setNeosJob(null); neosWatch();
-    if (!out.values.size) { st.innerHTML = `Travail n°${j.job} terminé sans solution lisible (${esc(statusFr(out.status))}). Voir le journal ci-dessous ou <a href="${neosJobUrl(j.job, j.password)}" target="_blank" rel="noopener">sur NEOS</a>.`; return; }
-    const lifts = liftsFromMilp(state.inst, meta, (n) => out.values.get(n) ?? 0);
-    const gap = Number.isFinite(out.gap) ? (100 * out.gap).toFixed(2) + ' %' : '—';
-    const secs = Number.isFinite(out.solverTime) ? out.solverTime : (Date.now() - j.submittedAt) / 1000;
-    st.innerHTML = `<b>${esc(statusFr(out.status))}</b> (${esc(SOLVERS[solver].label)}, n°${j.job}) · objectif ${chf(out.objective)} · borne inf. ${Number.isFinite(out.bound) ? chf(out.bound) : '—'} · écart ${gap} · départ ${chf(j.startCost)}` +
-      (j.refused?.length ? ` · ${esc(j.refused.join(', '))} refusé(s) par NEOS via l’API` : '') +
-      (out.objective > j.startCost + 0.5 ? ' · <b>moins bon que l’heuristique</b> (solveur sans démarrage MIP : augmenter le temps max)' : '');
-    setSolution({ label: j.label, lifts, sol: null, seconds: secs, bound: out.bound, info: `${statusFr(out.status)}, écart ${gap}, travail NEOS n°${j.job}` });
-    state.cur.sol = { seq: seqFromLifts(state.inst.groups.length, lifts), prio: new Array(state.inst.groups.length).fill(0), lambda: 1, urgency: 1 };
-  } catch (e) { st.textContent = 'Récupération NEOS : ' + e.message; }
-}
-
-async function neosKill() {
-  const j = neosJob(); if (!j) return;
-  try { await neosApi.kill(j.job, j.password); } catch { /* le travail est peut-être déjà fini */ }
-  setNeosJob(null); neosWatch(); $('neos-status').textContent = `Travail n°${j.job} annulé.`;
-}
-
-function statusNeosFr(s) {
-  return { Done: 'terminé', Running: 'en cours de résolution', Waiting: 'en file d’attente' }[s] ?? s;
 }
 
 // ------------------------------------------------------------------ rendu
@@ -436,7 +281,7 @@ function ensureMapView() {
     },
     onMapClick: (latlng) => {
       if (!state.placingBase) return;
-      state.placingBase = false; $('map').classList.remove('placing'); $('btn-place-base').classList.remove('active');
+      setPlacingBase(false);
       $('ds-lat').value = latlng.lat.toFixed(5); $('ds-lon').value = latlng.lng.toFixed(5);
       generate();
     },
@@ -449,7 +294,7 @@ function renderAll() {
 
 function renderKpis() {
   const k = $('kpis');
-  if (!state.cur) { k.innerHTML = `<div class="kpi"><div class="l">Aucune solution</div><div class="v">—</div></div><div class="kpi" style="grid-column: span 3"><div class="l">Étape suivante</div><div>Cliquez sur <b>Optimiser (heuristique)</b>.</div></div>`; return; }
+  if (!state.cur) { k.innerHTML = `<div class="kpi"><div class="l">Aucune solution</div><div class="v">—</div></div><div class="kpi" style="grid-column: span 3"><div class="l">Étape suivante</div><div>Choisissez un effort puis cliquez sur <b>Optimiser</b>.</div></div>`; return; }
   const s = state.cur.sch, t = s.totals, inst = state.inst;
   const vert = s.gVert.reduce((a, b) => a + b, 0);
   const lastEnd = Math.max(...s.gEnd);
@@ -539,11 +384,11 @@ function renderOps() {
 
 function renderCompare() {
   const el = $('sub-compare');
-  if (!state.results.length) { el.innerHTML = '<p class="muted">Les solutions calculées (heuristique, MILP) s’affichent ici.</p>'; return; }
-  el.innerHTML = `<table class="mini"><thead><tr><th>Méthode</th><th>Coût</th><th>Borne inf.</th><th>Temps</th><th>OK</th></tr></thead><tbody>` +
-    state.results.map(r => `<tr><td title="${esc(r.info)}">${esc(r.label)}</td><td>${chf(r.cost)}</td><td>${r.bound != null && isFinite(r.bound) ? chf(r.bound) : '—'}</td>
+  if (!state.results.length) { el.innerHTML = '<p class="muted">Les solutions calculées s’affichent ici.</p>'; return; }
+  el.innerHTML = `<table class="mini"><thead><tr><th>Méthode</th><th>Coût</th><th>Temps</th><th>OK</th></tr></thead><tbody>` +
+    state.results.map(r => `<tr><td title="${esc(r.info)}">${esc(r.label)}</td><td>${chf(r.cost)}</td>
       <td>${r.seconds != null ? r.seconds.toFixed(1) + ' s' : '—'}</td><td>${r.feasible ? '✓' : '✗'}</td></tr>`).join('') + '</tbody></table>' +
-    `<div class="note">La borne inférieure du MILP « affectation hélicos » vaut pour les descentes imposées ; celle du MILP « complet » vaut pour l’ensemble des descentes candidates. Écart = (coût − borne) / coût.</div>`;
+    `<div class="note">Chaque optimisation repart de zéro : un effort plus élevé explore davantage de plannings et trouve en général un coût plus bas. Survolez une ligne pour le détail.</div>`;
 }
 
 function renderFocusSelect() {
@@ -562,7 +407,10 @@ function renderLegend() {
 
 function renderData() {
   const inst = state.inst, N = inst.N;
-  $('ds-info').textContent = `${inst.R} descentes · ${inst.dataset.source === 'terrain' ? 'relief réel' : 'synthétique'} · base ${inst.dataset.base.alt} m`;
+  const d = inst.dataset;
+  $('ds-info').innerHTML = (d.isBase ? '<span class="badge base">Jeu de base</span> ' : '<span class="badge">Jeu modifié</span> ') +
+    `${esc(d.name ?? '')} · ${inst.R} descentes · ${d.custom ? 'importé' : d.source === 'terrain' ? 'relief réel' : 'synthétique'} · base ${d.base.alt} m`;
+  $('btn-ds-base').disabled = !!d.isBase || !BASE_DS;
   $('runs-table').innerHTML = `<thead><tr><th title="Descente réalisable aujourd’hui">Jour</th><th>Code</th><th>Nom</th><th>Sommet (m)</th><th>Fond (m)</th><th>Dénivelé</th><th>Ski (min)</th><th>Diff.</th><th>Dist. base (km)</th><th>Vol base→sommet</th><th>Vol fond→base</th><th>Sommet (lat, lon)</th></tr></thead><tbody>` +
     inst.dataset.runs.map(r => `<tr class="${inst.open[r.id] ? '' : 'closed'} ${matchesFilter(r) ? '' : 'nomatch'}"><td><input type="checkbox" data-run="${r.id}" ${inst.open[r.id] ? 'checked' : ''}></td><td>${r.code}</td><td>${esc(r.name)}</td><td>${r.top.alt}</td><td>${r.bottom.alt}</td><td>${r.vert}</td><td>${r.skiMin}</td><td>${r.difficulty ?? ''}</td>
       <td>${Math.hypot(r.top.x, r.top.y).toFixed(1)}</td><td>${inst.tau[1 + r.id].toFixed(1)}</td><td>${inst.tau[(1 + inst.R + r.id) * N].toFixed(1)}</td><td>${toLatLon(inst.dataset.origin, r.top.x, r.top.y).map(v => v.toFixed(5)).join(', ')}</td></tr>`).join('') + '</tbody>';
@@ -587,6 +435,30 @@ function download(name, text, type) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+/** « Placer la base sur la carte » (depuis l'onglet Données) : la carte est dans l'onglet Planification. */
+function setPlacingBase(on) {
+  state.placingBase = on;
+  $('map').classList.toggle('placing', on); $('btn-place-base').classList.toggle('active', on);
+  if (on) {
+    if (state.sel.on) setSelMode(false);
+    activateTab('plan');
+    $('run-info').innerHTML = '<b>Cliquez sur la carte à l’endroit de la nouvelle base</b> : de nouvelles descentes seront générées autour. <button id="btn-place-cancel" class="btn btn-small btn-ghost">Annuler</button>';
+    $('btn-place-cancel').onclick = () => setPlacingBase(false);
+    $('map').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } else $('run-info').textContent = 'Cliquez sur une descente pour son détail.';
+}
+
+/** Retour au jeu de base (fixe) : mêmes descentes et même base qu'au premier lancement. */
+function restoreBase() {
+  if (!BASE_DS) return;
+  state.ds = baseDataset(); state.dsOpts = structuredClone(BASE_OPTS);
+  state.cur = null; state.results = []; state.selectedRun = null; state.dayRuns = null;
+  fillDatasetForm();
+  save(); rebuild(); renderData(); renderDayInfo(); renderAll();
+  $('run-info').textContent = 'Cliquez sur une descente pour son détail.';
+  solveHeuristic();
 }
 
 /** Nouveau jeu de données : relief réel (tuiles d'altitude) ou synthétique (repli hors ligne). */
@@ -629,7 +501,7 @@ function importDataset(file) {
         r.vert ??= r.top.alt - r.bottom.alt; if (!(r.skiMin > 0)) throw new Error(`skiMin manquant pour ${r.code}`);
       });
       d.radiusKm ??= Math.ceil(Math.max(...d.runs.flatMap(r => [Math.hypot(r.top.x, r.top.y), Math.hypot(r.bottom.x, r.bottom.y)])));
-      d.custom = true; d.name ??= file.name; d.origin ??= { ...state.dsOpts.origin };
+      d.custom = true; d.isBase = false; d.name ??= file.name; d.origin ??= { ...state.dsOpts.origin };
       state.ds = d; state.cur = null; state.results = []; state.dayRuns = null;
       save(); rebuild(); renderData(); renderDayInfo(); renderAll();
     } catch (e) { alert('Fichier invalide : ' + e.message); }
@@ -646,14 +518,19 @@ function exportMatrix() {
 }
 
 // ------------------------------------------------------------------ démarrage
-function init() {
+async function init() {
+  try {
+    const res = await fetch(new URL('../data/base-dataset.json', import.meta.url));
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    BASE_DS = await res.json();
+  } catch (e) { console.warn('Jeu de base indisponible :', e); }
   load();
-  const firstRun = !state.ds;
-  if (!state.ds) state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin: { ...state.dsOpts.origin } }; // provisoire
+  // Premier lancement (ou rien de mémorisé) : jeu de base. Repli synthétique si le fichier est introuvable.
+  state.ds ??= BASE_DS ? baseDataset() : { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin: { ...state.dsOpts.origin } };
   state.ds.origin ??= { ...DEFAULT_ORIGIN };
   rebuild();
   bindParams(); renderGroupsTable(); renderFocusSelect(); renderLegend(); renderData(); renderDayInfo();
-  $('view-formulation').innerHTML = FORMULATION_HTML;
+  setEffort(state.effort);
 
   document.querySelectorAll('.tab').forEach(b => b.onclick = () => activateTab(b.dataset.view));
   document.querySelectorAll('.subtab').forEach(b => b.onclick = () => {
@@ -661,12 +538,11 @@ function init() {
     document.querySelectorAll('.sub').forEach(v => v.classList.toggle('active', v.id === 'sub-' + b.dataset.sub));
   });
   $('btn-gen').onclick = () => generate();
-  $('btn-place-base').onclick = () => {
-    state.placingBase = !state.placingBase;
-    $('map').classList.toggle('placing', state.placingBase); $('btn-place-base').classList.toggle('active', state.placingBase);
-  };
+  $('btn-place-base').onclick = () => setPlacingBase(!state.placingBase);
+  $('btn-ds-base').onclick = restoreBase;
   $('btn-add-group').onclick = () => { state.groups.push({ name: `Groupe ${String.fromCharCode(65 + state.groups.length)}`, packageM: 10000, days: 5 }); groupsChanged(true); };
-  $('btn-solve').onclick = solveHeuristic;
+  $('btn-solve').onclick = () => (state.stopSolve ? state.stopSolve() : solveHeuristic());
+  document.querySelectorAll('[data-effort]').forEach(b => { b.onclick = () => setEffort(b.dataset.effort); });
   $('btn-day-all').onclick = () => setDayRuns(null, { solve: true });
   $('btn-day-select').onclick = () => { activateTab('plan'); setSelMode(true); };
   $('btn-sel-mode').onclick = () => setSelMode(!state.sel.on);
@@ -676,21 +552,14 @@ function init() {
   $('sel-all').onclick = () => setDayRuns(null);
   $('sel-none').onclick = () => setDayRuns([]);
   $('sel-invert').onclick = () => setDayRuns(state.ds.runs.map(r => r.id).filter(r => !state.inst.open[r]));
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.sel.on) setSelMode(false); });
-  $('btn-milp').onclick = solveMilp;
-  $('btn-milp-stop').onclick = () => { state.milpWorker?.terminate(); state.milpWorker = null; $('btn-milp').disabled = false; $('btn-milp-stop').hidden = true; $('milp-status').textContent = 'Arrêté.'; };
-  $('btn-lp').onclick = exportLp;
-  neosLoadCred();
-  $('neos-remember').onchange = neosSaveCred;
-  $('btn-neos').onclick = neosSubmit;
-  $('btn-neos-fetch').onclick = neosFetch;
-  $('btn-neos-kill').onclick = neosKill;
-  $('milp-mode').onchange = () => { $('milp-size').disabled = $('milp-mode').value === 'fixed'; };
-  $('milp-size').disabled = true;
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    if (state.placingBase) setPlacingBase(false); else if (state.sel.on) setSelMode(false);
+  });
   $('map-focus').onchange = (e) => { state.focus = e.target.value; renderMapView(); updateTime(); };
   $('map-all').onchange = () => { renderMapView(); updateTime(); };
   $('time').oninput = (e) => { state.time = +e.target.value; updateTime(); };
-  $('btn-export-ds').onclick = () => download('descentes.json', JSON.stringify(state.ds, null, 1), 'application/json');
+  $('btn-export-ds').onclick = () => download('descentes.json', JSON.stringify({ ...state.ds, isBase: undefined }, null, 1), 'application/json');
   $('file-ds').onchange = (e) => e.target.files[0] && importDataset(e.target.files[0]);
   $('btn-export-matrix').onclick = exportMatrix;
 
@@ -716,9 +585,7 @@ function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   renderAll();
-  // Premier lancement : descentes générées sur le relief réel, puis calcul du scénario de test.
-  if (firstRun) generate(); else solveHeuristic();
-  neosWatch(); // reprise d'un travail NEOS soumis avant un rechargement
+  solveHeuristic();
 }
 
 init();
