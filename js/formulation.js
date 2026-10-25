@@ -70,7 +70,8 @@ x<sub>Oj</sub> = 1 ⇒ t<sub>j</sub> ≥ a + τ<sub>Bj</sub> &nbsp;&nbsp;(avant 
 v<sub>gr</sub> = 1 ⇒ t<sub>P<sub>gr</sub></sub> ≥ t<sub>D<sub>gr</sub></sub> + δ<sub>d</sub> + s<sub>r</sub> &nbsp;&nbsp;(les clients peuvent attendre au fond)<span class="tag">(6) ski</span><br>
 Σ<sub>r∈C</sub> h<sub>r</sub> v<sub>gr</sub> ≥ Q<sub>g</sub> &nbsp;∀ g<span class="tag">(7) forfait</span><br>
 t<sub>S<sub>g</sub></sub> ≥ a, &nbsp; t<sub>E<sub>g</sub></sub> + δ<sub>d</sub> ≤ b<span class="tag">(8) fenêtre</span><br>
-v<sub>gr</sub> = v<sub>g′r</sub> = 1 ⇒ t<sub>D<sub>g′r</sub></sub> ≥ t<sub>D<sub>gr</sub></sub> + δ<sub>d</sub> + s<sub>r</sub> &nbsp;ou&nbsp; l’inverse (via y<sub>gg′r</sub>)<span class="tag">(9) exclusivité</span>
+v<sub>gr</sub> = v<sub>g′r</sub> = 1 ⇒ t<sub>D<sub>g′r</sub></sub> ≥ t<sub>D<sub>gr</sub></sub> + δ<sub>d</sub> + s<sub>r</sub> &nbsp;ou&nbsp; l’inverse (via y<sub>gg′r</sub>)<span class="tag">(9) exclusivité</span><br>
+un seul nœud D<sub>gr</sub> par couple (g, r), v<sub>gr</sub> ∈ {0,1}, pas d’arc P<sub>gr</sub> → D<sub>gr</sub> &nbsp;(un groupe ne refait pas la même descente dans la journée)<span class="tag">(10) pas de répétition</span>
 </div>
 <p>Les implications sont linéarisées par des big-M calculés <b>arc par arc</b> à partir des fenêtres [e<sub>i</sub>, ℓ<sub>i</sub>] ; les arcs
 temporellement impossibles sont supprimés. Les sous-tours sont exclus par les contraintes de temps (3)–(6) (durées strictement positives,
@@ -87,7 +88,8 @@ le graphe complet compte ~40 000 arcs binaires : trop pour une résolution exact
   par une des 12 plus proches du point de départ), insérer, retirer, retirer + remplacer, permuter, inverser un segment, échanger ou déplacer
   une descente entre groupes, modifier la priorité d’un groupe, le poids λ du décodeur, le nombre d’hélicos utilisés ou la pénalité
   d’usage β<sub>h</sub> d’un hélico. Suivi d’une <b>descente locale exhaustive</b>
-  (tous les remplacements / retraits / insertions / échanges).</li>
+  (tous les remplacements / retraits / insertions / échanges). Aucun mouvement ne place deux fois la même descente dans la journée
+  d’un groupe ; le décodeur pénalise et déclare infaisable toute séquence qui en répète une.</li>
   <li><b>Décodeur</b> (simulation événementielle) : pour des séquences données, on construit le planning des hélicos. À chaque étape on
   choisit le couple (groupe prêt, hélico) qui minimise
   <div class="math">début du chargement + prio<sub>g</sub> + β<sub>h</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
