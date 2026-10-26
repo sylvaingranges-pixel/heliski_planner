@@ -1,6 +1,7 @@
 // Worker : recuit simulé hors du thread principal.
 import { buildInstance, decode } from './model.js';
 import { solveSA } from './solver.js';
+import { solveALNS } from './alns.js';
 
 self.onmessage = (ev) => {
   const { dataset, params, groups, available, opts } = ev.data;
@@ -9,7 +10,7 @@ self.onmessage = (ev) => {
   const fleet = Math.max(1, Math.min(params.nHeli, opts.fleet ?? params.nHeli));
   const inst = buildInstance(dataset, { ...params, nHeli: fleet }, groups, available);
   let last = 0;
-  const res = solveSA(inst, {
+  const res = (opts.algorithm === 'sa' ? solveSA : solveALNS)(inst, {
     ...opts,
     onProgress: (info) => {
       const t = Date.now();
