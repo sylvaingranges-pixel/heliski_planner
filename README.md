@@ -77,7 +77,7 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 | `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
 | `js/data.js` | générateur synthétique, paramètres par défaut |
 | `js/model.js` | instance, matrice des temps de vol, décodeur (séquences → planning), coût |
-| `js/solver.js` | recuit simulé multi-départs + descente locale |
+| `js/solver.js` | recuit simulé multi-départs (pénalités adaptatives) + descente locale |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `data/base-dataset.json` | jeu de base fixe (Le Châble, 50 descentes, relief réel) |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |

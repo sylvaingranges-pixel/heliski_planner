@@ -156,77 +156,70 @@ export function polish(inst, sol, maxPasses = 6) {
 }
 
 /**
+ * Pénalités adaptatives. La recherche compare coût + mu × pénalités : le forfait de 1 500.– d'une solution infaisable
+ * est un mur que le recuit (température ≤ 400) ne franchit presque jamais, alors que de bons plannings ne s'atteignent
+ * qu'en traversant des solutions infaisables (journée courte, attente client serrée…).
+ * Tous les 200 essais : solution courante souvent infaisable (> 30 %) → mu monte ; presque toujours faisable (< 10 %)
+ * → mu baisse (plancher 0,05). Sur les 20 % finaux du départ, mu = 1. La meilleure solution est jugée sur le vrai objectif.
+ */
+function penaltyWeight() {
+  let mu = 1, n = 0, infeas = 0;
+  return {
+    val: (d) => d.cost + mu * d.penalty,
+    update(feasible, frac) {
+      if (frac >= 0.8) { mu = 1; return; }
+      n++; if (!feasible) infeas++;
+      if (n < 200) return;
+      const ratio = infeas / n; n = infeas = 0;
+      if (ratio > 0.3) mu = Math.min(1, mu * 1.25);
+      else if (ratio < 0.1) mu = Math.max(0.05, mu / 1.25);
+    },
+  };
+}
+
+/**
  * Recuit simulé multi-départs.
  * opts: { iterations, restarts, seed, timeMs, onProgress(info) }
  * timeMs : budget de temps total (ms, réparti entre les départs) à la place d'un nombre d'itérations fixe ;
  * la température suit alors le temps écoulé. Durée prévisible quel que soit l'appareil (résultat non reproductible).
  */
 export function solveSA(inst, opts = {}) {
-  if (opts.timeMs > 0) return solveSATimed(inst, opts);
-  const iterations = opts.iterations ?? 60000, restarts = opts.restarts ?? 4;
-  const rnd = mulberry32(opts.seed ?? 1);
-  const t0 = now();
-  let best = null, bestF = Infinity;
-  const history = [];
-  let evals = 0;
-  for (let rs = 0; rs < restarts; rs++) {
-    let cur = rs === 0 || !best ? initialSolution(inst, rnd) : mutateN(inst, best, rnd, 8);
-    let cf = decode(inst, cur).f; evals++;
-    // Température initiale ~ écart moyen de quelques mouvements aléatoires.
-    let acc = 0; for (let i = 0; i < 30; i++) { acc += Math.abs(decode(inst, mutate(inst, cur, rnd)).f - cf); evals++; }
-    const T0 = Math.min(400, Math.max(50, acc / 30)), Tend = 1;
-    const alpha = Math.pow(Tend / T0, 1 / iterations);
-    let T = T0;
-    if (cf < bestF) { bestF = cf; best = cloneSol(cur); }
-    for (let it = 0; it < iterations; it++) {
-      const cand = mutate(inst, cur, rnd);
-      const f = decode(inst, cand).f; evals++;
-      if (f <= cf || rnd() < Math.exp((cf - f) / T)) {
-        cur = cand; cf = f;
-        if (f < bestF - 1e-9) { bestF = f; best = cloneSol(cand); history.push({ t: now() - t0, f, eval: evals }); }
-      }
-      T *= alpha;
-      if (opts.onProgress && it % 5000 === 0) opts.onProgress({ restart: rs, it, iterations, restarts, bestF, curF: cf, elapsed: now() - t0 });
-    }
-    const pol = polish(inst, best);
-    const pf = decode(inst, pol).f;
-    if (pf < bestF - 1e-9) { bestF = pf; best = pol; history.push({ t: now() - t0, f: pf, eval: evals }); }
-  }
-  return { sol: best, f: bestF, history, elapsedMs: now() - t0, evals };
-}
-
-function solveSATimed(inst, opts) {
-  const restarts = opts.restarts ?? 4, budget = opts.timeMs / restarts;
+  const timed = opts.timeMs > 0, iterations = opts.iterations ?? 60000, restarts = opts.restarts ?? 4;
   const rnd = mulberry32(opts.seed ?? 1);
   const t0 = now();
   let best = null, bestF = Infinity, evals = 0, lastProg = -Infinity;
   const history = [];
   for (let rs = 0; rs < restarts; rs++) {
-    let cur = rs === 0 || !best ? initialSolution(inst, rnd) : mutateN(inst, best, rnd, 8);
-    let cf = decode(inst, cur).f; evals++;
-    let acc = 0; for (let i = 0; i < 30; i++) { acc += Math.abs(decode(inst, mutate(inst, cur, rnd)).f - cf); evals++; }
+    // Départs suivants : autour de la meilleure solution, sauf si elle est infaisable (on repart de zéro).
+    let cur = !best || !decode(inst, best).feasible ? initialSolution(inst, rnd) : mutateN(inst, best, rnd, 8);
+    let cd = decode(inst, cur); evals++;
+    // Température initiale ~ écart moyen de quelques mouvements aléatoires.
+    let acc = 0; for (let i = 0; i < 30; i++) { acc += Math.abs(decode(inst, mutate(inst, cur, rnd)).f - cd.f); evals++; }
     const T0 = Math.min(400, Math.max(50, acc / 30)), Tend = 1;
-    if (cf < bestF) { bestF = cf; best = cloneSol(cur); }
-    // Le départ se termine à l'échéance : la descente locale finale est prise sur le budget du départ.
-    const tStart = now(), tEnd = t0 + (rs + 1) * budget, span = Math.max(1, tEnd - tStart);
+    if (cd.f < bestF) { bestF = cd.f; best = cloneSol(cur); }
+    // En temps limité, le départ se termine à l'échéance : la descente locale finale est prise sur son budget.
+    const tStart = now(), span = timed ? Math.max(1, t0 + (rs + 1) * opts.timeMs / restarts - tStart) : 0;
+    const pw = penaltyWeight();
     let T = T0, frac = 0;
-    for (let it = 0; ; it++) {
+    for (let it = 0; timed || it < iterations; it++) {
       if ((it & 127) === 0) {
         const t = now();
-        frac = (t - tStart) / span;
-        if (frac >= 0.97) break;
+        frac = timed ? (t - tStart) / span : it / iterations;
+        if (timed && frac >= 0.97) break;
         T = T0 * Math.pow(Tend / T0, frac);
         if (opts.onProgress && t - lastProg > 50) {
           lastProg = t;
-          opts.onProgress({ restart: rs, restarts, frac: (rs + frac) / restarts, bestF, curF: cf, elapsed: t - t0 });
+          opts.onProgress({ restart: rs, restarts, frac: (rs + frac) / restarts, bestF, curF: cd.f, elapsed: t - t0 });
         }
       }
       const cand = mutate(inst, cur, rnd);
-      const f = decode(inst, cand).f; evals++;
-      if (f <= cf || rnd() < Math.exp((cf - f) / T)) {
-        cur = cand; cf = f;
-        if (f < bestF - 1e-9) { bestF = f; best = cloneSol(cand); history.push({ t: now() - t0, f, eval: evals }); }
+      const d = decode(inst, cand); evals++;
+      const v = pw.val(d), cv = pw.val(cd);
+      if (v <= cv || rnd() < Math.exp((cv - v) / T)) {
+        cur = cand; cd = d;
+        if (d.f < bestF - 1e-9) { bestF = d.f; best = cloneSol(cand); history.push({ t: now() - t0, f: d.f, eval: evals }); }
       }
+      pw.update(cd.feasible, frac);
     }
     const pol = polish(inst, best);
     const pf = decode(inst, pol).f;

@@ -203,3 +203,15 @@ test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standb
   // Le même planning est refusé par le vérificateur si la coupure hors base n'est pas autorisée.
   assert.ok(validateSchedule(instOff, sOn).some(c => !c.ok && /coupure moteur non autorisée/.test(c.errors.join(' '))));
 });
+
+test('robustesse : instance serrée (1 hélico, fin 13 h), toutes les graines faisables', () => {
+  // Instance où un départ peut finir infaisable : le suivant repart alors de zéro au lieu de chercher autour.
+  const inst = buildInstance(generateDataset({ seed: 123 }), { ...DEFAULT_PARAMS, nHeli: 1, dayEnd: 13 * 60 }, DEFAULT_GROUPS);
+  for (let seed = 1; seed <= 4; seed++) {
+    const res = solveSA(inst, { seed, iterations: 30000, restarts: 4 });
+    const d = decode(inst, res.sol, true);
+    assert.ok(d.feasible, `graine ${seed} : ${res.f}`);
+    assert.equal(d.f, res.f);
+    for (const c of validateSchedule(inst, buildSchedule(inst, d.lifts))) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+  }
+});

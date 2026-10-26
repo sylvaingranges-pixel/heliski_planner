@@ -66,7 +66,9 @@ Le problème généralise le PDPTW / *dial-a-ride* avec sélection des visites e
 
 1. **Recuit simulé** sur les séquences de descentes par groupe (remplacer, insérer, retirer, retirer+remplacer,
    permuter, inverser, échanger / déplacer entre groupes) et sur les paramètres du décodeur ; descente locale exhaustive
-   à la fin ; plusieurs chaînes en parallèle.
+   à la fin ; plusieurs chaînes en parallèle. Pénalités adaptatives pendant la recherche (coût + μ·pénalités, μ ∈ [0,05 ; 1]
+   ajusté selon la part de solutions infaisables, μ = 1 en fin de départ) pour traverser les zones infaisables ; un départ
+   repart de zéro si la meilleure solution est infaisable.
 2. **Décodeur événementiel** : à chaque pas, le couple (groupe prêt, hélico) minimisant
    `début + prio_g + λ·coût marginal / c_v (− urgence·attente)` est exécuté ; l'attente de l'hélico est facturée au mieux
    (le moins cher entre standby ≤ 5 min / vol d'attente et, si autorisé, coupure moteur au point de reprise ou à la base
