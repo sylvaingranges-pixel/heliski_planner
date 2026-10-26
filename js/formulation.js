@@ -87,14 +87,19 @@ le graphe complet compte ~40 000 arcs binaires : trop pour une résolution exact
 <ol>
   <li><b>Choix et ordre des descentes</b> par groupe — <b>recuit simulé</b> multi-départs. Mouvements : remplacer une descente (de préférence
   par une des 12 plus proches du point de départ), insérer, retirer, retirer + remplacer, permuter, inverser un segment, échanger ou déplacer
-  une descente entre groupes, modifier la priorité d’un groupe, le poids λ du décodeur, le nombre d’hélicos utilisés ou la pénalité
-  d’usage β<sub>h</sub> d’un hélico. Suivi d’une <b>descente locale exhaustive</b>
-  (tous les remplacements / retraits / insertions / échanges). Aucun mouvement ne place deux fois la même descente dans la journée
-  d’un groupe ; le décodeur pénalise et déclare infaisable toute séquence qui en répète une.</li>
+  une descente entre groupes, modifier la priorité d’un groupe, les poids λ / urgence / marge du décodeur, l’ensemble des hélicos utilisés
+  ou la pénalité d’usage β<sub>h</sub> d’un hélico. Pénalités <b>adaptatives</b> pendant la recherche (voir plus bas). Suivi d’une
+  <b>descente locale exhaustive</b> (tous les remplacements / retraits / insertions / échanges), puis d’une <b>optimisation du dispatch à
+  descentes fixées</b> : anticipation en faisceau (chaque décision candidate est jugée sur la journée complète) et recherche locale sur les
+  décisions (changer l’hélico d’une rotation, inverser deux rotations). Aucun mouvement ne place deux fois la même descente dans la journée
+  d’un groupe ; le décodeur pénalise et déclare infaisable toute séquence qui en répète une. En option (expérimental) : <b>ALNS</b>,
+  qui détruit et reconstruit plusieurs descentes à la fois (hasard, proximité, coût marginal, segment d’un groupe, créneau horaire,
+  hélico), avec des poids d’opérateurs adaptatifs.</li>
   <li><b>Décodeur</b> (simulation événementielle) : pour des séquences données, on construit le planning des hélicos. À chaque étape on
   choisit le couple (groupe prêt, hélico) qui minimise
-  <div class="math">début du chargement + prio<sub>g</sub> + β<sub>h</sub> + λ · (coût marginal / c<sub>v</sub>)</div>
-  puis on exécute la rotation. L’attente de l’hélico est facturée au mieux : moteur coupé à la base avant le premier vol ; ensuite le moins cher entre
+  <div class="math">début du chargement + prio<sub>g</sub> + β<sub>h</sub> + λ · (coût marginal / c<sub>v</sub>) − urgence · attente − κ · (60 − marge)<sup>+</sup></div>
+  (marge = temps restant avant la fin de journée une fois les rotations et descentes restantes du groupe faites), puis on exécute la rotation.
+  Un dispatch optimisé est mémorisé comme une liste de décisions (groupe, hélico) que le décodeur rejoue. L’attente de l’hélico est facturée au mieux : moteur coupé à la base avant le premier vol ; ensuite le moins cher entre
   standby (≤ w̄) / vol d’attente et, si autorisé, coupure moteur au point de reprise ou à la base (un redémarrage <i class="v">c<sub>d</sub></i>),
   ou retour à la base. L’exclusivité d’une descente
   retarde la dépose si nécessaire.</li>
@@ -103,7 +108,9 @@ le graphe complet compte ~40 000 arcs binaires : trop pour une résolution exact
 valable avec <i class="v">H &gt; k</i> (les autres restent à la base, sans coût). L’app lance donc, avec les mêmes graines, des chaînes
 de recuit pour chaque flotte <i class="v">k = 1…H</i> et garde la meilleure : ajouter un hélico ne dégrade jamais le résultat.</p>
 <p>Les solutions qui ne tiennent pas le forfait ou la fenêtre sont pénalisées (1 500.– + 20.–/m manquant, 1 500.– + 200.–/min de
-retard) afin que la recherche puisse traverser des solutions infaisables. Un <b>vérificateur indépendant</b> relit ensuite chaque segment du
+retard) afin que la recherche puisse traverser des solutions infaisables. Pendant la recherche, ces pénalités sont multipliées par un
+coefficient μ ∈ [0,05 ; 1] ajusté en continu (μ baisse quand la solution courante est presque toujours faisable, monte sinon ; μ = 1 sur
+les 20 % finaux) : sans cela, le forfait de 1 500.– est un mur que le recuit ne franchit presque jamais. Un <b>vérificateur indépendant</b> relit ensuite chaque segment du
 planning et contrôle toutes les contraintes ainsi que le coût.</p>
 <h3>4.2 Vérification exacte (HiGHS, dans le navigateur)</h3>
 <ul>

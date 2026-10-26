@@ -208,7 +208,7 @@ function solveHeuristic() {
   const H = state.inst.params.nHeli;
   const btn = $('btn-solve'), bar = $('sa-progress');
   btn.disabled = true; btn.textContent = 'Optimisation…'; bar.hidden = false;
-  const iterations = +$('sa-effort').value, restarts = 4, seed0 = +$('sa-seed').value || 1;
+  const iterations = +$('sa-effort').value, restarts = 4, seed0 = +$('sa-seed').value || 1, algorithm = $('sa-algo').value;
   const jobs = [];
   for (let k = H; k >= 1; k--) for (let w = 0; w < nW; w++) jobs.push({ fleet: k, seed: seed0 + 1000 * w });
   const prog = new Array(jobs.length).fill(0), done = [];
@@ -221,7 +221,7 @@ function solveHeuristic() {
     const evals = done.reduce((a, b) => a + b.evals, 0);
     const perFleet = Array.from({ length: H }, (_, k) => Math.round(Math.min(...done.filter(d => d.fleet === k + 1).map(d => d.f))));
     const used = new Set(best.lifts.map(l => l.heli)).size;
-    setSolution({ label: 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
+    setSolution({ label: algorithm === 'alns' ? 'Heuristique (ALNS)' : 'Heuristique (recuit simulé)', sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
       history: best.history, info: `${jobs.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations ; ${used} hélico(s) utilisé(s) sur ${H}` +
         (H > 1 ? ` ; meilleur coût par flotte : ${perFleet.map((c, k) => `${k + 1} → ${c}`).join(', ')}` : '') });
   };
@@ -242,7 +242,7 @@ function solveHeuristic() {
       }
     };
     w.onerror = (e) => { state.saWorkers?.forEach(x => x.terminate()); state.saWorkers = null; reset(); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: job.seed, fleet: job.fleet } });
+    w.postMessage({ ...snapshot(), opts: { iterations, restarts, seed: job.seed, fleet: job.fleet, algorithm } });
     state.saWorkers.add(w);
   };
   state.saWorkers = new Set();

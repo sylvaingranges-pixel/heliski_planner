@@ -10,6 +10,9 @@ sous contrainte de dénivelé vendu aux clients (forfaits).
   sur ce sous-ensemble ; le vérificateur le contrôle.
 - **Résolution rapide dans le navigateur** : recuit simulé + décodeur événementiel (~1–2 s par hélico, en parallèle sur plusieurs cœurs).
   Avec H hélicos, les flottes de 1 à H sont explorées (mêmes graines) : plus d'hélicos ne donne jamais un plan plus cher.
+  Pénalités adaptatives pendant la recherche, priorités dynamiques (marge avant la fin de journée), puis dispatch optimisé
+  à descentes fixées (anticipation en faisceau + recherche locale sur les affectations). ALNS (destruction / reconstruction)
+  disponible en option expérimentale. Détails et mesures : [`docs/HEURISTIQUE.md`](docs/HEURISTIQUE.md).
 - **Vérification exacte** dans le navigateur avec [HiGHS](https://highs.dev) compilé en WebAssembly (borne inférieure, écart garanti).
 - **Résolution sur [NEOS](https://neos-server.org) avec COPT** (repli SCIP), directement depuis l'app (identifiant NEOS) :
   soumission, journal en direct, récupération et vérification du résultat. Export `.lp` aussi disponible.
@@ -33,6 +36,7 @@ Pour l'installer sur un téléphone, il suffit de publier le dossier sur un héb
 (GitHub Pages, Netlify…). L'app fonctionne ensuite hors ligne (service worker, HiGHS inclus).
 
 Tests : `npm test` (Node ≥ 20 ; inclut la chaîne NEOS contre un faux serveur, `tests/mock_neos.mjs`). Banc d'essai MILP : `node tools/bench_milp.mjs full 10 60`.
+Banc d'essai de l'heuristique (scénarios × graines) : `npm run bench:heuristic` ; écart du décodeur au MILP : `node tools/bench_heuristic.mjs --gap`.
 
 ## Le scénario de test
 
@@ -91,7 +95,7 @@ Dans *Résolution → Serveur NEOS* : saisir l'identifiant et le mot de passe NE
 | `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
 | `js/data.js` | générateur synthétique, paramètres par défaut |
 | `js/model.js` | instance, matrice des temps de vol, décodeur (séquences → planning), coût |
-| `js/solver.js` | recuit simulé multi-départs + descente locale |
+| `js/solver.js` | recuit simulé multi-départs (pénalités adaptatives), ALNS (expérimental), descente locale, dispatch optimisé |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/milp.js` | génération du MILP (format CPLEX LP), démarrage à chaud, appel HiGHS |
 | `js/neos.js`, `netlify/functions/neos.mjs` | travaux NEOS (COPT / SCIP / CPLEX), lecture des résultats ; relais XML-RPC + zip |

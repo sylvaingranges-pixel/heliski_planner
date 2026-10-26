@@ -89,39 +89,67 @@ export const LATE_PENALTY = { fixed: 1500, perUnit: 200 };      // par groupe en
 export const WAIT_PENALTY = { fixed: 1500, perUnit: 100 };        // par attente client > max, par min de dépassement
 export const CLOSED_PENALTY = 5000;                                // par passage sur une descente hors du jour
 export const REPEAT_PENALTY = 5000;                                // par descente refaite par le même groupe dans la journée
+const SLACK_HORIZON = 60;                                          // min : marge sous laquelle un groupe devient prioritaire (slackW)
+
+/**
+ * Hélicos utilisables par une solution : bit h de sol.hMask (ensemble explicite), limité aux nUse premiers
+ * (compatibilité avec les solutions sans hMask). Jamais vide : à défaut, l'hélico 0.
+ */
+export function heliMask(sol, H) {
+  const all = (1 << H) - 1, n = Math.max(1, Math.min(H, sol.nUse ?? H));
+  const m = (sol.hMask ?? all) & ((1 << n) - 1);
+  return m || 1;
+}
 
 /**
  * Décodeur glouton événementiel.
  * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number,
- *         nUse: hélicos utilisables (≤ nHeli), hBias: number[] (min, pénalité d'usage par hélico) }
+ *         hMask: hélicos utilisables (bits), nUse: borne sur leur nombre, hBias: number[] (min, pénalité d'usage par hélico),
+ *         urgency, slackW: poids des priorités dynamiques (attente au fond, marge avant la fin de journée),
+ *         dispatch: [g, h][] (facultatif) décisions imposées, étape par étape }
  * À chaque étape, on choisit le couple (groupe, hélico) qui minimise
  *   début du chargement + prio[g] + hBias[h] + lambda * (coût marginal / tarif vol),
- * nUse / hBias permettent de laisser un hélico au sol : sans eux, un hélico libre serait toujours mobilisé
- * et une flotte plus grande pourrait coûter plus cher qu'une plus petite.
- * puis on « exécute » la rotation. Renvoie le coût et, si record, la liste des rotations.
+ * puis on « exécute » la rotation. hMask / hBias permettent de laisser un hélico au sol : sans eux, un hélico libre
+ * serait toujours mobilisé et une flotte plus grande pourrait coûter plus cher qu'une plus petite.
+ * Si sol.dispatch[i] = [g, h] est applicable à l'étape i (groupe g pas fini, hélico h utilisable), il remplace le
+ * choix glouton : c'est ainsi qu'est mémorisé un dispatch optimisé (optimizeDispatch), sinon on revient au glouton.
+ * Renvoie le coût et, si record, la liste des rotations (dans l'ordre des décisions).
+ * probe ≥ 0 : renvoie aussi (cands) les couples [g, h] candidats à l'étape probe, du meilleur score au moins bon.
  */
-export function decode(inst, sol, record = false) {
+export function decode(inst, sol, record = false, probe = -1) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R;
-  const G = sol.seq.length, H = p.nHeli, HU = Math.max(1, Math.min(H, sol.nUse ?? H)), hBias = sol.hBias;
+  const G = sol.seq.length, H = p.nHeli, mask = heliMask(sol, H), hBias = sol.hBias, forced = sol.dispatch;
   const hT = new Float64Array(H).fill(p.dayStart), hL = new Int32Array(H), hStarted = new Uint8Array(H);
   const gK = new Int32Array(G), gReady = new Float64Array(G).fill(p.dayStart), gLoc = new Int32Array(G);
   const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
   const occEnd = new Float64Array(R).fill(-1e9);
-  const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
+  const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1, slackW = sol.slackW ?? 0;
   let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0;
   const lifts = record ? [] : null;
   for (let g = 0; g < G; g++) { if (sol.seq[g].length === 0) gDone[g] = 1; else pending++; }
+  // Priorité dynamique (slackW > 0) : temps restant de chaque groupe (rotations + ski + retour), pour servir d'abord
+  // les groupes dont la marge avant la fin de journée devient faible.
+  const rest = slackW > 0 ? new Float64Array(G) : null;
+  if (rest) for (let g = 0; g < G; g++) {
+    let loc = BASE;
+    for (const r of sol.seq[g]) { rest[g] += p.loadMin + tau[loc * N + 1 + r] + p.unloadMin + inst.ski[r]; loc = 1 + R + r; }
+    if (sol.seq[g].length) rest[g] += p.loadMin + tau[loc * N] + p.unloadMin;
+  }
 
+  let step = 0, cands = null;
   while (pending > 0) {
     let bS = Infinity, bg = -1, bh = -1, bStart = 0, bW = null, bC = 0;
+    const fd = forced?.[step], fg = fd && fd[0] < G && !gDone[fd[0]] && (mask >> fd[1]) & 1 ? fd[0] : -1;
+    const scored = step === probe ? [] : null;
     for (let g = 0; g < G; g++) {
-      if (gDone[g]) continue;
+      if (gDone[g] || (fg >= 0 && g !== fg)) continue;
       const o = gLoc[g], seq = sol.seq[g], k = gK[g];
       const d = k < seq.length ? 1 + seq[k] : BASE;
       const fl = tau[o * N + d];
       let ready = gReady[g];
       if (d !== BASE && p.exclusiveRuns) ready = Math.max(ready, occEnd[d - 1] - p.loadMin - fl);
-      for (let h = 0; h < HU; h++) {
+      for (let h = 0; h < H; h++) {
+        if (!((mask >> h) & 1) || (fg >= 0 && h !== fd[1])) continue;
         const dh = tau[hL[h] * N + o];
         const a = hT[h] + dh;
         const start = a > ready ? a : ready;
@@ -130,9 +158,13 @@ export function decode(inst, sol, record = false) {
         let s = start + (prio ? prio[g] : 0) + (hBias?.[h] ?? 0) + lam * c / p.flyRate;
         // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
         if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
+        if (rest) s -= slackW * Math.max(0, SLACK_HORIZON - (p.dayEnd - start - rest[g]));
+        if (scored) scored.push([s, g, h]);
         if (s < bS) { bS = s; bg = g; bh = h; bStart = start; bW = w; bC = c; }
       }
     }
+    if (scored) cands = scored.sort((a, b) => a[0] - b[0]).map(([, g, h]) => [g, h]);
+    step++;
     const g = bg, h = bh, o = gLoc[g], seq = sol.seq[g], k = gK[g];
     const d = k < seq.length ? 1 + seq[k] : BASE;
     const fl = tau[o * N + d];
@@ -156,6 +188,7 @@ export function decode(inst, sol, record = false) {
       gLoc[g] = 1 + R + r;
       occEnd[r] = end + inst.ski[r];
       gK[g] = k + 1;
+      if (rest) rest[g] -= p.loadMin + fl + p.unloadMin + inst.ski[r];
     }
   }
   // Retour des hélicos à la base.
@@ -168,7 +201,7 @@ export function decode(inst, sol, record = false) {
     if (sf > 1e-9) { shortfall += sf; penalty += SHORTFALL_PENALTY.fixed + SHORTFALL_PENALTY.perUnit * sf; }
     if (lt > 1e-9) { late += lt; penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * lt; }
   }
-  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats, lifts, clientWait, waitExcess, closed, repeats };
+  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats, lifts, clientWait, waitExcess, closed, repeats, cands };
 }
 
 /**

@@ -8,6 +8,7 @@
     "start": "node tools/dev_server.mjs 8080",
     "test": "node --test tests/*.test.mjs",
     "bench": "node tools/bench_milp.mjs",
+    "bench:heuristic": "node tools/bench_heuristic.mjs",
     "dev": "node tools/dev_server.mjs 8080"
   }
 }

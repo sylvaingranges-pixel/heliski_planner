@@ -103,6 +103,12 @@
               </select>
             </label>
             <label>Graine solveur <input type="number" id="sa-seed" value="1"></label>
+            <label><span>Algorithme&nbsp;<i class="help" tabindex="0" data-tip="Recuit simulé : petits mouvements sur les descentes, pénalités adaptatives, puis dispatch optimisé à descentes fixées. ALNS (expérimental) : destruction / reconstruction de plusieurs descentes à la fois, opérateurs choisis selon leurs succès.">?</i></span>
+              <select id="sa-algo">
+                <option value="sa" selected>Recuit simulé</option>
+                <option value="alns">ALNS (essai)</option>
+              </select>
+            </label>
           </div>
           <button id="btn-solve" class="btn btn-primary btn-block">Optimiser (heuristique)</button>
           <div class="progress" id="sa-progress" hidden><div></div></div>

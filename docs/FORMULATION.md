@@ -65,10 +65,12 @@ Le problème généralise le PDPTW / *dial-a-ride* avec sélection des visites e
 ## Algorithme
 
 1. **Recuit simulé** sur les séquences de descentes par groupe (remplacer, insérer, retirer, retirer+remplacer,
-   permuter, inverser, échanger / déplacer entre groupes) et sur les paramètres du décodeur ; descente locale exhaustive
-   à la fin ; plusieurs chaînes en parallèle.
+   permuter, inverser, échanger / déplacer entre groupes) et sur les paramètres du décodeur, avec pénalités adaptatives ;
+   descente locale exhaustive puis dispatch optimisé à descentes fixées à la fin ; plusieurs chaînes en parallèle.
+   ALNS (destruction / reconstruction) en option expérimentale. Détails et mesures : [`HEURISTIQUE.md`](HEURISTIQUE.md).
 2. **Décodeur événementiel** : à chaque pas, le couple (groupe prêt, hélico) minimisant
-   `début + prio_g + λ·coût marginal / c_v (− urgence·attente)` est exécuté ; l'attente de l'hélico est facturée au mieux
+   `début + prio_g + λ·coût marginal / c_v (− urgence·attente − κ·(60 − marge fin de journée)⁺)` est exécuté, sauf décision
+   imposée par un dispatch optimisé ; l'attente de l'hélico est facturée au mieux
    (le moins cher entre standby ≤ 5 min / vol d'attente et, si autorisé, coupure moteur au point de reprise ou à la base
    pour $c_d$, ou retour base).
 3. **MILP HiGHS** : (a) descentes imposées → affectation des hélicos exacte ; (b) modèle complet sur un sous-ensemble,
