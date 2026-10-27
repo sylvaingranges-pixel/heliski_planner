@@ -5,28 +5,34 @@
 // Le planning d'un groupe : base -> sommet r1 (ski) fond r1 -> sommet r2 ... fond rk -> base.
 // Descentes du jour : sous-ensemble des descentes réalisables aujourd'hui (météo, neige, avalanches…) ;
 // les indices restent ceux du jeu complet, les algorithmes ne parcourent que inst.dayRuns.
+// Exploitation (journée en cours) : nœuds supplémentaires 1+2R+k = positions GPS des hélicos, et inst.start = état réel
+// à l'instant présent (voir js/ops.js) ; le décodeur planifie alors le reste de la journée à partir de cet état.
 
 export const BASE = 0;
 
-/** available : indices des descentes réalisables aujourd'hui (null = toutes). */
-export function buildInstance(dataset, params, groups, available = null) {
+/**
+ * Temps de vol (min) entre deux points {x, y, alt} : décollage + approche, puis le plus long entre distance et montée.
+ * airborne : départ d'un hélico déjà en vol (position GPS) — pas de décollage à compter.
+ */
+export function flightTime(params, a, b, airborne = false) {
+  const h = Math.hypot(a.x - b.x, a.y - b.y), climb = Math.max(0, b.alt - a.alt);
+  const t = (airborne ? 0 : params.flightOverhead) + Math.max(h / (params.heliSpeedKmh / 60), climb / params.climbRate);
+  return Math.round(t * 10) / 10;
+}
+
+/**
+ * available : indices des descentes réalisables aujourd'hui (null = toutes).
+ * extraPts : points supplémentaires {x, y, alt, airborne?} ajoutés comme nœuds 1+2R+k (positions des hélicos).
+ */
+export function buildInstance(dataset, params, groups, available = null, extraPts = []) {
   const runs = dataset.runs;
-  const R = runs.length, N = 1 + 2 * R;
-  const pts = [dataset.base, ...runs.map(r => r.top), ...runs.map(r => r.bottom)];
+  const R = runs.length, N0 = 1 + 2 * R, N = N0 + extraPts.length;
+  const pts = [dataset.base, ...runs.map(r => r.top), ...runs.map(r => r.bottom), ...extraPts];
   const tau = new Float64Array(N * N);
-  if (dataset.timeMatrix) {
-    // Matrice de temps de vol fournie (minutes), même indexation des nœuds.
-    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) tau[i * N + j] = dataset.timeMatrix[i][j];
-  } else {
-    const v = params.heliSpeedKmh / 60;
-    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
-      if (i === j) continue;
-      const a = pts[i], b = pts[j];
-      const h = Math.hypot(a.x - b.x, a.y - b.y);
-      const climb = Math.max(0, b.alt - a.alt);
-      const t = params.flightOverhead + Math.max(h / v, climb / params.climbRate);
-      tau[i * N + j] = Math.round(t * 10) / 10;
-    }
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    if (i === j) continue;
+    // Matrice de temps de vol fournie (minutes), même indexation des nœuds ; positions des hélicos : formule.
+    tau[i * N + j] = dataset.timeMatrix && i < N0 && j < N0 ? dataset.timeMatrix[i][j] : flightTime(params, pts[i], pts[j], !!pts[i].airborne);
   }
   const vert = Int32Array.from(runs, r => r.vert);
   const ski = Float64Array.from(runs, r => r.skiMin);
@@ -49,7 +55,8 @@ export const bottom = (inst, r) => 1 + inst.R + r;
 export function nodeLabel(inst, n) {
   if (n === 0) return 'Base';
   if (n <= inst.R) return 'Sommet ' + inst.dataset.runs[n - 1].code;
-  return 'Fond ' + inst.dataset.runs[n - 1 - inst.R].code;
+  if (n <= 2 * inst.R) return 'Fond ' + inst.dataset.runs[n - 1 - inst.R].code;
+  return 'Position hélico';
 }
 
 /**
@@ -91,6 +98,22 @@ export const CLOSED_PENALTY = 5000;                                // par passag
 export const REPEAT_PENALTY = 5000;                                // par descente refaite par le même groupe dans la journée
 
 /**
+ * Exploitation : nombre de modifications d'un plan par rapport au plan de référence (le précédent).
+ * Par groupe : descentes ajoutées ou retirées (le plus grand des deux), +1 si la prochaine descente change.
+ */
+export function planChanges(seq, ref) {
+  let n = 0;
+  for (let g = 0; g < seq.length; g++) {
+    const a = seq[g], b = ref[g] ?? [];
+    let add = 0, rem = 0;
+    for (const r of a) if (!b.includes(r)) add++;
+    for (const r of b) if (!a.includes(r)) rem++;
+    n += Math.max(add, rem) + (a[0] !== b[0] ? 1 : 0);
+  }
+  return n;
+}
+
+/**
  * Décodeur glouton événementiel.
  * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number,
  *         nUse: hélicos utilisables (≤ nHeli), hBias: number[] (min, pénalité d'usage par hélico) }
@@ -101,42 +124,79 @@ export const REPEAT_PENALTY = 5000;                                // par descen
  * puis on « exécute » la rotation. Renvoie le coût et, si record, la liste des rotations.
  */
 export function decode(inst, sol, record = false) {
-  const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R;
+  const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, st = inst.start;
   const G = sol.seq.length, H = p.nHeli, HU = Math.max(1, Math.min(H, sol.nUse ?? H)), hBias = sol.hBias;
   const hT = new Float64Array(H).fill(p.dayStart), hL = new Int32Array(H), hStarted = new Uint8Array(H);
   const gK = new Int32Array(G), gReady = new Float64Array(G).fill(p.dayStart), gLoc = new Int32Array(G);
   const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
   const occEnd = new Float64Array(R).fill(-1e9);
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
-  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0;
+  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0, stopLate = 0;
   const lifts = record ? [] : null;
-  for (let g = 0; g < G; g++) { if (sol.seq[g].length === 0) gDone[g] = 1; else pending++; }
+  // Journée en cours : état de départ (hélicos, groupes, descentes occupées), descente imposée en tête de séquence,
+  // passages base demandés (stopBy : arrivée à la base au plus tard, stopDur : durée moteur coupé).
+  let seqs = sol.seq, stopPend = null, stopBy = null, stopDur = null;
+  if (st) {
+    for (let h = 0; h < H; h++) {
+      const sh = st.heli[h];
+      hT[h] = sh.t; hL[h] = sh.loc; hStarted[h] = sh.started ? 1 : 0;
+      if (sh.stop) {
+        stopPend ??= new Uint8Array(H); stopBy ??= new Float64Array(H); stopDur ??= new Float64Array(H);
+        stopPend[h] = 1; stopBy[h] = sh.stop.by; stopDur[h] = sh.stop.dur;
+      }
+    }
+    seqs = new Array(G);
+    for (let g = 0; g < G; g++) {
+      const sg = st.groups[g];
+      gReady[g] = sg.ready; gLoc[g] = sg.loc; gVert[g] = sg.vert; gEnd[g] = sg.end ?? sg.ready; gDone[g] = sg.done ? 1 : 0;
+      seqs[g] = sg.noMore ? [] : sg.next >= 0 ? [sg.next, ...sol.seq[g]] : sol.seq[g];
+    }
+    for (const [r, until] of st.occ) if (until > occEnd[r]) occEnd[r] = until;
+  }
+  for (let g = 0; g < G; g++) {
+    if (gDone[g]) continue;
+    if (seqs[g].length === 0 && gLoc[g] === BASE) gDone[g] = 1; else pending++;
+  }
 
   while (pending > 0) {
-    let bS = Infinity, bg = -1, bh = -1, bStart = 0, bW = null, bC = 0;
+    let bS = Infinity, bg = -1, bh = -1, bStart = 0, bW = null, bC = 0, bStop = -1;
     for (let g = 0; g < G; g++) {
       if (gDone[g]) continue;
-      const o = gLoc[g], seq = sol.seq[g], k = gK[g];
+      const o = gLoc[g], seq = seqs[g], k = gK[g];
       const d = k < seq.length ? 1 + seq[k] : BASE;
       const fl = tau[o * N + d];
       let ready = gReady[g];
       if (d !== BASE && p.exclusiveRuns) ready = Math.max(ready, occEnd[d - 1] - p.loadMin - fl);
       for (let h = 0; h < HU; h++) {
-        const dh = tau[hL[h] * N + o];
-        const a = hT[h] + dh;
+        let hl = hL[h], ht = hT[h], hs = hStarted[h], pre = 0, stopAt = -1;
+        if (stopPend !== null && stopPend[h]) {
+          // Passage base demandé : repoussé tant que la rotation et le retour à la base tiennent avant l'échéance,
+          // sinon fait d'abord (vol vers la base, arrêt moteur coupé, redémarrage).
+          const a0 = ht + tau[hl * N + o], end0 = (a0 > ready ? a0 : ready) + p.loadMin + fl + p.unloadMin;
+          if (end0 + tau[d * N] > stopBy[h] + 1e-9) {
+            stopAt = ht + tau[hl * N]; pre = p.flyRate * tau[hl * N];
+            ht = stopAt + stopDur[h]; hl = BASE; hs = 0;
+          }
+        }
+        const dh = tau[hl * N + o];
+        const a = ht + dh;
         const start = a > ready ? a : ready;
-        const w = waitPlan(inst, hL[h], hStarted[h], o, start - a);
-        const c = p.flyRate * dh + w.cost + startCost(inst, hStarted[h]) + p.clientWaitPenalty * (start - gReady[g]);
+        const w = waitPlan(inst, hl, hs, o, start - a);
+        const c = pre + p.flyRate * dh + w.cost + startCost(inst, hs) + p.clientWaitPenalty * (start - gReady[g]);
         let s = start + (prio ? prio[g] : 0) + (hBias?.[h] ?? 0) + lam * c / p.flyRate;
         // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
         if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
-        if (s < bS) { bS = s; bg = g; bh = h; bStart = start; bW = w; bC = c; }
+        if (s < bS) { bS = s; bg = g; bh = h; bStart = start; bW = w; bC = c; bStop = stopAt; }
       }
     }
-    const g = bg, h = bh, o = gLoc[g], seq = sol.seq[g], k = gK[g];
+    const g = bg, h = bh, o = gLoc[g], seq = seqs[g], k = gK[g];
     const d = k < seq.length ? 1 + seq[k] : BASE;
     const fl = tau[o * N + d];
     const end = bStart + p.loadMin + fl + p.unloadMin;
+    if (bStop >= 0) {
+      if (record) lifts.push({ heli: h, group: -1, from: BASE, to: BASE, start: bStop, end: bStop + stopDur[h], run: -1, stop: true });
+      stopLate += Math.max(0, bStop - stopBy[h]); stopPend[h] = 0;
+    }
     cost += bC - p.clientWaitPenalty * (bStart - gReady[g])
       + p.standbyRate * (p.loadMin + p.unloadMin) + p.flyRate * fl;
     clientWait += bStart - gReady[g];
@@ -146,17 +206,31 @@ export function decode(inst, sol, record = false) {
     }
     if (record) lifts.push({ heli: h, group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: bW, readyAt: gReady[g] });
     hT[h] = end; hL[h] = d; hStarted[h] = 1;
+    if (d === BASE && stopPend !== null && stopPend[h]) {        // l'hélico est à la base : l'arrêt demandé se fait maintenant
+      if (record) lifts.push({ heli: h, group: -1, from: BASE, to: BASE, start: end, end: end + stopDur[h], run: -1, stop: true });
+      stopLate += Math.max(0, end - stopBy[h]); stopPend[h] = 0;
+      hT[h] = end + stopDur[h]; hStarted[h] = 0;
+    }
     if (d === BASE) { gDone[g] = 1; gEnd[g] = end; pending--; }
     else {
       const r = d - 1;
       if (!inst.open[r]) closed++;
-      if (k > 0 && seq.lastIndexOf(r, k - 1) >= 0) repeats++;            // un groupe ne refait pas la même descente
+      if ((k > 0 && seq.lastIndexOf(r, k - 1) >= 0) || (st && st.groups[g].skied[r])) repeats++;   // un groupe ne refait pas la même descente
       gVert[g] += inst.vert[r];
       gReady[g] = end + inst.ski[r];
       gLoc[g] = 1 + R + r;
       occEnd[r] = end + inst.ski[r];
       gK[g] = k + 1;
     }
+  }
+  // Passages base encore dus (plus de rotation) : au retour à la base.
+  if (stopPend !== null) for (let h = 0; h < H; h++) {
+    if (!stopPend[h]) continue;
+    const at = hT[h] + tau[hL[h] * N];
+    cost += p.flyRate * tau[hL[h] * N];
+    if (record) lifts.push({ heli: h, group: -1, from: BASE, to: BASE, start: at, end: at + stopDur[h], run: -1, stop: true });
+    stopLate += Math.max(0, at - stopBy[h]); stopPend[h] = 0;
+    hL[h] = BASE; hT[h] = at + stopDur[h];
   }
   // Retour des hélicos à la base.
   for (let h = 0; h < H; h++) cost += p.flyRate * tau[hL[h] * N];
@@ -168,7 +242,11 @@ export function decode(inst, sol, record = false) {
     if (sf > 1e-9) { shortfall += sf; penalty += SHORTFALL_PENALTY.fixed + SHORTFALL_PENALTY.perUnit * sf; }
     if (lt > 1e-9) { late += lt; penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * lt; }
   }
-  return { cost, penalty, f: cost + penalty, shortfall, late, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats, lifts, clientWait, waitExcess, closed, repeats };
+  if (stopLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * stopLate;
+  // Stabilité (exploitation) : chaque modification du plan précédent coûte changePenalty ; un nouveau plan n'est retenu
+  // que s'il fait gagner davantage.
+  const change = inst.ref && p.changePenalty > 0 ? p.changePenalty * planChanges(sol.seq, inst.ref) : 0;
+  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6, lifts, clientWait, waitExcess, closed, repeats };
 }
 
 /**
@@ -182,13 +260,23 @@ export function buildSchedule(inst, lifts) {
   const byHeli = Array.from({ length: H }, () => []);
   for (const l of lifts) byHeli[l.heli].push(l);
   const totals = { fly: 0, flyLoaded: 0, standby: 0, loiter: 0, service: 0, parked: 0, starts: 0 };
+  const st = inst.start;                               // journée en cours : on part de l'état réel
 
   for (let h = 0; h < H; h++) {
     const L = byHeli[h].sort((a, b) => a.start - b.start);
-    let t = p.dayStart, loc = BASE, started = false;
+    let t = st ? st.heli[h].t : p.dayStart, loc = st ? st.heli[h].loc : BASE, started = st ? !!st.heli[h].started : false;
+    const started0 = started;
     const seg = heliSeg[h];
     const push = (type, t0, t1, from, to, extra = {}) => { if (t1 - t0 > 1e-9 || type === 'flight') seg.push({ type, t0, t1, from, to, ...extra }); };
     for (const l of L) {
+      if (l.stop) {                                     // passage base demandé : vol vers la base, arrêt moteur coupé
+        const dh = tau[loc * N];
+        if (loc !== BASE) push('flight', t, t + dh, loc, BASE);
+        push('parked', l.start, l.end, BASE, BASE, { stop: true });
+        totals.fly += dh; totals.parked += l.end - l.start;
+        t = l.end; loc = BASE; started = false;
+        continue;
+      }
       const dh = tau[loc * N + l.from];
       const gap = l.start - (t + dh);
       const w = waitPlan(inst, loc, started, l.from, Math.max(0, gap));
@@ -223,17 +311,19 @@ export function buildSchedule(inst, lifts) {
       t = te; loc = l.to; started = true;
     }
     if (loc !== BASE) { push('flight', t, t + tau[loc * N], loc, BASE); totals.fly += tau[loc * N]; }
-    // Démarrages moteur : 1er segment hors « base, moteur coupé », puis après chaque coupure.
-    seg.forEach((s, k) => { if (s.type !== 'parked' && (k === 0 || seg[k - 1].type === 'parked')) totals.starts++; });
+    // Démarrages moteur : 1er segment hors « base, moteur coupé » (sauf moteur déjà en route), puis après chaque coupure.
+    seg.forEach((s, k) => { if (s.type !== 'parked' && (k === 0 ? !started0 : seg[k - 1].type === 'parked')) totals.starts++; });
   }
 
   // Planning des groupes.
   const gVert = new Array(G).fill(0), gEnd = new Array(G).fill(p.dayStart), gWait = new Array(G).fill(0);
   const byGroup = Array.from({ length: G }, () => []);
-  for (const l of lifts) byGroup[l.group].push(l);
+  for (const l of lifts) if (l.group >= 0) byGroup[l.group].push(l);
   for (let g = 0; g < G; g++) {
     const L = byGroup[g].sort((a, b) => a.start - b.start);
-    let t = p.dayStart, loc = BASE;
+    const sg = st?.groups[g];
+    let t = sg ? sg.ready : p.dayStart, loc = sg ? sg.loc : BASE;
+    if (sg) { gVert[g] = sg.vert; gEnd[g] = sg.end ?? sg.ready; }
     for (const l of L) {
       if (l.start > t + 1e-9) { groupSeg[g].push({ type: 'wait', t0: t, t1: l.start, from: loc, to: loc }); gWait[g] += l.start - t; }
       const te = l.start + p.loadMin + tau[l.from * N + l.to] + p.unloadMin;

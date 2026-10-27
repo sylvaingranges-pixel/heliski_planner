@@ -7,17 +7,28 @@ export function cloneSol(s) {
   return { seq: s.seq.map(a => a.slice()), prio: s.prio.slice(), lambda: s.lambda, urgency: s.urgency, nUse: s.nUse, hBias: s.hBias?.slice() };
 }
 
+// Journée en cours (inst.start, voir js/ops.js) : la séquence d'un groupe ne contient que ses descentes à venir.
+// Descentes interdites : déjà skiées (ou en cours) et descente suivante imposée par le pilote (placée en tête par le décodeur).
+const banned = (inst, g, r) => { const s = inst.start?.groups[g]; return !!s && (s.skied[r] === 1 || s.next === r); };
+const inactive = (inst, g) => { const s = inst.start?.groups[g]; return !!s && (s.done || s.noMore); };
+/** Nœud d'où repart le groupe pour sa 1re descente libre : base, fond de la descente en cours ou de la descente imposée. */
+const startNode = (inst, g) => {
+  const s = inst.start?.groups[g];
+  return !s ? BASE : s.next >= 0 ? 1 + inst.R + s.next : s.loc;
+};
+
 /** Solution initiale : pour chaque groupe, enchaîne les descentes au meilleur ratio dénivelé / coût. */
 export function initialSolution(inst, rnd = Math.random) {
   const p = inst.params, N = inst.N, tau = inst.tau, G = inst.groups.length;
   const used = new Uint16Array(inst.R);
   const seq = [];
   for (let g = 0; g < G; g++) {
-    const s = []; let loc = BASE, v = 0;
-    while (v < inst.targets[g]) {
+    const sg = inst.start?.groups[g];
+    const s = []; let loc = startNode(inst, g), v = sg ? sg.vert + (sg.next >= 0 ? inst.vert[sg.next] : 0) : 0;
+    while (!inactive(inst, g) && v < inst.targets[g]) {
       let best = -1, bScore = -Infinity;
       for (const r of inst.dayRuns) {
-        if (s.includes(r)) continue;
+        if (s.includes(r) || banned(inst, g, r)) continue;
         const c = p.flyRate * tau[loc * N + 1 + r] + p.standbyRate * (p.loadMin + p.unloadMin);
         const sc = inst.vert[r] / c * (1 - 0.3 * Math.min(used[r], 2)) * (0.9 + 0.2 * rnd());
         if (sc > bScore) { bScore = sc; best = r; }
@@ -30,7 +41,7 @@ export function initialSolution(inst, rnd = Math.random) {
   return { seq, prio: new Array(G).fill(0), lambda: 1, urgency: 1, nUse: p.nHeli, hBias: new Array(p.nHeli).fill(0) };
 }
 
-function pickRun(inst, rnd, prevNode, exclude) {
+function pickRun(inst, rnd, prevNode, exclude, g) {
   // 75 % : parmi les 12 descentes du jour les plus proches du point de départ ; 25 % : au hasard.
   const day = inst.dayRuns;
   if (!day.length) return -1;
@@ -38,31 +49,32 @@ function pickRun(inst, rnd, prevNode, exclude) {
   for (let tries = 0; tries < 20; tries++) {
     if (rnd() < 0.75) { const list = inst.nearTop[prevNode]; r = list[Math.floor(rnd() * Math.min(12, list.length))]; }
     else r = day[Math.floor(rnd() * day.length)];
-    if (!exclude.includes(r)) return r;
+    if (!exclude.includes(r) && !banned(inst, g, r)) return r;
   }
   return -1;
 }
 
-const prevNodeOf = (inst, seq, k) => (k === 0 ? BASE : 1 + inst.R + seq[k - 1]);
+const prevNodeOf = (inst, seq, k, g) => (k === 0 ? startNode(inst, g) : 1 + inst.R + seq[k - 1]);
 
 /** Applique un mouvement aléatoire (sur une copie). */
 export function mutate(inst, sol, rnd) {
-  const s = cloneSol(sol), G = s.seq.length;
-  const g = Math.floor(rnd() * G), q = s.seq[g];
+  const s = cloneSol(sol), G = s.seq.length, act = inst.active;   // act : groupes encore à planifier (journée en cours)
+  if (act && !act.length) return s;
+  const g = act ? act[Math.floor(rnd() * act.length)] : Math.floor(rnd() * G), q = s.seq[g];
   const u = rnd();
   if (u < 0.30 && q.length > 0) {                       // remplacer une descente
     const k = Math.floor(rnd() * q.length);
-    const r = pickRun(inst, rnd, prevNodeOf(inst, q, k), q);
+    const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), q, g);
     if (r >= 0) q[k] = r;
   } else if (u < 0.45) {                                // insérer
     const k = Math.floor(rnd() * (q.length + 1));
-    const r = pickRun(inst, rnd, prevNodeOf(inst, q, k), q);
+    const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), q, g);
     if (r >= 0) q.splice(k, 0, r);
   } else if (u < 0.58 && q.length > 1) {                // retirer (+ parfois remplacer une autre)
     q.splice(Math.floor(rnd() * q.length), 1);
     if (rnd() < 0.5) {
       const k = Math.floor(rnd() * q.length);
-      const r = pickRun(inst, rnd, prevNodeOf(inst, q, k), q);
+      const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), q, g);
       if (r >= 0) q[k] = r;
     }
   } else if (u < 0.68 && q.length > 1) {                // échanger 2 positions
@@ -74,9 +86,9 @@ export function mutate(inst, sol, rnd) {
     const rev = q.slice(i, j + 1).reverse(); q.splice(i, rev.length, ...rev);
   } else if (u < 0.83 && G > 1) {                       // échanger entre groupes
     const g2 = (g + 1 + Math.floor(rnd() * (G - 1))) % G, q2 = s.seq[g2];
-    if (q.length && q2.length) {
+    if (q.length && q2.length && !inactive(inst, g2)) {
       const i = Math.floor(rnd() * q.length), j = Math.floor(rnd() * q2.length);
-      if (!q.includes(q2[j]) && !q2.includes(q[i])) [q[i], q2[j]] = [q2[j], q[i]];
+      if (!q.includes(q2[j]) && !q2.includes(q[i]) && !banned(inst, g, q2[j]) && !banned(inst, g2, q[i])) [q[i], q2[j]] = [q2[j], q[i]];
     }
   } else if (u < 0.88) {                                // priorité d'un groupe
     s.prio[g] = Math.max(-60, Math.min(60, s.prio[g] + (rnd() - 0.5) * 30));
@@ -91,7 +103,7 @@ export function mutate(inst, sol, rnd) {
   } else if (q.length > 0) {                            // déplacer une descente vers un autre groupe
     const g2 = (g + 1 + Math.floor(rnd() * Math.max(1, G - 1))) % G, q2 = s.seq[g2];
     const i = Math.floor(rnd() * q.length);
-    if (g2 !== g && !q2.includes(q[i])) { q2.splice(Math.floor(rnd() * (q2.length + 1)), 0, q[i]); q.splice(i, 1); }
+    if (g2 !== g && !q2.includes(q[i]) && !inactive(inst, g2) && !banned(inst, g2, q[i])) { q2.splice(Math.floor(rnd() * (q2.length + 1)), 0, q[i]); q.splice(i, 1); }
   }
   return s;
 }
@@ -102,6 +114,7 @@ export function polish(inst, sol, maxPasses = 6) {
   for (let pass = 0; pass < maxPasses; pass++) {
     let improved = false;
     for (let g = 0; g < best.seq.length; g++) {
+      if (inactive(inst, g)) continue;
       for (let k = 0; k <= best.seq[g].length; k++) {
         // retrait
         if (k < best.seq[g].length) {
@@ -109,7 +122,7 @@ export function polish(inst, sol, maxPasses = 6) {
           const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; continue; }
         }
         for (const r of inst.dayRuns) {
-          if (best.seq[g].includes(r)) continue;
+          if (best.seq[g].includes(r) || banned(inst, g, r)) continue;
           if (k < best.seq[g].length) {           // remplacement
             const c = cloneSol(best); c.seq[g][k] = r;
             const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; continue; }
@@ -126,7 +139,7 @@ export function polish(inst, sol, maxPasses = 6) {
       for (let i = 0; i < best.seq[g].length; i++) for (let j = 0; j < best.seq[g].length; j++) {
         if (i === j) continue;
         for (const r of inst.dayRuns) {
-          if (best.seq[g].includes(r)) continue;
+          if (best.seq[g].includes(r) || banned(inst, g, r)) continue;
           const c = cloneSol(best); c.seq[g][j] = r; c.seq[g].splice(i, 1);
           const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; break; }
         }
@@ -165,7 +178,7 @@ export function polish(inst, sol, maxPasses = 6) {
 function penaltyWeight() {
   let mu = 1, n = 0, infeas = 0;
   return {
-    val: (d) => d.cost + mu * d.penalty,
+    val: (d) => d.f - (1 - mu) * d.penalty,          // coût (+ stabilité en exploitation) + mu × pénalités
     update(feasible, frac) {
       if (frac >= 0.8) { mu = 1; return; }
       n++; if (!feasible) infeas++;
@@ -179,9 +192,10 @@ function penaltyWeight() {
 
 /**
  * Recuit simulé multi-départs.
- * opts: { iterations, restarts, seed, timeMs, onProgress(info) }
+ * opts: { iterations, restarts, seed, timeMs, init, onProgress(info) }
  * timeMs : budget de temps total (ms, réparti entre les départs) à la place d'un nombre d'itérations fixe ;
  * la température suit alors le temps écoulé. Durée prévisible quel que soit l'appareil (résultat non reproductible).
+ * init : solution de départ (exploitation : le plan en cours) ; le résultat n'est jamais moins bon qu'elle.
  */
 export function solveSA(inst, opts = {}) {
   const timed = opts.timeMs > 0, iterations = opts.iterations ?? 60000, restarts = opts.restarts ?? 4;
@@ -191,7 +205,9 @@ export function solveSA(inst, opts = {}) {
   const history = [];
   for (let rs = 0; rs < restarts; rs++) {
     // Départs suivants : autour de la meilleure solution, sauf si elle est infaisable (on repart de zéro).
-    let cur = !best || !decode(inst, best).feasible ? initialSolution(inst, rnd) : mutateN(inst, best, rnd, 8);
+    // Avec une solution de départ (plan en cours), on reste autour de la meilleure : l'infaisabilité peut être inévitable.
+    let cur = rs === 0 && opts.init ? cloneSol(opts.init)
+      : !best || (!opts.init && !decode(inst, best).feasible) ? initialSolution(inst, rnd) : mutateN(inst, best, rnd, 8);
     let cd = decode(inst, cur); evals++;
     // Température initiale ~ écart moyen de quelques mouvements aléatoires.
     let acc = 0; for (let i = 0; i < 30; i++) { acc += Math.abs(decode(inst, mutate(inst, cur, rnd)).f - cd.f); evals++; }

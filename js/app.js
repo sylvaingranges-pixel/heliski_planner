@@ -3,6 +3,7 @@ import { buildInstance, decode, buildSchedule, nodeLabel, BASE } from './model.j
 import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
+import { initOps, showOps } from './ops-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
@@ -477,6 +478,7 @@ function activateTab(view) {
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
   if (view === 'plan') { mapView?.map.invalidateSize(); renderGanttView(); updateTime(); }
+  if (view === 'ops') showOps();
 }
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function download(name, text, type) {
@@ -629,6 +631,17 @@ async function init() {
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferred = e; $('install').hidden = false; });
   $('install').onclick = async () => { if (!deferred) return; deferred.prompt(); await deferred.userChoice; deferred = null; $('install').hidden = true; };
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
+  // Exploitation : la journée en cours part du plan affiché ici (copie : la planification reste libre ensuite).
+  initOps({
+    getPlan: () => (state.cur?.sol && state.cur.sol.seq.length === state.inst.groups.length
+      ? { sol: state.cur.sol, cost: state.cur.sch.cost, feasible: state.cur.feasible } : null),
+    getDataset: () => state.ds,
+    getParams: () => ({ ...state.params }),
+    getGroups: () => state.inst.groups.map(g => ({ name: g.name, target: g.target })),
+    getOpen: () => [...state.inst.dayRuns],
+    baseDataset: () => (BASE_DS ? baseDataset() : null),
+  });
 
   renderAll();
   solveHeuristic();

@@ -18,6 +18,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="plan" role="tab">Planification</button>
       <button class="tab" data-view="data" role="tab">Données</button>
+      <button class="tab tab-ops" data-view="ops" role="tab">Exploitation</button>
     </nav>
     <button id="install" class="btn btn-ghost" hidden>Installer l’app</button>
   </header>
@@ -218,6 +219,67 @@
           Colonne <b>Jour</b> : descentes réalisables aujourd’hui (seules utilisées par l’optimisation).</p>
         <div class="table-wrap"><table class="data-table" id="runs-table"></table></div>
       </div>
+    </section>
+
+    <!-- ======================================================= EXPLOITATION (journée en cours, tablette du pilote) -->
+    <section id="view-ops" class="view">
+      <div id="ops-start" class="ops-start">
+        <div class="card ops-start-card">
+          <h2>Journée en cours</h2>
+          <p class="muted">Déroulement de la journée à partir du plan de l’onglet <i>Planification</i> : la tablette suit l’hélico
+            (GPS), le pilote indique les groupes embarqués, et la suite de la journée est recalculée à chaque changement.</p>
+          <div id="ops-plan-summary" class="ops-plan-summary"></div>
+          <div class="ops-field"><span>Cette tablette est dans</span><div class="ops-chips" id="ops-start-heli"></div></div>
+          <div class="ops-field"><span>Mode</span>
+            <div class="ops-chips" id="ops-start-mode">
+              <button class="ops-chip" data-mode="gps">Vol réel<small>heure réelle · GPS de la tablette</small></button>
+              <button class="ops-chip" data-mode="sim">Simulation<small>horloge accélérée · les hélicos suivent le plan</small></button>
+            </div>
+          </div>
+          <label class="ops-field" id="ops-start-simtime"><span>Heure de début de la simulation</span><input type="time" id="ops-sim-start"></label>
+          <button id="ops-begin" class="btn btn-primary ops-big">Démarrer la journée</button>
+        </div>
+      </div>
+
+      <div id="ops-main" class="ops-main" hidden>
+        <div class="ops-left">
+          <div class="ops-map-wrap">
+            <div id="ops-map" class="ops-map" role="img" aria-label="Carte de la suite de la journée"></div>
+            <div class="ops-mapbar">
+              <button class="ops-fab" id="ops-follow" title="Suivre l’hélico">⌖</button>
+              <button class="ops-fab" id="ops-fit" title="Vue d’ensemble de la suite">⤢</button>
+              <button class="ops-fab" id="ops-trace" title="Afficher la trace passée">〰</button>
+            </div>
+            <div id="ops-editbar" class="ops-editbar" hidden>
+              <span>Touchez un itinéraire pour l’<b>ouvrir</b> (vert) ou le <b>fermer</b> (rouge)</span>
+              <button id="ops-edit-done" class="btn btn-primary">Terminé</button>
+            </div>
+          </div>
+          <div class="ops-timeline"><svg id="ops-gantt" class="gantt" role="img" aria-label="Planning de la suite"></svg></div>
+        </div>
+        <aside class="ops-right">
+          <div class="ops-head">
+            <div class="ops-clock mono" id="ops-clock">--:--</div>
+            <div id="ops-simctl" class="ops-simctl"></div>
+            <div id="ops-status" class="ops-status"></div>
+            <button id="ops-menu" class="ops-iconbtn" title="Journée : réglages, journal, fin">⋯</button>
+          </div>
+          <div id="ops-alerts" class="ops-alerts"></div>
+          <div id="ops-helis" class="ops-helis"></div>
+          <div id="ops-heli" class="ops-card ops-heli"></div>
+          <div class="ops-sec"><h4>Programme</h4><button id="ops-agenda-all" class="ops-mini">Tous les hélicos</button></div>
+          <ol id="ops-agenda" class="ops-agenda"></ol>
+          <div class="ops-sec"><h4>Groupes</h4></div>
+          <div id="ops-groups" class="ops-groups"></div>
+          <div class="ops-actions">
+            <button id="ops-fuel" class="ops-act">⛽<span>Passer par la base</span></button>
+            <button id="ops-runs" class="ops-act">✎<span>Itinéraires</span></button>
+            <button id="ops-undo" class="ops-act">↶<span>Annuler</span></button>
+          </div>
+        </aside>
+      </div>
+      <div id="ops-sheet" class="ops-sheet-bg" hidden><div class="ops-sheet" role="dialog" aria-modal="true"></div></div>
+      <div id="ops-toast" class="ops-toast" hidden></div>
     </section>
   </main>
 

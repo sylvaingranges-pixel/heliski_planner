@@ -202,9 +202,9 @@ function pointInPolygon(p, poly) {
   return ins;
 }
 
-function runPath(r) { return r.path?.length > 1 ? r.path : [[r.top.x, r.top.y], [r.bottom.x, r.bottom.y]]; }
+export function runPath(r) { return r.path?.length > 1 ? r.path : [[r.top.x, r.top.y], [r.bottom.x, r.bottom.y]]; }
 
-function alongPath(path, u) {
+export function alongPath(path, u) {
   const segL = []; let tot = 0;
   for (let k = 1; k < path.length; k++) { const l = Math.hypot(path[k][0] - path[k - 1][0], path[k][1] - path[k - 1][1]); segL.push(l); tot += l; }
   let d = Math.max(0, Math.min(1, u)) * tot;
@@ -260,16 +260,18 @@ export const SEG_STYLE = {
   loiter: { label: 'Vol d’attente', cls: 'g-loiter' },
   parked: { label: 'Moteur coupé', cls: 'g-parked' },
   wait: { label: 'Clients en attente', cls: 'g-wait' },
+  stop: { label: 'Arrêt base (plein, client…)', cls: 'g-stop' },
   heli: { label: 'Dans l’hélico', cls: 'g-inheli' },
   ski: { label: 'Ski', cls: 'g-ski' },
 };
 
+/** opts.from : début de l'axe (exploitation : un peu avant l'heure actuelle, le passé n'est pas affiché). */
 export function renderGantt(svg, inst, sch, opts = {}) {
   svg.innerHTML = '';
   const p = inst.params;
   const H = sch.heliSeg.length, G = sch.groupSeg.length;
   const tEnd = Math.max(p.dayEnd, ...sch.heliSeg.flat().map(s => s.t1), ...sch.groupSeg.flat().map(s => s.t1));
-  const t0 = p.dayStart - 5, t1 = Math.ceil((tEnd + 5) / 30) * 30;
+  const t0 = opts.from ?? p.dayStart - 5, t1 = Math.ceil((tEnd + 5) / 30) * 30;
   const W = Math.max(600, svg.clientWidth || 900), left = 86, right = 12, rowH = 26, gapH = 14, top = 22;
   const nRows = H + G;
   const Ht = top + nRows * rowH + gapH + 8;
@@ -285,7 +287,7 @@ export function renderGantt(svg, inst, sch, opts = {}) {
     if (t % 60 === 0) el('text', { x: X(t), y: 12, 'text-anchor': 'middle' }, ax, fmt(t));
   }
   // fenêtre
-  el('rect', { x: X(p.dayStart), y: top - 4, width: X(p.dayEnd) - X(p.dayStart), height: Ht - top - 2, class: 'g-window' }, svg);
+  el('rect', { x: X(Math.max(t0, p.dayStart)), y: top - 4, width: Math.max(0, X(p.dayEnd) - X(Math.max(t0, p.dayStart))), height: Ht - top - 2, class: 'g-window' }, svg);
   if (tEnd > p.dayEnd) el('rect', { x: X(p.dayEnd), y: top - 4, width: X(t1) - X(p.dayEnd), height: Ht - top - 2, class: 'g-late' }, svg);
 
   const rows = el('g', {}, svg);
@@ -295,8 +297,9 @@ export function renderGantt(svg, inst, sch, opts = {}) {
     el('rect', { x: 6, y: y + 7, width: 10, height: 10, rx: 2, fill: color }, rows);
     el('text', { x: 22, y: y + 17, class: 'g-rowlabel' }, rows, label);
     for (const s of segs) {
-      const st = SEG_STYLE[s.type];
-      const x = X(s.t0), w = Math.max(0.8, X(s.t1) - X(s.t0));
+      if (s.t1 < t0) continue;
+      const st = SEG_STYLE[s.stop ? 'stop' : s.type];
+      const x = X(Math.max(t0, s.t0)), w = Math.max(0.8, X(s.t1) - x);
       const attrs = { x, y: y + 4, width: w, height: rowH - 8, class: 'g-seg ' + st.cls };
       if (isHeli && (s.type === 'flight' || s.type === 'flightLoaded')) attrs.fill = color;
       if (!isHeli && s.type === 'ski') attrs.fill = color;
@@ -333,5 +336,6 @@ export function renderGantt(svg, inst, sch, opts = {}) {
 function nodeName(inst, n) {
   if (n === BASE) return 'Base';
   if (n <= inst.R) return 'sommet ' + inst.dataset.runs[n - 1].code;
-  return 'fond ' + inst.dataset.runs[n - 1 - inst.R].code;
+  if (n <= 2 * inst.R) return 'fond ' + inst.dataset.runs[n - 1 - inst.R].code;
+  return 'position hélico';
 }

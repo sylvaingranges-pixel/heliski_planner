@@ -24,6 +24,36 @@ Cette branche est la version simplifiée pour l'utilisateur. La branche `main` r
   dénivelé, fenêtre horaire, exclusivité des descentes, recalcul du coût).
 - Carte des descentes (animation de la journée), diagramme de Gantt hélicos / groupes, contrôles, groupes, journal des rotations, comparaison.
 
+## Exploitation : la journée en cours (onglet *Exploitation*)
+
+Pour le pilote, sur une tablette en paysage, entièrement tactile. On démarre la journée à partir du plan de l'onglet
+*Planification* (copie : la planification reste libre ensuite), en indiquant dans quel hélico se trouve la tablette.
+
+- **Modes** : *Vol réel* (heure réelle, GPS de la tablette) ou *Simulation* (horloge accélérée ×1 à ×60, mise en pause
+  pendant chaque question au pilote ; l'hélico de la tablette suit le plan et les mêmes questions sont posées qu'en vol).
+  Les autres hélicos (sans tablette) suivent le plan, ou passent en saisie manuelle (menu ⋯).
+- **GPS** : décollage (vitesse > 12 m/s) et atterrissage (à l'arrêt 20 s) sont détectés. Au décollage à vide d'un point de
+  reprise, le groupe attendu par le plan est embarqué d'office (bandeau « Corriger ») ; en cas de doute (pas le groupe
+  attendu à cet endroit) l'app demande qui est à bord. À l'atterrissage chargé, la dépose est déduite de la position : s'il
+  part **plusieurs itinéraires de cette dépose** (fréquent : sommets partagés), l'app demande lequel (le prévu en vert).
+  Retour à la base avec un groupe : fin de journée, pause (client fatigué…) ou arrêt technique.
+- **Saisie manuelle** toujours possible (gros boutons) : *Embarquer*, *Déposer*, *Destination*, *Base*, et ↶ *Annuler*.
+- **Réglages en cours de journée** : retard / avance d'un groupe qui skie (±5 min sur sa carte, ±10/15 dans ses actions),
+  itinéraire en cours corrigé, **descente suivante imposée** (aussi en touchant un itinéraire sur la carte),
+  objectif de dénivelé, fin de journée d'un groupe, **itinéraires ouverts / fermés** (mode ✎ sur la carte),
+  **passer par la base** dans un délai donné pour une durée donnée (plein, client à déposer… moteur coupé).
+- **Recalcul** : à chaque changement, le reste de la journée est re-décodé immédiatement depuis l'état réel
+  (positions, horaires réels de dépose / reprise, dénivelé déjà fait, descentes déjà skiées et en cours), puis ré-optimisé
+  en arrière-plan (recuit, ~1 s par cœur) **en partant du plan en cours** ; toutes les contraintes restent
+  (objectifs, descentes du jour, une descente par groupe et par jour, exclusivité, attente max, fin de journée, passage base).
+  Le passé n'est jamais recalculé. **Stabilité** : chaque modification du plan précédent coûte un seuil (CHF 60 par défaut,
+  réglable) ; un nouveau plan n'est adopté que s'il fait gagner davantage. Ré-optimisation aussi toutes les 5 min d'horloge.
+- **Affichage** : seule la suite est affichée — carte (descentes à venir par groupe, numérotées ; trajets de l'heure qui
+  vient, étapes de reprise numérotées ; positions des groupes et des hélicos), planning de la suite, programme de l'hélico,
+  cartes des groupes (dénivelé fait / prévu, état, suite). Bouton 〰 : trace passée des hélicos (GPS, ou déduite du journal).
+- La journée (journal des événements, réglages, trace) est mémorisée sur la tablette : elle reprend après une fermeture
+  de l'app. Menu ⋯ : journal, export JSON, fin de journée.
+
 ## Lancer
 
 Aucune compilation, aucune dépendance : c'est un site statique.
@@ -76,9 +106,11 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 |---|---|
 | `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
 | `js/data.js` | générateur synthétique, paramètres par défaut |
-| `js/model.js` | instance, matrice des temps de vol, décodeur (séquences → planning), coût |
+| `js/model.js` | instance, matrice des temps de vol, décodeur (séquences → planning, y compris depuis un état de mi-journée : positions GPS, passage base, descente imposée, stabilité), coût |
 | `js/solver.js` | recuit simulé multi-départs (pénalités adaptatives) + descente locale |
 | `js/validate.js` | vérificateur indépendant des contraintes |
+| `js/ops.js` | exploitation : journal des événements → état réel → instance « reste de la journée », adaptation du plan, déductions GPS, hélicos qui suivent le plan |
+| `js/ops-ui.js` | onglet *Exploitation* (tablette du pilote) : horloge, GPS, recalcul en arrière-plan, carte, programme, fenêtres tactiles |
 | `data/base-dataset.json` | jeu de base fixe (Le Châble, 50 descentes, relief réel) |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |
 | `js/milp.js`, `js/neos.js`, `lib/highs/`, `netlify/functions/neos.mjs` | MILP / NEOS (banc d'essai, branche `main`) : tests uniquement |
