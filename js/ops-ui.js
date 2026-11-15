@@ -1,8 +1,8 @@
 // Onglet « Exploitation » : déroulement de la journée en cours sur la tablette du pilote (paysage, tactile).
 //
 // - Horloge : heure réelle (vol réel) ou horloge simulée accélérée (simulation, figée pendant une question au pilote).
-// - Hélico de la tablette : GPS (décollage / atterrissage détectés → embarquement, dépose, passage base déduits),
-//   ou en simulation il suit le plan et les mêmes questions sont posées. Autres hélicos : suivent le plan (ou manuel).
+// - Un seul hélico, celui de la tablette : GPS (décollage / atterrissage détectés → embarquement, dépose, passage base
+//   déduits), ou en simulation il suit le plan et les mêmes questions sont posées.
 // - À chaque événement : état réel → suite de la journée re-décodée tout de suite, puis ré-optimisée en arrière-plan
 //   (workers) en partant du plan en cours ; un nouveau plan n'est adopté que s'il gagne plus que le seuil de stabilité.
 import { BASE, planChanges } from './model.js';
@@ -10,17 +10,18 @@ import {
   newDay, addEvent, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
   dropCandidates, nearestRuns, nearNode, heliPosition, displaySchedule, planAlerts, liveFix, onboardArrival, NEAR_KM,
 } from './ops.js';
-import { createMapView, renderGantt, runPath, alongPath, HELI_COLORS, GROUP_COLORS } from './render.js';
+import { createMapView, renderGantt, runPath, alongPath, HELI_COLOR, HELI_ICON, GROUP_COLORS } from './render.js';
 import { toLatLon, toXY } from './terrain.js';
 import { fmt } from './validate.js';
 
 const L = globalThis.L;
-const STORE = 'heliski-planner-day-v1';
+const STORE = 'heliski-planner-day-v2';     // v2 : un seul hélico (les journées v1 à plusieurs hélicos sont ignorées)
 const SPEEDS = [1, 5, 10, 30, 60];
 const OPT_EVERY = 5;          // min d'horloge : ré-optimisation périodique (les horaires dérivent avec le temps réel)
 const OPT_MS = 1200;          // durée d'une chaîne de recuit (ms) ; une chaîne par cœur
 const LIVE_STALE = 2;         // min : sans position GPS depuis plus longtemps, pas de déduction d'atterrissage
 const NEAR_MIN = 75;          // min : trajets de l'hélico bien visibles sur la carte (au-delà, estompés)
+const SNOOZE = 2;             // min d'horloge : simulation, question écartée (Annuler) → reposée plus tard
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
@@ -28,11 +29,12 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
 let host = null, day = null, ds = null, geo = null, view = null;
 const ui = {
-  heli: 0, all: false, trace: false, edit: false, follow: false, sheet: false, timer: null,
+  trace: false, edit: false, follow: false, sheet: false, timer: null,
   optGen: 0, workers: null, optAt: -1e9, optTimer: null, status: '', sig: '', panelAt: 0,
   gpsWatch: null, gpsErr: null, det: null, saveAt: 0, mv: null, traceLayer: null, toastTimer: null,
-  startHeli: 0, startMode: 'sim', fitted: false,
-  snooze: new Map(),            // simulation : question écartée (Annuler) → reposée 2 min (d'horloge) plus tard
+  startMode: 'sim', fitted: false,
+  pendingSim: false,            // simulation : une question du plan est ouverte
+  snooze: -1e9,                 // simulation : question écartée, reposée à cette heure d'horloge
 };
 
 // ------------------------------------------------------------------ démarrage, persistance
@@ -41,10 +43,10 @@ export function initOps(h) {
   host = h;
   try {
     const s = JSON.parse(localStorage.getItem(STORE) || 'null');
-    if (s?.v === 1) {
+    if (s?.v === 2) {
       const dset = s.dataset === 'base' ? host.baseDataset() : s.dataset;
       if (dset?.runs?.length) {
-        day = s; ds = dset; geo = dayGeo(day, ds); ui.heli = day.myHeli;
+        day = s; ds = dset; geo = dayGeo(day, ds);
         if (day.mode === 'sim') day.sim.paused = true;          // reprise d'une simulation : en pause
       }
     }
@@ -68,14 +70,10 @@ function saveDay() {
 function renderStart() {
   $('ops-start').hidden = false; $('ops-main').hidden = true;
   const plan = host.getPlan(), params = host.getParams();
-  ui.startHeli = Math.min(ui.startHeli, params.nHeli - 1);
   $('ops-plan-summary').innerHTML = plan
-    ? `<b>Plan du matin :</b> ${chf(plan.cost)} · ${host.getGroups().length} groupes · ${params.nHeli} hélico${params.nHeli > 1 ? 's' : ''} · ${host.getOpen().length} itinéraires ouverts`
+    ? `<b>Plan du matin :</b> ${chf(plan.cost)} · ${host.getGroups().length} groupes · ${host.getOpen().length} itinéraires ouverts`
       + (plan.feasible ? '' : ' · <span class="bad-text">contraintes violées</span>')
     : '<span class="bad-text">Pas encore de plan : lancez d’abord une optimisation dans l’onglet Planification.</span>';
-  $('ops-start-heli').innerHTML = Array.from({ length: params.nHeli }, (_, h) =>
-    `<button class="ops-chip ${h === ui.startHeli ? 'on' : ''}" data-h="${h}"><span class="dot" style="background:${HELI_COLORS[h % HELI_COLORS.length]}"></span>Hélico ${h + 1}</button>`).join('');
-  $('ops-start-heli').querySelectorAll('[data-h]').forEach(b => { b.onclick = () => { ui.startHeli = +b.dataset.h; renderStart(); }; });
   $('ops-start-mode').querySelectorAll('[data-mode]').forEach(b => {
     b.classList.toggle('on', b.dataset.mode === ui.startMode);
     b.onclick = () => { ui.startMode = b.dataset.mode; renderStart(); };
@@ -93,12 +91,12 @@ function begin() {
   const params = host.getParams();
   day = newDay({
     dataset: ds, params, groups: host.getGroups(), open: host.getOpen(), sol: plan.sol, cost: plan.cost,
-    mode: ui.startMode, myHeli: ui.startHeli, date: new Date().toISOString().slice(0, 10),
+    mode: ui.startMode, date: new Date().toISOString().slice(0, 10),
     simStart: Number.isFinite(hh) ? hh * 60 + (mm || 0) : params.dayStart,
   });
   day.dataset = ds.isBase ? 'base' : ds;
   day.sim.paused = false; day.sim.at = Date.now();
-  geo = dayGeo(day, ds); ui.heli = day.myHeli; ui.fitted = false;
+  geo = dayGeo(day, ds); ui.fitted = false;
   saveDay();
   startRun();
 }
@@ -136,15 +134,14 @@ function tick() {
   if (!day) return;
   const t = clock();
   let changed = false;
-  if (!ui.sheet) {
-    // Hélicos qui suivent le plan : arrivées, vols à vide, embarquements, passages base dus.
-    for (const [h, until] of ui.snooze) if (until <= t) ui.snooze.delete(h);
+  if (day.mode === 'sim' && !ui.sheet && t >= ui.snooze) {
+    // Simulation : l'hélico suit le plan (arrivées, vols à vide, embarquements, passages base dus).
     for (let k = 0; k < 40; k++) {
       const v = opsView(day, ds, t, { geo });
-      const tr = dueTrigger(day, v, ['sim', 'auto'], ui.snooze);
+      const tr = dueTrigger(day, v);
       if (!tr) { view = v; break; }
       changed = true;
-      if (day.heliMode[tr.heli] === 'sim') { simTrigger(v, tr); if (!ui.sheet) ui.pendingSim = null; } else applyTrigger(day, v, tr);
+      simTrigger(v, tr); if (!ui.sheet) ui.pendingSim = false;
       if (ui.sheet) break;
     }
   }
@@ -218,73 +215,72 @@ function nodeName(n) {
   return 'position actuelle';
 }
 
-/** Groupe attendu par le plan pour la prochaine reprise de l'hélico h à cette position (-1 sinon). */
-function expectedPickup(v, h, pos) {
-  const l = v.d.lifts.filter(x => x.heli === h && x.group >= 0).sort((a, b) => a.start - b.start)[0];
+/** Groupe attendu par le plan pour la prochaine reprise de l'hélico à cette position (-1 sinon). */
+function expectedPickup(v, pos) {
+  const l = v.d.lifts.filter(x => x.group >= 0).sort((a, b) => a.start - b.start)[0];
   return l && (!pos || dist(geo.pts[l.from], pos) <= NEAR_KM) ? l.group : -1;
 }
 
-function doPickup(h, g, t, node, extra = {}) {
+function doPickup(g, t, node, extra = {}) {
   const v = opsView(day, ds, clock(), { geo });
   const run = plannedDest(day, g, v);
-  addEvent(day, { type: 'pickup', heli: h, group: g, t, node: node ?? v.state.groups[g].loc, run, ...extra });
+  addEvent(day, { type: 'pickup', group: g, t, node: node ?? v.state.groups[g].loc, run, ...extra });
   return run;
 }
 
 /** Reprise : le groupe attendu est confirmé d'office s'il est bien là ; sinon (doute) on demande au pilote. */
-function pickupAt(v, h, node, t, expected, pos = null, extra = {}) {
+function pickupAt(v, node, t, expected, pos = null, extra = {}) {
   const here = pos ?? geo.pts[node];
   const cands = pickupCandidates(geo, v.state, here);
-  const exp = expected ?? expectedPickup(v, h, here);
+  const exp = expected ?? expectedPickup(v, here);
   if (exp >= 0 && cands.includes(exp)) {
-    const run = doPickup(h, exp, t, node, extra);
-    toast(`${esc(gname(exp))} à bord de H${h + 1} → ${run >= 0 ? runLabel(run) : 'base'}`, {
-      action: 'Corriger', fn: () => { undoLast(day); afterEvent(); pickSheet(h, { node, t, cands, extra }); },
+    const run = doPickup(exp, t, node, extra);
+    toast(`${esc(gname(exp))} à bord → ${run >= 0 ? runLabel(run) : 'base'}`, {
+      action: 'Corriger', fn: () => { undoLast(day); afterEvent(); pickSheet({ node, t, cands, extra }); },
     });
     return;
   }
   if (!cands.length && exp < 0 && pos) return;       // décollage à vide
-  pickSheet(h, { node, t, cands, expected: exp, extra, allowEmpty: !!pos });
+  pickSheet({ node, t, cands, expected: exp, extra, allowEmpty: !!pos });
 }
 
-function doDrop(h, g, run, t) { addEvent(day, { type: 'drop', heli: h, group: g, run, t }); }
-function doDropBase(h, g, t, done) { addEvent(day, { type: 'dropBase', heli: h, group: g, t, done }); }
+function doDrop(g, run, t) { addEvent(day, { type: 'drop', group: g, run, t }); }
+function doDropBase(g, t, done) { addEvent(day, { type: 'dropBase', group: g, t, done }); }
 
-/** Arrivée d'un hélico chargé (atterrissage GPS ou fin de vol prévue en simulation) : dépose déduite de la position. */
-function arriveAt(v, h, pos, t) {
-  const s = v.state.heli[h], g = s.onboard;
+/** Arrivée de l'hélico chargé (atterrissage GPS ou fin de vol prévue en simulation) : dépose déduite de la position. */
+function arriveAt(v, pos, t) {
+  const s = v.state.heli, g = s.onboard;
   if (g < 0) return;
   if (dist(pos, geo.pts[BASE]) <= NEAR_KM) {
     if (s.dest < 0 && groupFinished(day, v, g)) {
-      doDropBase(h, g, t, true);
-      toast(`${esc(gname(g))} à la base : fin de journée`, { action: 'Corriger', fn: () => { undoLast(day); afterEvent(); baseSheet(h, g, t); } });
-    } else baseSheet(h, g, t);
+      doDropBase(g, t, true);
+      toast(`${esc(gname(g))} à la base : fin de journée`, { action: 'Corriger', fn: () => { undoLast(day); afterEvent(); baseSheet(g, t); } });
+    } else baseSheet(g, t);
     return;
   }
   const cands = dropCandidates(geo, pos);
   if (cands.length === 1) {
-    doDrop(h, g, cands[0], t);
-    toast(`${esc(gname(g))} déposé · ${runLabel(cands[0], true)}`, { action: 'Corriger', fn: () => { undoLast(day); afterEvent(); dropSheet(h, { t, pos }); } });
+    doDrop(g, cands[0], t);
+    toast(`${esc(gname(g))} déposé · ${runLabel(cands[0], true)}`, { action: 'Corriger', fn: () => { undoLast(day); afterEvent(); dropSheet({ t, pos }); } });
     return;
   }
-  dropSheet(h, { t, pos, cands });             // plusieurs itinéraires depuis cette dépose (ou lieu inconnu) : on demande
+  dropSheet({ t, pos, cands });             // plusieurs itinéraires depuis cette dépose (ou lieu inconnu) : on demande
 }
 
-/** Simulation : l'hélico de la tablette suit le plan, les mêmes déductions / questions qu'avec le GPS. */
+/** Simulation : l'hélico suit le plan, les mêmes déductions / questions qu'avec le GPS. */
 function simTrigger(v, tr) {
-  const h = tr.heli;
-  ui.pendingSim = h;                                   // si le pilote écarte la question, elle revient un peu plus tard
+  ui.pendingSim = true;                                // si le pilote écarte la question, elle revient un peu plus tard
   if (tr.kind === 'fly') applyTrigger(day, v, tr);
-  else if (tr.kind === 'stop') { applyTrigger(day, v, tr); toast(`H${h + 1} : arrêt base ${Math.round(tr.dur)} min (jusqu’à ${fmt(tr.t + tr.dur)})`, { kind: 'info' }); }
-  else if (tr.kind === 'pickup') pickupAt(v, h, tr.node, tr.t, tr.group);
-  else if (tr.kind === 'arrive') arriveAt(v, h, tr.dest >= 0 ? geo.pts[1 + tr.dest] : geo.pts[BASE], tr.t);
+  else if (tr.kind === 'stop') { applyTrigger(day, v, tr); toast(`Arrêt base ${Math.round(tr.dur)} min (jusqu’à ${fmt(tr.t + tr.dur)})`, { kind: 'info' }); }
+  else if (tr.kind === 'pickup') pickupAt(v, tr.node, tr.t, tr.group);
+  else if (tr.kind === 'arrive') arriveAt(v, tr.dest >= 0 ? geo.pts[1 + tr.dest] : geo.pts[BASE], tr.t);
 }
 
 // ------------------------------------------------------------------ GPS de la tablette
 function startGps() {
   stopGps();
   if (!navigator.geolocation) { ui.gpsErr = 'GPS indisponible sur cet appareil'; return; }
-  ui.det = { air: !!day.live[day.myHeli]?.air, fast: 0, slowSince: null, slowPos: null };
+  ui.det = { air: !!day.live?.air, fast: 0, slowSince: null, slowPos: null };
   ui.gpsWatch = navigator.geolocation.watchPosition(onFix, (e) => { ui.gpsErr = e.message || 'GPS refusé'; renderHead(); },
     { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
 }
@@ -296,7 +292,7 @@ function stopGps() { if (ui.gpsWatch != null) navigator.geolocation.clearWatch(u
  */
 function onFix(pos) {
   if (!day || day.mode !== 'gps') return;
-  const t = clock(), c = pos.coords, h = day.myHeli, prev = day.live[h];
+  const t = clock(), c = pos.coords, prev = day.live;
   const { x, y } = toXY(ds.origin, c.latitude, c.longitude);
   let speed = c.speed;
   if ((speed == null || Number.isNaN(speed)) && prev && t > prev.t) speed = Math.hypot(x - prev.x, y - prev.y) * 1000 / ((t - prev.t) * 60);
@@ -305,47 +301,48 @@ function onFix(pos) {
   const here = { x, y };
   if (speed != null && speed > 12) { det.fast++; det.slowSince = null; }
   else if (speed != null && speed < 3) { det.fast = 0; det.groundPos = here; if (det.slowSince == null) { det.slowSince = t; det.slowPos = here; } }
-  day.live[h] = { t, x, y, alt: c.altitude ?? null, air: det.air, acc: c.accuracy };
-  const tr = day.track[h], last = tr[tr.length - 1];
+  day.live = { t, x, y, alt: c.altitude ?? null, air: det.air, acc: c.accuracy };
+  const tr = day.track, last = tr[tr.length - 1];
   if (!last || Math.hypot(last[1] - x, last[2] - y) > 0.03 || t - last[0] > 0.25) { tr.push([Math.round(t * 100) / 100, Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]); if (tr.length > 6000) tr.splice(0, tr.length - 6000); }
   if (!det.air && det.fast >= 2) {
-    det.air = true; day.live[h].air = true;
-    onTakeoff(h, det.groundPos ?? here, t);              // lieu du décollage : dernière position au sol
+    det.air = true; day.live.air = true;
+    onTakeoff(det.groundPos ?? here, t);                 // lieu du décollage : dernière position au sol
   } else checkLanding(t);
 }
 
 /** Atterrissage : à l'arrêt depuis 20 s (vérifié aussi à chaque tic : certains GPS n'envoient plus rien à l'arrêt). */
 function checkLanding(t) {
-  const det = ui.det, h = day.myHeli, live = day.live[h];
+  const det = ui.det, live = day.live;
   if (!det?.air || det.slowSince == null || t - det.slowSince < 20 / 60 || !live || t - live.t > LIVE_STALE) return;
   det.air = false; live.air = false;
-  onLanding(h, det.slowPos ?? live, det.slowSince);
+  onLanding(det.slowPos ?? live, det.slowSince);
 }
 
-function lastLand(h) {
-  for (let k = day.events.length - 1; k >= 0; k--) { const e = day.events[k]; if (e.heli === h && e.type === 'land') return e.t; if (e.heli === h && e.type === 'takeoff') return null; }
+function lastLand() {
+  for (let k = day.events.length - 1; k >= 0; k--) { const e = day.events[k]; if (e.type === 'land') return e.t; if (e.type === 'takeoff') return null; }
   return null;
 }
 
-function onTakeoff(h, pos, t) {
-  const node = nearNode(geo, pos), v = opsView(day, ds, t, { geo }), s = v.state.heli[h];
+function onTakeoff(pos, t) {
+  const node = nearNode(geo, pos), v = opsView(day, ds, t, { geo }), s = v.state.heli;
   if (s.onboard < 0 && !(s.stopUntil != null && s.stopUntil > t)) {
-    const tLoad = Math.max(lastLand(h) ?? -1e9, t - day.params.loadMin);
-    pickupAt(v, h, node >= 0 ? node : null, tLoad, null, pos, { takeoff: t });
+    const tLoad = Math.max(lastLand() ?? -1e9, t - day.params.loadMin);
+    pickupAt(v, node >= 0 ? node : null, tLoad, null, pos, { takeoff: t });
   }
-  addEvent(day, { type: 'takeoff', heli: h, t, x: pos.x, y: pos.y, node });
+  addEvent(day, { type: 'takeoff', t, x: pos.x, y: pos.y, node });
   afterEvent();
 }
 
-function onLanding(h, pos, t) {
+function onLanding(pos, t) {
   const node = nearNode(geo, pos);
-  addEvent(day, { type: 'land', heli: h, t, x: pos.x, y: pos.y, node });
-  const v = opsView(day, ds, t, { geo }), s = v.state.heli[h];
+  addEvent(day, { type: 'land', t, x: pos.x, y: pos.y, node });
+  const v = opsView(day, ds, t, { geo }), s = v.state.heli;
   if (s.onboard >= 0) {
-    if (dist(pos, geo.pts[s.pickNode]) > NEAR_KM) arriveAt(v, h, pos, t);   // reposé au point de reprise : ignoré
-  } else if (day.stops[h] && node === BASE) {
-    addEvent(day, { type: 'stopStart', heli: h, t, dur: day.stops[h].dur });
-    toast(`Arrêt base commencé (${day.stops[h]?.dur ?? ''} min)`, { action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
+    if (dist(pos, geo.pts[s.pickNode]) > NEAR_KM) arriveAt(v, pos, t);   // reposé au point de reprise : ignoré
+  } else if (day.stop && node === BASE) {
+    const dur = day.stop.dur;
+    addEvent(day, { type: 'stopStart', t, dur });
+    toast(`Arrêt base commencé (${dur} min)`, { action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
   }
   afterEvent();
 }
@@ -367,8 +364,8 @@ function openSheet({ title, sub = '', items = [], html = '', cols = 2, cancel = 
   return box;
 }
 function closeSheet(cancelled = false) {
-  if (cancelled && ui.pendingSim != null && day) ui.snooze.set(ui.pendingSim, clock() + 2);
-  ui.pendingSim = null;
+  if (cancelled && ui.pendingSim && day) ui.snooze = clock() + SNOOZE;
+  ui.pendingSim = false;
   $('ops-sheet').hidden = true;
   if (ui.sheet) { ui.sheet = false; if (day?.mode === 'sim') day.sim.at = Date.now(); }
 }
@@ -376,38 +373,38 @@ function closeSheet(cancelled = false) {
 function groupStatusText(g, v = view) {
   const s = v.state.groups[g], t = v.now;
   if (s.status === 'done') return 'journée terminée';
-  if (s.status === 'onboard') return `à bord H${s.heli + 1} → ${s.dest >= 0 ? runLabel(s.dest) : 'base'}`;
+  if (s.status === 'onboard') return `à bord → ${s.dest >= 0 ? runLabel(s.dest) : 'base'}`;
   if (s.status === 'base') return s.vert > 0 ? 'à la base' : 'à la base · pas encore parti';
   if (t < s.ready) return `ski ${runLabel(s.run)} · en bas ~${fmt(s.ready)}`;
   return `attend au fond ${runLabel(s.run)} depuis ${Math.round(t - s.ready)} min`;
 }
 
 /** Qui embarque ? (groupes présents à la position d'abord, le groupe attendu en vert). */
-function pickSheet(h, { node = null, t = null, cands = [], expected = -1, extra = {}, allowEmpty = false } = {}) {
+function pickSheet({ node = null, t = null, cands = [], expected = -1, extra = {}, allowEmpty = false } = {}) {
   const v = opsView(day, ds, clock(), { geo });
   const order = [...cands, ...v.state.groups.map((_, i) => i).filter(i => !cands.includes(i))]
     .filter(i => v.state.groups[i].status === 'skiing' || v.state.groups[i].status === 'base');
   const items = order.map(i => ({
     label: `<span class="dot" style="background:${gcolor(i)}"></span>${esc(gname(i))}`, sub: groupStatusText(i, v),
     cls: i === expected ? 'expected' : cands.includes(i) ? '' : 'far', tag: i === expected ? 'prévu' : cands.includes(i) ? 'ici' : '',
-    onClick: () => { const run = doPickup(h, i, t ?? clock(), cands.includes(i) ? node : null, extra); afterEvent(); toast(`${esc(gname(i))} à bord → ${run >= 0 ? runLabel(run) : 'base'}`, { kind: 'info' }); },
+    onClick: () => { const run = doPickup(i, t ?? clock(), cands.includes(i) ? node : null, extra); afterEvent(); toast(`${esc(gname(i))} à bord → ${run >= 0 ? runLabel(run) : 'base'}`, { kind: 'info' }); },
   }));
   if (allowEmpty) items.push({ label: 'Personne', sub: 'vol à vide', cls: 'muted-btn', onClick: () => afterEvent() });
-  openSheet({ title: `Qui embarque dans H${h + 1} ?`, sub: node != null ? `Au ${nodeName(node)}` : '', items, cancel: allowEmpty ? null : 'Annuler', onCancel: () => afterEvent() });
+  openSheet({ title: 'Qui embarque ?', sub: node != null ? `Au ${nodeName(node)}` : '', items, cancel: allowEmpty ? null : 'Annuler', onCancel: () => afterEvent() });
 }
 
 /** Dépose : quel itinéraire ? (itinéraires partant de cette dépose, le prévu en vert ; autres ; base). */
-function dropSheet(h, { t = null, pos = null, cands = null, title = null } = {}) {
-  const v = opsView(day, ds, clock(), { geo }), s = v.state.heli[h], g = s.onboard;
+function dropSheet({ t = null, pos = null, cands = null, title = null } = {}) {
+  const v = opsView(day, ds, clock(), { geo }), s = v.state.heli, g = s.onboard;
   if (g < 0) return;
-  const here = pos ?? heliPosition(day, v, h);
+  const here = pos ?? heliPosition(day, v);
   let list = cands ?? dropCandidates(geo, here);
   const known = list.length > 0;
   // Posé à un sommet connu : seulement les itinéraires qui en partent (le prévu, s'il est ailleurs, reste dans « Autre »).
   if (!known) { list = nearestRuns(geo, here, 8); if (s.dest >= 0 && !list.includes(s.dest)) list = [s.dest, ...list]; }
-  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => { doDrop(h, g, r, t ?? clock()); afterEvent(); } }));
-  items.push({ label: 'Autre itinéraire…', sub: 'liste complète par distance', cls: 'muted-btn', onClick: () => runPicker(`Dépose de ${esc(gname(g))} : itinéraire`, here, s.dest, (r) => { doDrop(h, g, r, t ?? clock()); afterEvent(); }) });
-  items.push({ label: '⌂ Base', sub: 'groupe ramené à la base', cls: 'muted-btn', onClick: () => baseSheet(h, g, t ?? clock()) });
+  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => { doDrop(g, r, t ?? clock()); afterEvent(); } }));
+  items.push({ label: 'Autre itinéraire…', sub: 'liste complète par distance', cls: 'muted-btn', onClick: () => runPicker(`Dépose de ${esc(gname(g))} : itinéraire`, here, s.dest, (r) => { doDrop(g, r, t ?? clock()); afterEvent(); }) });
+  items.push({ label: '⌂ Base', sub: 'groupe ramené à la base', cls: 'muted-btn', onClick: () => baseSheet(g, t ?? clock()) });
   openSheet({
     title: title ?? `${esc(gname(g))} déposé : quel itinéraire ?`,
     sub: known ? `${list.length > 1 ? 'Plusieurs itinéraires partent de cette dépose.' : ''}` : 'Dépose hors d’un sommet connu : itinéraires les plus proches.',
@@ -429,30 +426,30 @@ function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = []
   openSheet({ title, items: list.map(r => runItem(r, { planned: r === planned, onClick: () => onPick(r) })), cols: 3, wide: true });
 }
 
-function baseSheet(h, g, t) {
+function baseSheet(g, t) {
   openSheet({
     title: `${esc(gname(g))} à la base`, sub: 'Que fait le groupe ?',
     items: [
-      { label: 'Fin de journée', sub: 'le groupe ne skie plus aujourd’hui', onClick: () => { doDropBase(h, g, t, true); afterEvent(); } },
-      { label: 'Pause', sub: 'débarque, repartira plus tard (client fatigué…)', onClick: () => { doDropBase(h, g, t, false); afterEvent(); } },
+      { label: 'Fin de journée', sub: 'le groupe ne skie plus aujourd’hui', onClick: () => { doDropBase(g, t, true); afterEvent(); } },
+      { label: 'Pause', sub: 'débarque, repartira plus tard (client fatigué…)', onClick: () => { doDropBase(g, t, false); afterEvent(); } },
       { label: 'Reste à bord', sub: 'arrêt technique, le groupe repart', cls: 'muted-btn', onClick: () => afterEvent() },
     ],
     onCancel: () => afterEvent(),
   });
 }
 
-function fuelSheet(h) {
-  const t = clock(), cur = day.stops[h];
+function fuelSheet() {
+  const t = clock(), cur = day.stop;
   let delay = 20, dur = 10;
   const chips = (name, vals, sel, fmtv) => `<div class="ops-chips sel-${name}">${vals.map(x => `<button class="ops-chip ${x === sel ? 'on' : ''}" data-${name}="${x}">${fmtv(x)}</button>`).join('')}</div>`;
   const box = openSheet({
-    title: `⛽ Passer par la base · H${h + 1}`,
+    title: '⛽ Passer par la base',
     sub: cur ? `Demande en cours : à la base avant ${fmt(cur.by)}, ${cur.dur} min.` : 'Le plan est recalculé pour faire passer l’hélico par la base à temps (plein, client à déposer…).',
     html: `<div class="ops-field"><span>Être à la base dans</span>${chips('delay', [0, 10, 20, 30, 45, 60, 90], delay, x => (x ? x + ' min' : 'maintenant'))}</div>
       <div class="ops-field"><span>Temps à la base (moteur coupé)</span>${chips('dur', [5, 10, 15, 20, 30, 45], dur, x => x + ' min')}</div>`,
     items: [
-      { label: 'Valider', cls: 'primary', onClick: () => { day.stops[h] = { by: t + delay, dur, req: t }; afterEvent(); toast(`H${h + 1} : passage base avant ${fmt(t + delay)} (${dur} min)`, { kind: 'info' }); } },
-      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { day.stops[h] = null; afterEvent(); } }] : []),
+      { label: 'Valider', cls: 'primary', onClick: () => { day.stop = { by: t + delay, dur, req: t }; afterEvent(); toast(`Passage base avant ${fmt(t + delay)} (${dur} min)`, { kind: 'info' }); } },
+      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { day.stop = null; afterEvent(); } }] : []),
     ],
   });
   box.querySelectorAll('[data-delay]').forEach(b => { b.onclick = () => { delay = +b.dataset.delay; box.querySelectorAll('[data-delay]').forEach(x => x.classList.toggle('on', x === b)); }; });
@@ -460,20 +457,20 @@ function fuelSheet(h) {
 }
 
 function groupSheet(g) {
-  const v = view, s = v.state.groups[g], h = ui.heli, t = clock();
+  const v = view, s = v.state.groups[g], t = clock();
   const items = [];
   if (s.status === 'skiing') {
     for (const d of [-10, -5, 5, 10, 15]) items.push({ label: `${d > 0 ? 'Retard +' : 'Avance '}${d} min`, sub: `en bas vers ${fmt(s.ready + d)}`, cls: 'half', onClick: () => { addEvent(day, { type: 'adjust', group: g, delta: d, t }); afterEvent(); } });
     items.push({ label: 'Changer l’itinéraire en cours', sub: `skie ${runLabel(s.run, true)}`, onClick: () => runPicker(`${esc(gname(g))} skie en fait…`, geo.pts[1 + s.run], s.run, (r) => { addEvent(day, { type: 'changeRun', group: g, run: r, t }); afterEvent(); }, { exclude: s.skied.filter(r => r !== s.run) }) });
   }
-  if (s.status === 'onboard') items.push({ label: 'Changer la destination', sub: `vers ${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}`, onClick: () => destSheet(s.heli) });
+  if (s.status === 'onboard') items.push({ label: 'Changer la destination', sub: `vers ${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}`, onClick: destSheet });
   if (s.status !== 'done' && !s.ended) {
     const f = day.forced[g];
     items.push({ label: f >= 0 ? `Descente suivante imposée : ${runLabel(f)}` : 'Imposer la descente suivante', sub: f >= 0 ? 'toucher pour changer' : 'le plan est recalculé autour', onClick: () => forceSheet(g) });
     if (f >= 0) items.push({ label: 'Libérer la descente suivante', sub: 'laisser le plan choisir', cls: 'muted-btn', onClick: () => { day.forced[g] = -1; afterEvent(); } });
   }
   items.push({ label: 'Objectif de dénivelé', sub: `${day.groups[g].target.toLocaleString('fr-CH')} m aujourd’hui · fait ${s.vert.toLocaleString('fr-CH')} m`, onClick: () => targetSheet(g) });
-  if ((s.status === 'skiing' || s.status === 'base') && view.state.heli[h].onboard < 0) items.push({ label: `Embarquer dans H${h + 1}`, sub: 'maintenant', onClick: () => { doPickup(h, g, t, null); afterEvent(); } });
+  if ((s.status === 'skiing' || s.status === 'base') && view.state.heli.onboard < 0) items.push({ label: 'Embarquer', sub: 'maintenant', onClick: () => { doPickup(g, t, null); afterEvent(); } });
   if (!s.ended && s.status !== 'done') items.push({ label: 'Fin de journée du groupe', sub: s.status === 'base' ? 'ne repart plus' : 'plus de descente : retour base', cls: 'danger', onClick: () => { addEvent(day, { type: 'groupEnd', group: g, t }); afterEvent(); } });
   openSheet({ title: `<span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))}`, sub: groupStatusText(g), items });
 }
@@ -486,13 +483,13 @@ function forceSheet(g) {
     { onlyOpen: true, exclude: [...s.skied, ...(s.status === 'onboard' && s.dest >= 0 ? [s.dest] : [])] });
 }
 
-function destSheet(h) {
-  const v = view, s = v.state.heli[h], g = s.onboard;
+function destSheet() {
+  const v = view, s = v.state.heli, g = s.onboard;
   if (g < 0) return;
-  const here = heliPosition(day, v, h);
+  const here = heliPosition(day, v);
   const list = nearestRuns(geo, here, 8, geo.open).filter(r => !v.state.groups[g].skied.includes(r));
-  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => { addEvent(day, { type: 'dest', heli: h, group: g, run: r, t: clock() }); afterEvent(); } }));
-  items.push({ label: '⌂ Base', sub: 'ramener le groupe (client fatigué…)', cls: s.dest < 0 ? 'expected' : 'muted-btn', onClick: () => { addEvent(day, { type: 'dest', heli: h, group: g, run: -1, t: clock() }); afterEvent(); } });
+  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => { addEvent(day, { type: 'dest', group: g, run: r, t: clock() }); afterEvent(); } }));
+  items.push({ label: '⌂ Base', sub: 'ramener le groupe (client fatigué…)', cls: s.dest < 0 ? 'expected' : 'muted-btn', onClick: () => { addEvent(day, { type: 'dest', group: g, run: -1, t: clock() }); afterEvent(); } });
   openSheet({ title: `Destination de ${esc(gname(g))}`, items });
 }
 
@@ -529,9 +526,7 @@ function menuSheet() {
     title: 'Journée', wide: true,
     html: `<div class="ops-field"><span>Stabilité du plan : un changement doit faire gagner au moins</span>
         <div class="ops-chips">${[0, 30, 60, 120, 250].map(x => `<button class="ops-chip ${p.changePenalty === x ? 'on' : ''}" data-cp="${x}">${x ? 'CHF ' + x : 'rien (toujours l’optimum)'}</button>`).join('')}</div></div>
-      <div class="ops-field"><span>Hélicos</span>${day.heliMode.map((m, h) => `<div class="ops-hrow"><b style="color:${HELI_COLORS[h % HELI_COLORS.length]}">H${h + 1}</b>${h === day.myHeli
-        ? `<span class="muted">cette tablette · ${m === 'gps' ? 'GPS' : 'simulation'}</span>`
-        : `<div class="ops-chips">${[['auto', 'Suit le plan'], ['manual', 'Saisie manuelle']].map(([k, l]) => `<button class="ops-chip ${m === k ? 'on' : ''}" data-hm="${h}:${k}">${l}</button>`).join('')}</div>`}</div>`).join('')}</div>`,
+      <div class="ops-field"><span>Mode</span><span class="muted">${day.mode === 'gps' ? 'vol réel · GPS de la tablette' : 'simulation · l’hélico suit le plan'}</span></div>`,
     items: [
       { label: '⟳ Recalculer maintenant', sub: 'optimisation de la suite', onClick: () => scheduleOpt(0) },
       { label: 'Journal de la journée', sub: `${day.events.filter(e => e.type !== 'land' && e.type !== 'takeoff').length} événements`, onClick: journalSheet },
@@ -541,22 +536,21 @@ function menuSheet() {
     cancel: 'Fermer',
   });
   box.querySelectorAll('[data-cp]').forEach(b => { b.onclick = () => { p.changePenalty = +b.dataset.cp; box.querySelectorAll('[data-cp]').forEach(x => x.classList.toggle('on', x === b)); saveDay(); }; });
-  box.querySelectorAll('[data-hm]').forEach(b => { b.onclick = () => { const [h, m] = b.dataset.hm.split(':'); day.heliMode[+h] = m; box.querySelectorAll(`[data-hm^="${h}:"]`).forEach(x => x.classList.toggle('on', x === b)); saveDay(); }; });
 }
 
 const EV_LABEL = {
-  pickup: (e) => `H${e.heli + 1} embarque ${esc(gname(e.group))} au ${nodeName(e.node)} → ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
+  pickup: (e) => `Embarque ${esc(gname(e.group))} au ${nodeName(e.node)} → ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
   dest: (e) => `${esc(gname(e.group))} : destination ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
-  drop: (e) => `H${e.heli + 1} dépose ${esc(gname(e.group))} · ${runLabel(e.run, true)}`,
-  dropBase: (e) => `H${e.heli + 1} ramène ${esc(gname(e.group))} à la base${e.done ? ' (fin de journée)' : ' (pause)'}`,
+  drop: (e) => `Dépose ${esc(gname(e.group))} · ${runLabel(e.run, true)}`,
+  dropBase: (e) => `Ramène ${esc(gname(e.group))} à la base${e.done ? ' (fin de journée)' : ' (pause)'}`,
   adjust: (e) => `${esc(gname(e.group))} : ${e.delta > 0 ? 'retard +' : 'avance '}${e.delta} min`,
   changeRun: (e) => `${esc(gname(e.group))} skie ${runLabel(e.run, true)}`,
   groupEnd: (e) => `${esc(gname(e.group))} : fin de journée`,
-  stopStart: (e) => `H${e.heli + 1} : arrêt base ${Math.round(e.dur)} min`,
-  stopEnd: (e) => `H${e.heli + 1} : fin de l’arrêt base`,
-  stopExtend: (e) => `H${e.heli + 1} : arrêt base +${e.delta} min`,
-  fly: (e) => `H${e.heli + 1} vole vers ${nodeName(e.to)}`,
-  takeoff: (e) => `H${e.heli + 1} décolle`, land: (e) => `H${e.heli + 1} se pose (${e.node >= 0 ? nodeName(e.node) : 'hors point connu'})`,
+  stopStart: (e) => `Arrêt base ${Math.round(e.dur)} min`,
+  stopEnd: () => 'Fin de l’arrêt base',
+  stopExtend: (e) => `Arrêt base +${e.delta} min`,
+  fly: (e) => `Vol vers ${nodeName(e.to)}`,
+  takeoff: () => 'Décollage', land: (e) => `Se pose (${e.node >= 0 ? nodeName(e.node) : 'hors point connu'})`,
 };
 function journalSheet() {
   const rows = [...day.events].reverse().map(e => `<li><span class="mono">${fmt(e.t)}</span> ${EV_LABEL[e.type]?.(e) ?? e.type}</li>`).join('');
@@ -592,17 +586,17 @@ function toast(msg, { action = null, fn = null, kind = 'ok', ms = 9000 } = {}) {
 
 // ------------------------------------------------------------------ rendu
 const gcolor = (g) => GROUP_COLORS[g % GROUP_COLORS.length];
-const hcolor = (h) => HELI_COLORS[h % HELI_COLORS.length];
 const gletter = (g) => day.groups[g].name.trim().slice(-1).toUpperCase();
 const inMin = (t) => { const d = Math.round(t - view.now); return d <= 0 ? 'maintenant' : d < 60 ? `dans ${d} min` : `dans ${Math.floor(d / 60)} h ${String(d % 60).padStart(2, '0')}`; };
 
 /** Signature du plan affiché : on ne redessine la carte / le panneau que si elle change. */
 function signature() {
   const v = view;
-  return [v.d.lifts.map(l => `${l.heli}.${l.group}.${l.to}.${Math.round(l.start)}`).join(','),
+  const h = v.state.heli;
+  return [v.d.lifts.map(l => `${l.group}.${l.to}.${Math.round(l.start)}`).join(','),
     v.state.groups.map(g => `${g.status}${g.run}${g.dest}${Math.round(g.ready)}`).join(','),
-    v.state.heli.map(h => `${h.onboard}${h.dest}${h.node}`).join(','), day.open.length, day.forced.join(','),
-    JSON.stringify(day.stops), ui.heli, ui.all, ui.edit, ui.trace].join('|');
+    `${h.onboard}${h.dest}${h.node}`, day.open.length, day.forced.join(','),
+    JSON.stringify(day.stop), ui.edit, ui.trace].join('|');
 }
 
 function refresh(full) {
@@ -628,7 +622,7 @@ function renderHead() {
     $('ops-sim-play').onclick = () => { anchor(); day.sim.paused = !day.sim.paused; day.sim.at = Date.now(); saveDay(); renderHead(); };
     $('ops-sim-speed').onchange = (e) => { anchor(); day.sim.speed = +e.target.value; saveDay(); };
   }
-  const live = day.mode === 'gps' ? day.live[day.myHeli] : null;
+  const live = day.mode === 'gps' ? day.live : null;
   const gps = day.mode !== 'gps' ? '<span class="pill-s sim">SIM</span>'
     : ui.gpsErr ? `<span class="pill-s bad" title="${esc(ui.gpsErr)}">GPS ✗</span>`
       : !live ? '<span class="pill-s warn">GPS…</span>'
@@ -643,18 +637,11 @@ function renderPanel() {
   const alerts = planAlerts(day, v);
   $('ops-alerts').innerHTML = alerts.length ? `<details class="ops-alert" ${ui.alertsOpen ? 'open' : ''}><summary>⚠ ${esc(alerts[0])}${alerts.length > 1 ? ` <b class="more">+${alerts.length - 1}</b>` : ''}</summary>${alerts.slice(1).map(a => `<div>⚠ ${esc(a)}</div>`).join('')}</details>` : '';
   $('ops-alerts').querySelector('details')?.addEventListener('toggle', (e) => { ui.alertsOpen = e.target.open; });
-  // Hélicos
-  $('ops-helis').innerHTML = v.state.heli.map((s, h) => {
-    const st = s.onboard >= 0 ? `${esc(gname(s.onboard))} à bord` : s.stopUntil != null && s.stopUntil > t ? 'arrêt base' : 'vide';
-    return `<button class="ops-hchip ${h === ui.heli ? 'on' : ''}" data-h="${h}" style="--c:${hcolor(h)}"><b>H${h + 1}</b>${h === day.myHeli ? ' 📍' : ''}<small>${st}${day.heliMode[h] === 'manual' ? ' · manuel' : h !== day.myHeli ? ' · plan' : ''}</small></button>`;
-  }).join('');
-  $('ops-helis').querySelectorAll('[data-h]').forEach(b => { b.onclick = () => { ui.heli = +b.dataset.h; refresh(true); }; });
+  // Hélico
   renderHeliCard();
   // Programme
-  const items = ui.all ? v.state.heli.flatMap((_, h) => agenda(h)).sort((a, b) => a.t - b.t) : agenda(ui.heli);
-  $('ops-agenda-all').classList.toggle('on', ui.all);
-  $('ops-agenda').innerHTML = items.slice(0, ui.all ? 14 : 9).map((it, k) => `<li class="${k === 0 ? 'first' : ''} ${it.cls ?? ''}">
-      <span class="ag-t mono">${fmt(it.t)}</span>${ui.all ? `<span class="ag-h" style="background:${hcolor(it.h)}">H${it.h + 1}</span>` : ''}
+  $('ops-agenda').innerHTML = agenda().slice(0, 9).map((it, k) => `<li class="${k === 0 ? 'first' : ''} ${it.cls ?? ''}">
+      <span class="ag-t mono">${fmt(it.t)}</span>
       <span class="ag-i">${it.icon}</span><span class="ag-x">${it.text}${it.sub ? `<small>${it.sub}</small>` : ''}</span></li>`).join('')
     || '<li class="muted">Plus rien de prévu.</li>';
   // Groupes
@@ -675,35 +662,35 @@ function renderPanel() {
     el.querySelectorAll('[data-adj]').forEach(b => { b.onclick = (e) => { e.stopPropagation(); addEvent(day, { type: 'adjust', group: g, delta: +b.dataset.adj, t: clock() }); afterEvent(); toast(`${esc(gname(g))} : ${+b.dataset.adj > 0 ? 'retard' : 'avance'} ${Math.abs(+b.dataset.adj)} min`, { kind: 'info', ms: 3000 }); }; });
     el.onclick = () => groupSheet(g);
   });
-  $('ops-fuel').classList.toggle('on', !!day.stops[ui.heli]);
+  $('ops-fuel').classList.toggle('on', !!day.stop);
   $('ops-runs').classList.toggle('on', ui.edit);
 }
 
-/** Étapes à venir d'un hélico : en cours, rotations, passages base, retour. */
-function agenda(h) {
-  const v = view, s = v.state.heli[h], p = day.params, out = [];
+/** Étapes à venir de l'hélico : en cours, rotations, passages base, retour. */
+function agenda() {
+  const v = view, s = v.state.heli, p = day.params, out = [];
   if (s.onboard >= 0) {
-    const arr = onboardArrival(day, geo, v.state, h, v.now);
-    out.push({ h, t: arr, icon: '▼', cls: 'now', text: s.dest >= 0 ? `Dépose ${gchip(s.onboard)} · ${runLabel(s.dest, true)}` : `${gchip(s.onboard)} à la base`, sub: s.dest >= 0 ? `sommet ${ds.runs[s.dest].top.alt} m · ${inMin(arr)}` : inMin(arr) });
-  } else if (s.stopUntil != null && s.stopUntil > v.now) out.push({ h, t: s.stopUntil, icon: '⛽', cls: 'now', text: 'Fin de l’arrêt base', sub: inMin(s.stopUntil) });
-  for (const l of v.d.lifts.filter(x => x.heli === h).sort((a, b) => a.start - b.start)) {
-    if (l.stop) { out.push({ h, t: l.start, icon: '⛽', text: `Base · arrêt ${Math.round(l.end - l.start)} min`, sub: `jusqu’à ${fmt(l.end)} · ${inMin(l.start)}`, cls: 'stop' }); continue; }
+    const arr = onboardArrival(day, geo, v.state, v.now);
+    out.push({ t: arr, icon: '▼', cls: 'now', text: s.dest >= 0 ? `Dépose ${gchip(s.onboard)} · ${runLabel(s.dest, true)}` : `${gchip(s.onboard)} à la base`, sub: s.dest >= 0 ? `sommet ${ds.runs[s.dest].top.alt} m · ${inMin(arr)}` : inMin(arr) });
+  } else if (s.stopUntil != null && s.stopUntil > v.now) out.push({ t: s.stopUntil, icon: '⛽', cls: 'now', text: 'Fin de l’arrêt base', sub: inMin(s.stopUntil) });
+  for (const l of [...v.d.lifts].sort((a, b) => a.start - b.start)) {
+    if (l.stop) { out.push({ t: l.start, icon: '⛽', text: `Base · arrêt ${Math.round(l.end - l.start)} min`, sub: `jusqu’à ${fmt(l.end)} · ${inMin(l.start)}`, cls: 'stop' }); continue; }
     const drop = l.end - p.unloadMin;
-    out.push({ h, t: l.start, icon: '▲', text: `${gchip(l.group)} ${nodeName(l.from)} → ${l.run >= 0 ? `<b>${runLabel(l.run, true)}</b>` : '<b>base</b>'}`, sub: `${l.run >= 0 ? 'dépose' : 'arrivée'} ${fmt(drop)} · ${inMin(l.start)}` });
+    out.push({ t: l.start, icon: '▲', text: `${gchip(l.group)} ${nodeName(l.from)} → ${l.run >= 0 ? `<b>${runLabel(l.run, true)}</b>` : '<b>base</b>'}`, sub: `${l.run >= 0 ? 'dépose' : 'arrivée'} ${fmt(drop)} · ${inMin(l.start)}` });
   }
-  const segs = v.sch.heliSeg[h], last = segs[segs.length - 1];
-  if (last && (last.to === BASE) && out.length) out.push({ h, t: last.t1, icon: '⌂', text: 'Retour base', sub: '', cls: 'end' });
+  const segs = v.sch.heliSeg, last = segs[segs.length - 1];
+  if (last && (last.to === BASE) && out.length) out.push({ t: last.t1, icon: '⌂', text: 'Retour base', sub: '', cls: 'end' });
   return out;
 }
 const gchip = (g) => `<span class="gchip" style="background:${gcolor(g)}">${esc(gname(g))}</span>`;
 
 function renderHeliCard() {
-  const v = view, h = ui.heli, s = v.state.heli[h], t = v.now, mode = day.heliMode[h];
-  const live = liveFix(day, h, t), stop = day.stops[h];
-  const modeTxt = h === day.myHeli ? (mode === 'gps' ? 'cette tablette · GPS' : 'cette tablette · simulation') : mode === 'manual' ? 'saisie manuelle' : 'suit le plan';
+  const v = view, s = v.state.heli, t = v.now;
+  const live = liveFix(day, t), stop = day.stop;
+  const modeTxt = day.mode === 'gps' ? 'GPS de la tablette' : 'simulation · suit le plan';
   let status, btns;
   if (s.onboard >= 0) {
-    const arr = onboardArrival(day, geo, v.state, h, t);
+    const arr = onboardArrival(day, geo, v.state, t);
     status = `<div class="hs-main">${gchip(s.onboard)} à bord → <b>${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}</b></div><div class="hs-sub">arrivée ~${fmt(arr)} (${inMin(arr)})</div>`;
     btns = `<button class="ops-btn primary" data-a="drop">▼ Déposer</button><button class="ops-btn" data-a="dest">⇄ Destination</button><button class="ops-btn" data-a="base">⌂ Base</button>`;
   } else if (s.stopUntil != null && s.stopUntil > t) {
@@ -711,32 +698,32 @@ function renderHeliCard() {
     btns = `<button class="ops-btn primary" data-a="stopEnd">Repartir maintenant</button><button class="ops-btn" data-a="stop+5">+5 min</button>`;
   } else {
     const where = live ? (live.air ? 'en vol à vide' : `au sol · ${nearNode(geo, live) >= 0 ? nodeName(nearNode(geo, live)) : 'hors point connu'}`) : `libre · ${nodeName(s.node)}`;
-    const nxt = v.d.lifts.filter(x => x.heli === h && x.group >= 0).sort((a, b) => a.start - b.start)[0];
+    const nxt = v.d.lifts.filter(x => x.group >= 0).sort((a, b) => a.start - b.start)[0];
     status = `<div class="hs-main">Vide · ${where}</div>` + (nxt ? `<div class="hs-sub">Prochaine reprise : ${gchip(nxt.group)} au ${nodeName(nxt.from)} à <b>${fmt(nxt.start)}</b> (${inMin(nxt.start)})</div>` : '<div class="hs-sub">Plus de rotation prévue</div>');
     btns = `<button class="ops-btn primary" data-a="pick">▲ Embarquer un groupe</button>` + (stop ? '<button class="ops-btn" data-a="stopNow">⛽ Arrêt base maintenant</button>' : '');
   }
   const stopTxt = stop ? `<div class="hs-stop">⛽ Passage base demandé : avant <b>${fmt(stop.by)}</b>, ${stop.dur} min <button data-a="fuel">modifier</button></div>` : '';
-  $('ops-heli').style.setProperty('--c', hcolor(h));
-  $('ops-heli').innerHTML = `<div class="hs-head"><b>Hélico ${h + 1}</b><span>${modeTxt}</span></div>${status}${stopTxt}<div class="hs-btns">${btns}</div>`;
-  $('ops-heli').querySelectorAll('[data-a]').forEach(b => { b.onclick = () => heliAction(h, b.dataset.a); });
+  $('ops-heli').style.setProperty('--c', HELI_COLOR);
+  $('ops-heli').innerHTML = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${stopTxt}<div class="hs-btns">${btns}</div>`;
+  $('ops-heli').querySelectorAll('[data-a]').forEach(b => { b.onclick = () => heliAction(b.dataset.a); });
 }
 
-function heliAction(h, a) {
-  const t = clock(), v = opsView(day, ds, t, { geo }), s = v.state.heli[h];
+function heliAction(a) {
+  const t = clock(), v = opsView(day, ds, t, { geo }), s = v.state.heli;
   if (a === 'pick') {
-    const pos = heliPosition(day, v, h);
+    const pos = heliPosition(day, v);
     const cands = pickupCandidates(geo, v.state, pos);
-    pickSheet(h, { t, cands, expected: expectedPickup(v, h, null), node: nearNode(geo, pos) >= 0 ? nearNode(geo, pos) : null });
+    pickSheet({ t, cands, expected: expectedPickup(v, null), node: nearNode(geo, pos) >= 0 ? nearNode(geo, pos) : null });
   } else if (a === 'drop') {
-    const live = liveFix(day, h, t), landT = lastLand(h);
-    const pos = live && !live.air ? live : s.dest >= 0 ? geo.pts[1 + s.dest] : heliPosition(day, v, h);
-    dropSheet(h, { t: live && !live.air && landT != null ? landT : t, pos });
-  } else if (a === 'dest') destSheet(h);
-  else if (a === 'base') baseSheet(h, s.onboard, t);
-  else if (a === 'stopEnd') { addEvent(day, { type: 'stopEnd', heli: h, t }); afterEvent(); }
-  else if (a === 'stop+5') { addEvent(day, { type: 'stopExtend', heli: h, delta: 5, t }); afterEvent(); }
-  else if (a === 'stopNow') { addEvent(day, { type: 'stopStart', heli: h, t, dur: day.stops[h].dur }); afterEvent(); }
-  else if (a === 'fuel') fuelSheet(h);
+    const live = liveFix(day, t), landT = lastLand();
+    const pos = live && !live.air ? live : s.dest >= 0 ? geo.pts[1 + s.dest] : heliPosition(day, v);
+    dropSheet({ t: live && !live.air && landT != null ? landT : t, pos });
+  } else if (a === 'dest') destSheet();
+  else if (a === 'base') baseSheet(s.onboard, t);
+  else if (a === 'stopEnd') { addEvent(day, { type: 'stopEnd', t }); afterEvent(); }
+  else if (a === 'stop+5') { addEvent(day, { type: 'stopExtend', delta: 5, t }); afterEvent(); }
+  else if (a === 'stopNow') { addEvent(day, { type: 'stopStart', t, dur: day.stop.dur }); afterEvent(); }
+  else if (a === 'fuel') fuelSheet();
 }
 
 // ------------------------------------------------------------------ carte
@@ -788,24 +775,21 @@ function drawPlan() {
       L.marker(llPath(s.run)[0], { icon: L.divIcon({ className: 'ops-runtag', html: `<span style="background:${gcolor(g)}">${esc(gletter(g))}${current ? '' : ++k} · ${ds.runs[s.run].code}</span>`, iconSize: null, iconAnchor: [-6, 10] }), interactive: false, zIndexOffset: 500 }).addTo(mv.plan);
     }
   });
-  // Trajets hélicos à venir : l'hélico sélectionné bien visible sur l'heure qui vient (étapes numérotées), le reste estompé.
-  dsch.heliSeg.forEach((segs, h) => {
-    const sel = ui.all || h === ui.heli;
-    let step = 0;
-    for (const s of segs) {
-      if (s.t1 < t) continue;
-      if ((s.type === 'flight' || s.type === 'flightLoaded') && s.from !== s.to) {
-        // v.inst.pts : nœuds de la géométrie + position GPS des hélicos (nœuds virtuels)
-        const a = v.inst.pts[s.from], b = v.inst.pts[s.to], loaded = s.type === 'flightLoaded', soon = s.t0 <= t + NEAR_MIN;
-        L.polyline([llOf(a), llOf(b)], { color: hcolor(h), weight: loaded ? 4 : 3, opacity: sel ? (soon ? 0.95 : 0.22) : 0.15, dashArray: loaded ? null : '8 7', interactive: false }).addTo(mv.plan);
-      }
-      if (sel && s.type === 'load' && s.t0 >= t - 1 && s.t0 <= t + NEAR_MIN && step < 6) {
-        step++;
-        L.marker(llOf(geo.pts[s.from]), { icon: L.divIcon({ className: 'ops-step', html: `<span style="background:${hcolor(h)}">${step}</span>`, iconSize: [26, 26] }), zIndexOffset: 1200 })
-          .bindTooltip(`${fmt(s.t0)} · ${esc(gname(s.group))}`, { direction: 'top' }).addTo(mv.plan);
-      }
+  // Trajets de l'hélico à venir : bien visibles sur l'heure qui vient (étapes de reprise numérotées), le reste estompé.
+  let step = 0;
+  for (const s of dsch.heliSeg) {
+    if (s.t1 < t) continue;
+    if ((s.type === 'flight' || s.type === 'flightLoaded') && s.from !== s.to) {
+      // v.inst.pts : nœuds de la géométrie + position GPS de l'hélico (nœud virtuel)
+      const a = v.inst.pts[s.from], b = v.inst.pts[s.to], loaded = s.type === 'flightLoaded', soon = s.t0 <= t + NEAR_MIN;
+      L.polyline([llOf(a), llOf(b)], { color: HELI_COLOR, weight: loaded ? 4 : 3, opacity: soon ? 0.95 : 0.22, dashArray: loaded ? null : '8 7', interactive: false }).addTo(mv.plan);
     }
-  });
+    if (s.type === 'load' && s.t0 >= t - 1 && s.t0 <= t + NEAR_MIN && step < 6) {
+      step++;
+      L.marker(llOf(geo.pts[s.from]), { icon: L.divIcon({ className: 'ops-step', html: `<span style="background:${HELI_COLOR}">${step}</span>`, iconSize: [26, 26] }), zIndexOffset: 1200 })
+        .bindTooltip(`${fmt(s.t0)} · ${esc(gname(s.group))}`, { direction: 'top' }).addTo(mv.plan);
+    }
+  }
   drawTrace();
   mv.liveMarkers = null;
 }
@@ -813,25 +797,22 @@ function drawPlan() {
 function drawTrace() {
   ui.traceLayer.clearLayers();
   if (!ui.trace) return;
-  day.track.forEach((tr, h) => {
-    if (tr.length > 1) L.polyline(tr.map(([, x, y]) => toLatLon(ds.origin, x, y)), { color: hcolor(h), weight: 3, opacity: 0.7, dashArray: '2 6', interactive: false }).addTo(ui.traceLayer);
-  });
-  // Hélicos sans GPS : trace déduite du journal (points de reprise, déposes, base)
-  day.heliMode.forEach((m, h) => {
-    if (day.track[h].length > 1) return;
-    const pts = [geo.pts[BASE]];
-    for (const e of day.events) {
-      if (e.heli !== h) continue;
-      if (e.type === 'pickup' && e.node != null) pts.push(geo.pts[e.node]);
-      else if (e.type === 'drop') pts.push(geo.pts[1 + e.run]);
-      else if (e.type === 'dropBase' || e.type === 'stopStart') pts.push(geo.pts[BASE]);
-      else if (e.type === 'fly') pts.push(geo.pts[e.to]);
-    }
-    if (pts.length > 1) L.polyline(pts.map(llOf), { color: hcolor(h), weight: 3, opacity: 0.6, dashArray: '2 6', interactive: false }).addTo(ui.traceLayer);
-  });
+  if (day.track.length > 1) {
+    L.polyline(day.track.map(([, x, y]) => toLatLon(ds.origin, x, y)), { color: HELI_COLOR, weight: 3, opacity: 0.7, dashArray: '2 6', interactive: false }).addTo(ui.traceLayer);
+    return;
+  }
+  // Sans GPS (simulation) : trace déduite du journal (points de reprise, déposes, base)
+  const pts = [geo.pts[BASE]];
+  for (const e of day.events) {
+    if (e.type === 'pickup' && e.node != null) pts.push(geo.pts[e.node]);
+    else if (e.type === 'drop') pts.push(geo.pts[1 + e.run]);
+    else if (e.type === 'dropBase' || e.type === 'stopStart') pts.push(geo.pts[BASE]);
+    else if (e.type === 'fly') pts.push(geo.pts[e.to]);
+  }
+  if (pts.length > 1) L.polyline(pts.map(llOf), { color: HELI_COLOR, weight: 3, opacity: 0.6, dashArray: '2 6', interactive: false }).addTo(ui.traceLayer);
 }
 
-/** Positions actuelles : hélicos (GPS ou déduites), groupes (sur leur descente, au fond, à bord, à la base). */
+/** Positions actuelles : hélico (GPS ou déduite), groupes (sur leur descente, au fond, à bord, à la base). */
 function updateLive() {
   const mv = ui.mv, v = view;
   if (!mv) return;
@@ -840,25 +821,25 @@ function updateLive() {
     layers.live.clearLayers();
     mv.liveMarkers = {
       g: day.groups.map((_, g) => L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon', html: `<span style="background:${gcolor(g)}">${esc(gletter(g))}</span>`, iconSize: [24, 24] }), zIndexOffset: 1500, interactive: false }).addTo(layers.live)),
-      h: v.state.heli.map((_, h) => L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon ops-heli-icon', html: `<span style="background:${hcolor(h)}">H${h + 1}</span>`, iconSize: [36, 36] }), zIndexOffset: 2000, interactive: false }).addTo(layers.live)),
-      acc: L.circle([0, 0], { radius: 1, color: hcolor(day.myHeli), weight: 1, fillOpacity: 0.08, interactive: false }).addTo(layers.live),
+      h: L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon ops-heli-icon', html: `<span style="background:${HELI_COLOR}">${HELI_ICON}</span>`, iconSize: [36, 36] }), zIndexOffset: 2000, interactive: false }).addTo(layers.live),
+      acc: L.circle([0, 0], { radius: 1, color: HELI_COLOR, weight: 1, fillOpacity: 0.08, interactive: false }).addTo(layers.live),
     };
   }
-  const hp = v.state.heli.map((_, h) => heliPosition(day, v, h));
-  hp.forEach((p, h) => mv.liveMarkers.h[h].setLatLng(llOf(p)));
+  const hp = heliPosition(day, v);
+  mv.liveMarkers.h.setLatLng(llOf(hp));
   v.state.groups.forEach((s, g) => {
     let p;
-    if (s.status === 'onboard') p = hp[s.heli];
+    if (s.status === 'onboard') p = hp;
     else if (s.status === 'skiing') {
       if (t >= s.ready) p = geo.pts[s.loc];
       else { const [x, y] = alongPath(runPath(ds.runs[s.run]), (t - s.skiStart) / Math.max(1e-9, s.ready - s.skiStart)); p = { x, y }; }
     } else { const a = 2 * Math.PI * g / day.groups.length; p = { x: 0.35 * Math.cos(a), y: 0.35 * Math.sin(a) }; }
     mv.liveMarkers.g[g].setLatLng(llOf(p)).setOpacity(s.status === 'done' ? 0.35 : 1);
   });
-  const live = liveFix(day, day.myHeli, t);
+  const live = liveFix(day, t);
   if (live) mv.liveMarkers.acc.setLatLng(llOf(live)).setRadius(live.acc ?? 1); else mv.liveMarkers.acc.setRadius(0);
   if (ui.follow) {
-    const p = hp[ui.heli], ll = L.latLng(llOf(p));
+    const ll = L.latLng(llOf(hp));
     if (!mv.map.getBounds().pad(-0.25).contains(ll)) mv.map.panTo(ll, { animate: true });
   }
 }
@@ -867,7 +848,7 @@ function fitPlan() {
   if (!ui.mv || !view) return;
   const pts = [llOf(geo.pts[BASE])], t = view.now, dsch = displaySchedule(day, view);
   dsch.groupSeg.forEach(segs => segs.forEach(s => { if (s.type === 'ski' && s.t1 >= t) pts.push(...llPath(s.run)); }));
-  view.state.heli.forEach((_, h) => pts.push(llOf(heliPosition(day, view, h))));
+  pts.push(llOf(heliPosition(day, view)));
   ui.mv.map.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 14 });
   ui.fitted = true;
 }
@@ -882,13 +863,12 @@ function renderTimeline() {
 function bindStatic() {
   $('ops-begin').onclick = begin;
   $('ops-menu').onclick = menuSheet;
-  $('ops-fuel').onclick = () => fuelSheet(ui.heli);
+  $('ops-fuel').onclick = fuelSheet;
   $('ops-undo').onclick = undo;
   $('ops-runs').onclick = () => setEdit(!ui.edit);
   $('ops-edit-done').onclick = () => setEdit(false);
-  $('ops-agenda-all').onclick = () => { ui.all = !ui.all; refresh(true); };
   $('ops-trace').onclick = () => { ui.trace = !ui.trace; $('ops-trace').classList.toggle('on', ui.trace); drawTrace(); };
-  $('ops-follow').onclick = () => { ui.follow = !ui.follow; $('ops-follow').classList.toggle('on', ui.follow); if (ui.follow && view) ui.mv.map.setView(llOf(heliPosition(day, view, ui.heli)), Math.max(ui.mv.map.getZoom(), 13)); };
+  $('ops-follow').onclick = () => { ui.follow = !ui.follow; $('ops-follow').classList.toggle('on', ui.follow); if (ui.follow && view) ui.mv.map.setView(llOf(heliPosition(day, view)), Math.max(ui.mv.map.getZoom(), 13)); };
   $('ops-fit').onclick = fitPlan;
   $('ops-sheet').onclick = (e) => { if (e.target === $('ops-sheet') && $('ops-sheet').querySelector('.sheet-cancel')) { $('ops-sheet').querySelector('.sheet-cancel').click(); } };
   window.addEventListener('resize', () => { if (day && !$('ops-main').hidden) { ui.mv?.map.invalidateSize(); renderTimeline(); } });

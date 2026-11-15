@@ -1,9 +1,11 @@
-// Rendu SVG : carte des descentes + trajectoires, diagramme de Gantt hélicos / groupes.
+// Rendu : carte des descentes + trajectoires, diagramme de Gantt hélico / groupes (un seul hélicoptère).
 import { fmt } from './validate.js';
 import { BASE } from './model.js';
 import { toLatLon } from './terrain.js';
 
-export const HELI_COLORS = ['#2563eb', '#db2777', '#059669', '#9333ea'];
+export const HELI_COLOR = '#2563eb';
+/** Silhouette d'hélicoptère (marqueur de position, distinct du « H » de la base). */
+export const HELI_ICON = '<svg viewBox="0 0 24 24" width="70%" height="70%" fill="#fff" aria-hidden="true"><rect x="2" y="3" width="20" height="1.6" rx=".8"/><rect x="10.2" y="4" width="1.6" height="3.5"/><ellipse cx="10" cy="11.5" rx="6" ry="4"/><rect x="14" y="10.2" width="8" height="1.8"/><rect x="20.4" y="7.5" width="1.6" height="4.5"/><rect x="7" y="15" width="1.4" height="3"/><rect x="12" y="15" width="1.4" height="3"/><rect x="4.5" y="17.6" width="11" height="1.4" rx=".7"/></svg>';
 export const GROUP_COLORS = ['#f59e0b', '#10b981', '#8b5cf6', '#ef4444', '#0ea5e9', '#84cc16', '#f97316', '#14b8a6'];
 const NS = 'http://www.w3.org/2000/svg';
 
@@ -84,23 +86,20 @@ export function drawMap(mv, inst, sch, opts = {}) {
           .bindTooltip(`${inst.groups[g].name} : ${runs[s.run].code} ${fmt(s.t0)}–${fmt(s.t1)}`, { sticky: true }).addTo(layers.sol);
       });
     });
-    sch.heliSeg.forEach((segs, h) => {
-      if (opts.focusHeli != null && opts.focusHeli !== h) return;
-      segs.forEach(s => {
-        if ((s.type !== 'flight' && s.type !== 'flightLoaded') || s.from === s.to) return;
-        if (opts.focusGroup != null && s.group !== opts.focusGroup) return;
-        const a = inst.pts[s.from], b = inst.pts[s.to];
-        // légère courbure pour distinguer les deux hélicos et l'aller / retour
-        const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y, Ln = Math.hypot(dx, dy) || 1;
-        const off = 0.08 * Ln * (h % 2 ? -1 : 1);
-        const cx = mx - dy / Ln * off, cy = my + dx / Ln * off;
-        const pts = Array.from({ length: 13 }, (_, k) => { const u = k / 12; return ll((1 - u) ** 2 * a.x + 2 * u * (1 - u) * cx + u * u * b.x, (1 - u) ** 2 * a.y + 2 * u * (1 - u) * cy + u * u * b.y); });
-        const loaded = s.type === 'flightLoaded';
-        L.polyline(pts, { color: HELI_COLORS[h % HELI_COLORS.length], weight: loaded ? 3 : 2, opacity: 0.9, dashArray: loaded ? null : '6 5' })
-          .bindTooltip(`H${h + 1} ${loaded ? 'chargé (' + inst.groups[s.group].name + ')' : 'à vide'} ${fmt(s.t0)}–${fmt(s.t1)} · ${(s.t1 - s.t0).toFixed(1)} min<br>${nodeName(inst, s.from)} → ${nodeName(inst, s.to)}`, { sticky: true })
-          .addTo(layers.sol);
-      });
-    });
+    for (const s of sch.heliSeg) {
+      if ((s.type !== 'flight' && s.type !== 'flightLoaded') || s.from === s.to) continue;
+      if (opts.focusGroup != null && s.group !== opts.focusGroup) continue;
+      const a = inst.pts[s.from], b = inst.pts[s.to];
+      // légère courbure pour distinguer l'aller du retour
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, dx = b.x - a.x, dy = b.y - a.y, Ln = Math.hypot(dx, dy) || 1;
+      const off = 0.08 * Ln;
+      const cx = mx - dy / Ln * off, cy = my + dx / Ln * off;
+      const pts = Array.from({ length: 13 }, (_, k) => { const u = k / 12; return ll((1 - u) ** 2 * a.x + 2 * u * (1 - u) * cx + u * u * b.x, (1 - u) ** 2 * a.y + 2 * u * (1 - u) * cy + u * u * b.y); });
+      const loaded = s.type === 'flightLoaded';
+      L.polyline(pts, { color: HELI_COLOR, weight: loaded ? 3 : 2, opacity: 0.9, dashArray: loaded ? null : '6 5' })
+        .bindTooltip(`Hélico ${loaded ? 'chargé (' + inst.groups[s.group].name + ')' : 'à vide'} ${fmt(s.t0)}–${fmt(s.t1)} · ${(s.t1 - s.t0).toFixed(1)} min<br>${nodeName(inst, s.from)} → ${nodeName(inst, s.to)}`, { sticky: true })
+        .addTo(layers.sol);
+    }
   }
 
   const key = `${origin.lat},${origin.lon},${R}`;
@@ -118,7 +117,7 @@ export function fitActive(mv) {
   if (pts.length > 1) map.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 14, duration: 0.8 });
 }
 
-/** Positions des hélicos et des groupes à l'instant t. */
+/** Positions de l'hélico et des groupes à l'instant t. */
 export function updateMap(mv, t) {
   const { inst, sch, layers } = mv;
   if (!inst) return;
@@ -127,11 +126,11 @@ export function updateMap(mv, t) {
   if (!mv.liveMarkers) {
     mv.liveMarkers = {
       g: sch.groupSeg.map((_, g) => L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon live-group', html: `<span style="background:${GROUP_COLORS[g % GROUP_COLORS.length]}">${esc(inst.groups[g].name.slice(-1))}</span>`, iconSize: [20, 20] }), zIndexOffset: 1500, interactive: false }).addTo(layers.live)),
-      h: sch.heliSeg.map((_, h) => L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon live-heli', html: `<span style="background:${HELI_COLORS[h % HELI_COLORS.length]}">H${h + 1}</span>`, iconSize: [28, 28] }), zIndexOffset: 2000, interactive: false }).addTo(layers.live)),
+      h: L.marker([0, 0], { icon: L.divIcon({ className: 'live-icon live-heli', html: `<span style="background:${HELI_COLOR}">${HELI_ICON}</span>`, iconSize: [28, 28] }), zIndexOffset: 2000, interactive: false }).addTo(layers.live),
     };
   }
   sch.groupSeg.forEach((segs, g) => { const [x, y] = groupPos(inst, segs, t); mv.liveMarkers.g[g].setLatLng(toLatLon(origin, x, y)); });
-  sch.heliSeg.forEach((segs, h) => { const [x, y] = heliPos(inst, segs, t); mv.liveMarkers.h[h].setLatLng(toLatLon(origin, x, y)); });
+  const [x, y] = heliPos(inst, sch.heliSeg, t); mv.liveMarkers.h.setLatLng(toLatLon(origin, x, y));
 }
 
 /**
@@ -269,8 +268,8 @@ export const SEG_STYLE = {
 export function renderGantt(svg, inst, sch, opts = {}) {
   svg.innerHTML = '';
   const p = inst.params;
-  const H = sch.heliSeg.length, G = sch.groupSeg.length;
-  const tEnd = Math.max(p.dayEnd, ...sch.heliSeg.flat().map(s => s.t1), ...sch.groupSeg.flat().map(s => s.t1));
+  const H = 1, G = sch.groupSeg.length;                   // 1re ligne : l'hélico, puis une ligne par groupe
+  const tEnd = Math.max(p.dayEnd, ...sch.heliSeg.map(s => s.t1), ...sch.groupSeg.flat().map(s => s.t1));
   const t0 = opts.from ?? p.dayStart - 5, t1 = Math.ceil((tEnd + 5) / 30) * 30;
   const W = Math.max(600, svg.clientWidth || 900), left = 86, right = 12, rowH = 26, gapH = 14, top = 22;
   const nRows = H + G;
@@ -303,7 +302,7 @@ export function renderGantt(svg, inst, sch, opts = {}) {
       const attrs = { x, y: y + 4, width: w, height: rowH - 8, class: 'g-seg ' + st.cls };
       if (isHeli && (s.type === 'flight' || s.type === 'flightLoaded')) attrs.fill = color;
       if (!isHeli && s.type === 'ski') attrs.fill = color;
-      if (!isHeli && s.type === 'heli') attrs.fill = HELI_COLORS[s.heli % HELI_COLORS.length];
+      if (!isHeli && s.type === 'heli') attrs.fill = HELI_COLOR;
       const r = el('rect', attrs, rows);
       let tip = `${st.label} ${fmt(s.t0)}–${fmt(s.t1)} (${(s.t1 - s.t0).toFixed(1)} min)`;
       if (s.group != null) tip += `\n${inst.groups[s.group].name}`;
@@ -313,7 +312,7 @@ export function renderGantt(svg, inst, sch, opts = {}) {
       if (isHeli && s.type === 'flightLoaded' && w > 16) el('text', { x: x + w / 2, y: y + 17, 'text-anchor': 'middle', class: 'g-seglabel' }, rows, inst.groups[s.group].name.slice(-1));
     }
   };
-  sch.heliSeg.forEach((segs, h) => drawRow(h, `Hélico ${h + 1}`, HELI_COLORS[h % HELI_COLORS.length], segs, true));
+  drawRow(0, 'Hélico', HELI_COLOR, sch.heliSeg, true);
   sch.groupSeg.forEach((segs, g) => drawRow(H + g, inst.groups[g].name, GROUP_COLORS[g % GROUP_COLORS.length], segs, false));
 
   const cursor = el('line', { x1: 0, x2: 0, y1: top - 6, y2: Ht - 4, class: 'g-cursor' }, svg);
@@ -337,5 +336,5 @@ function nodeName(inst, n) {
   if (n === BASE) return 'Base';
   if (n <= inst.R) return 'sommet ' + inst.dataset.runs[n - 1].code;
   if (n <= 2 * inst.R) return 'fond ' + inst.dataset.runs[n - 1 - inst.R].code;
-  return 'position hélico';
+  return 'position de l’hélico';
 }

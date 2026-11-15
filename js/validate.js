@@ -5,68 +5,63 @@ const EPS = 1e-6;
 
 export function validateSchedule(inst, sch) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, G = inst.groups.length;
-  const checks = [];
+  const segs = sch.heliSeg, checks = [];             // segments de l'hélico (un seul hélicoptère)
   const add = (label, errors) => checks.push({ label, ok: errors.length === 0, errors: errors.slice(0, 6), nErr: errors.length });
 
   // 1. Continuité temps / lieu de chaque hélico, départ et retour base.
   {
     const e = [];
-    sch.heliSeg.forEach((segs, h) => {
-      let t = p.dayStart, loc = BASE;
-      for (const s of segs) {
-        if (Math.abs(s.t0 - t) > EPS) e.push(`H${h + 1} : trou/chevauchement à ${fmt(s.t0)}`);
-        if (s.from !== loc) e.push(`H${h + 1} : téléportation à ${fmt(s.t0)}`);
-        t = s.t1; loc = s.to;
-      }
-      if (loc !== BASE) e.push(`H${h + 1} ne rentre pas à la base`);
-    });
-    add('Continuité des trajectoires hélico (base → … → base)', e);
+    let t = p.dayStart, loc = BASE;
+    for (const s of segs) {
+      if (Math.abs(s.t0 - t) > EPS) e.push(`trou/chevauchement à ${fmt(s.t0)}`);
+      if (s.from !== loc) e.push(`téléportation à ${fmt(s.t0)}`);
+      t = s.t1; loc = s.to;
+    }
+    if (loc !== BASE) e.push('l’hélico ne rentre pas à la base');
+    add('Continuité de la trajectoire de l’hélico (base → … → base)', e);
   }
   // 2. Durées de vol = matrice des temps de vol.
   {
     const e = [];
-    sch.heliSeg.forEach((segs, h) => segs.forEach(s => {
+    for (const s of segs) {
       if ((s.type === 'flight' || s.type === 'flightLoaded') && Math.abs(s.t1 - s.t0 - tau[s.from * N + s.to]) > EPS)
-        e.push(`H${h + 1} vol ${fmt(s.t0)} : ${(s.t1 - s.t0).toFixed(1)} ≠ ${tau[s.from * N + s.to]}`);
-    }));
+        e.push(`vol ${fmt(s.t0)} : ${(s.t1 - s.t0).toFixed(1)} ≠ ${tau[s.from * N + s.to]}`);
+    }
     add('Durées de vol conformes à la matrice des distances', e);
   }
   // 3. Standby ≤ max (segments de standby consécutifs au même endroit fusionnés).
   {
     const e = [];
-    sch.heliSeg.forEach((segs, h) => {
-      let acc = 0;
-      for (const s of segs) {
-        if (s.type === 'standby') acc += s.t1 - s.t0; else acc = 0;
-        if (acc > p.maxStandby + EPS) { e.push(`H${h + 1} : standby ${acc.toFixed(1)} min à ${fmt(s.t0)}`); acc = -1e9; }
-      }
-    });
+    let acc = 0;
+    for (const s of segs) {
+      if (s.type === 'standby') acc += s.t1 - s.t0; else acc = 0;
+      if (acc > p.maxStandby + EPS) { e.push(`standby ${acc.toFixed(1)} min à ${fmt(s.t0)}`); acc = -1e9; }
+    }
     add(`Standby moteur allumé ≤ ${p.maxStandby} min`, e);
   }
   // 4. Chargement → vol chargé → déchargement, même groupe, durées respectées.
   {
     const e = [];
-    sch.heliSeg.forEach((segs, h) => segs.forEach((s, i) => {
+    segs.forEach((s, i) => {
       if (s.type === 'load') {
-        if (Math.abs(s.t1 - s.t0 - p.loadMin) > EPS) e.push(`H${h + 1} chargement ${fmt(s.t0)} : durée`);
+        if (Math.abs(s.t1 - s.t0 - p.loadMin) > EPS) e.push(`chargement ${fmt(s.t0)} : durée`);
         const f = segs[i + 1], u = segs[i + 2];
         if (!f || f.type !== 'flightLoaded' || f.group !== s.group || !u || u.type !== 'unload' || u.group !== s.group)
-          e.push(`H${h + 1} ${fmt(s.t0)} : chargement non suivi d'un vol chargé + déchargement`);
-        else if (Math.abs(u.t1 - u.t0 - p.unloadMin) > EPS) e.push(`H${h + 1} déchargement ${fmt(u.t0)} : durée`);
+          e.push(`${fmt(s.t0)} : chargement non suivi d'un vol chargé + déchargement`);
+        else if (Math.abs(u.t1 - u.t0 - p.unloadMin) > EPS) e.push(`déchargement ${fmt(u.t0)} : durée`);
       }
       if (s.type === 'parked' && segs.slice(0, i).some(x => x.type === 'load')) {      // coupure en cours de journée
         const atStop = segs[i - 1]?.type === 'unload' || segs[i + 1]?.type === 'load';     // à une dépose / reprise
         if (!(p.allowFieldShutdown && atStop) && !(p.allowBaseShutdown && s.from === BASE))
-          e.push(`H${h + 1} coupure moteur non autorisée (${s.from === BASE ? 'base' : 'hors base'}) à ${fmt(s.t0)}`);
+          e.push(`coupure moteur non autorisée (${s.from === BASE ? 'base' : 'hors base'}) à ${fmt(s.t0)}`);
       }
       if (s.type === 'parked' && s.from !== BASE && !segs.slice(0, i).some(x => x.type === 'load'))
-        e.push(`H${h + 1} moteur coupé hors base à ${fmt(s.t0)}`);
-    }));
+        e.push(`moteur coupé hors base à ${fmt(s.t0)}`);
+    });
     add(`Chargement ${p.loadMin} min / déchargement ${p.unloadMin} min, 1 groupe à bord`, e);
   }
   // 5. Cohérence groupes : chaque transport du groupe correspond à un vol chargé d'un hélico.
-  const loadedFlights = [];
-  sch.heliSeg.forEach((segs, h) => segs.forEach(s => { if (s.type === 'flightLoaded') loadedFlights.push({ ...s, heli: h }); }));
+  const loadedFlights = segs.filter(s => s.type === 'flightLoaded');
   {
     const e = [];
     sch.groupSeg.forEach((segs, g) => {
@@ -75,7 +70,7 @@ export function validateSchedule(inst, sch) {
         if (Math.abs(s.t0 - t) > EPS || s.from !== loc) e.push(`${gname(inst, g)} : discontinuité à ${fmt(s.t0)}`);
         if (s.type === 'heli') {
           const ok = loadedFlights.some(f => f.group === g && f.from === s.from && f.to === s.to && Math.abs(f.t0 - (s.t0 + p.loadMin)) < EPS);
-          if (!ok) e.push(`${gname(inst, g)} : transport ${fmt(s.t0)} sans hélico`);
+          if (!ok) e.push(`${gname(inst, g)} : transport ${fmt(s.t0)} sans vol de l’hélico`);
         }
         if (s.type === 'ski') {
           const r = s.from - 1;
@@ -86,7 +81,7 @@ export function validateSchedule(inst, sch) {
       }
       if (segs.length && loc !== BASE) e.push(`${gname(inst, g)} ne rentre pas à la base`);
     });
-    add('Chaque groupe : base → sommet → ski → fond → … → base, transporté par un hélico', e);
+    add('Chaque groupe : base → sommet → ski → fond → … → base, transporté par l’hélico', e);
   }
   // 6. Fenêtre horaire.
   {
@@ -145,16 +140,13 @@ export function validateSchedule(inst, sch) {
   }
   // 9. Coût recalculé depuis les segments.
   {
-    let c = 0, starts = 0;
-    sch.heliSeg.forEach(segs => {
-      let engineOn = false;                              // moteur coupé au départ de la base
-      segs.forEach(s => {
-        const d = s.t1 - s.t0;
-        if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') c += p.flyRate * d;
-        else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload') c += p.standbyRate * d;
-        if (s.type === 'parked') engineOn = false; else if (!engineOn) { engineOn = true; starts++; }
-      });
-    });
+    let c = 0, starts = 0, engineOn = false;             // moteur coupé au départ de la base
+    for (const s of segs) {
+      const d = s.t1 - s.t0;
+      if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') c += p.flyRate * d;
+      else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload') c += p.standbyRate * d;
+      if (s.type === 'parked') engineOn = false; else if (!engineOn) { engineOn = true; starts++; }
+    }
     c += (p.heliStartCost ?? 0) * starts;
     c += p.clientWaitPenalty * sch.gWait.reduce((a, b) => a + b, 0);
     const e = Math.abs(c - sch.cost) > 0.01 ? [`recalcul ${c.toFixed(2)} ≠ ${sch.cost.toFixed(2)}`] : [];

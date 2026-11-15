@@ -22,12 +22,11 @@ function morningPlan(params = P, seed = 1) {
 function startDay(params = P) {
   const { inst, sol, d } = morningPlan(params);
   const day = newDay({ dataset: ds, params, groups, open: [...inst.dayRuns], sol, cost: d.cost, mode: 'sim' });
-  day.heliMode = day.heliMode.map(() => 'auto');
   return { day, d };
 }
 
 /**
- * Déroule la journée : tous les hélicos suivent le plan, ré-optimisation (courte) après chaque événement.
+ * Déroule la journée : l'hélico suit le plan (simulation), ré-optimisation (courte) après chaque événement.
  * hooks(now, day) : actions du pilote à heure donnée. Vérifie la cohérence décodeur / planning à chaque étape.
  */
 function runDay(day, { hooks = () => {}, until = 17 * 60, optIters = 1200 } = {}) {
@@ -38,7 +37,7 @@ function runDay(day, { hooks = () => {}, until = 17 * 60, optIters = 1200 } = {}
     for (let k = 0; k < 50; k++) {
       const v = opsView(day, ds, now);
       assert.ok(Math.abs(v.sch.cost - v.d.cost) < 1e-6, `coût planning ${v.sch.cost} ≠ décodeur ${v.d.cost} à ${now}`);
-      const tr = dueTrigger(day, v, ['auto']);
+      const tr = dueTrigger(day, v);
       if (!tr) break;
       applyTrigger(day, v, tr); n++;
       const v2 = opsView(day, ds, now);
@@ -55,10 +54,10 @@ test('exploitation : au départ, l’état du matin redonne exactement le plan d
   const v = opsView(day, ds, P.dayStart);
   assert.ok(Math.abs(v.d.cost - d.cost) < 1e-6, `${v.d.cost} ≠ ${d.cost}`);
   assert.equal(v.d.change, 0);
-  assert.deepEqual(v.d.lifts.map(l => [l.heli, l.group, l.to, l.start]), d.lifts.map(l => [l.heli, l.group, l.to, l.start]));
+  assert.deepEqual(v.d.lifts.map(l => [l.group, l.to, l.start]), d.lifts.map(l => [l.group, l.to, l.start]));
 });
 
-test('exploitation : journée complète, hélicos suivant le plan, objectifs atteints sans répétition', () => {
+test('exploitation : journée complète, hélico suivant le plan, objectifs atteints sans répétition', () => {
   const { day } = startDay();
   const st = runDay(day);
   st.groups.forEach((g, i) => {
@@ -74,7 +73,7 @@ test('exploitation : passage base demandé, descente fermée, descente imposée,
   let closed = -1, forcedRun = -1;
   const st = runDay(day, {
     hooks: (now, d) => {
-      if (now === 10 * 60) d.stops[0] = { by: now + 25, dur: 15, req: now };        // plein avant 10:25
+      if (now === 10 * 60) d.stop = { by: now + 25, dur: 15, req: now };            // plein avant 10:25
       if (now === 10 * 60 + 30) {                                                       // une descente prévue est fermée
         const v = opsView(d, ds, now);
         closed = v.plan.seq.flat()[0];
@@ -93,9 +92,9 @@ test('exploitation : passage base demandé, descente fermée, descente imposée,
     },
   });
   // Passage base fait avant l'échéance
-  const stop = day.events.find(e => e.type === 'stopStart' && e.heli === 0);
+  const stop = day.events.find(e => e.type === 'stopStart');
   assert.ok(stop && stop.t <= 10 * 60 + 25 + 1e-6, `arrêt base ${stop?.t}`);
-  assert.equal(day.stops[0], null);
+  assert.equal(day.stop, null);
   // Descente fermée : plus jamais déposée après la fermeture
   assert.ok(closed >= 0);
   assert.ok(!day.events.some(e => e.type === 'drop' && e.run === closed && e.t > 10 * 60 + 30));
@@ -122,10 +121,10 @@ test('exploitation : client ramené à la base, puis fin de journée d’un grou
   let v = opsView(day, ds, now);
   let g = v.state.groups.findIndex(x => x.status === 'skiing');
   assert.ok(g >= 0);
-  addEvent(day, { type: 'pickup', heli: 0, group: g, t: now, node: v.state.groups[g].loc, run: -1 });
+  addEvent(day, { type: 'pickup', group: g, t: now, node: v.state.groups[g].loc, run: -1 });
   v = opsView(day, ds, now);
   assert.equal(v.inst.start.groups[g].loc, BASE);
-  addEvent(day, { type: 'dropBase', heli: 0, group: g, t: now + 8, done: false });
+  addEvent(day, { type: 'dropBase', group: g, t: now + 8, done: false });
   v = opsView(day, ds, now + 15);
   assert.equal(v.state.groups[g].status, 'base');
   assert.ok(v.plan.seq[g].length > 0 || v.d.shortfall === 0, 'le groupe repart plus tard');
@@ -171,9 +170,9 @@ test('exploitation : déductions GPS (dépose partagée, reprise), annulation', 
   assert.equal(pickupCandidates(geo, v.state, ds.base).length, groups.length);
   // Annulation : la descente imposée consommée par l'embarquement est restaurée
   day.forced[1] = 5;
-  addEvent(day, { type: 'pickup', heli: 0, group: 1, t: P.dayStart, node: BASE, run: 5 });
+  addEvent(day, { type: 'pickup', group: 1, t: P.dayStart, node: BASE, run: 5 });
   assert.equal(day.forced[1], -1);
-  addEvent(day, { type: 'takeoff', heli: 0, t: P.dayStart + 6 });
+  addEvent(day, { type: 'takeoff', t: P.dayStart + 6 });
   const ev = undoLast(day);
   assert.equal(ev.type, 'pickup');
   assert.equal(day.forced[1], 5);

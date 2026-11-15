@@ -270,10 +270,6 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .ops-alert .more { float: right; background: #8f1d1d; color: #fff; border-radius: 9px; padding: 0 8px; }
 .ops-alert div { margin-top: 4px; }
 
-.ops-helis { display: flex; gap: 8px; }
-.ops-hchip { flex: 1; min-height: 52px; border-radius: 12px; border: 2px solid var(--line); background: #fff; font: inherit; font-size: 16px; text-align: left; padding: 6px 10px; cursor: pointer; border-left: 8px solid var(--c); }
-.ops-hchip small { display: block; font-size: 12.5px; color: var(--muted); }
-.ops-hchip.on { border-color: var(--c); box-shadow: 0 0 0 2px var(--c) inset; }
 .ops-card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
 .ops-heli { border-top: 6px solid var(--c); }
 .hs-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 15px; }
@@ -296,7 +292,6 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .ops-agenda li.now { background: #fff7e0; }
 .ops-agenda li.stop .ag-i { color: #55657a; }
 .ops-agenda .ag-t { font-weight: 800; font-size: 16px; flex: none; width: 50px; }
-.ops-agenda .ag-h { flex: none; color: #fff; font-weight: 700; font-size: 12px; padding: 1px 6px; border-radius: 8px; margin-top: 2px; }
 .ops-agenda .ag-i { flex: none; width: 18px; text-align: center; color: var(--accent); font-weight: 800; }
 .ops-agenda .ag-x { min-width: 0; }
 .ops-agenda small { display: block; color: var(--muted); font-size: 13px; }
@@ -344,7 +339,6 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .ops-stepper { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 10px 0 16px; }
 .ops-stepper button { min-width: 72px; min-height: 60px; font: inherit; font-size: 18px; font-weight: 700; border-radius: 12px; border: 2px solid var(--line); background: #fff; cursor: pointer; }
 .ops-stepper output { min-width: 130px; text-align: center; font: 800 26px var(--mono); }
-.ops-hrow { display: flex; align-items: center; gap: 12px; margin: 4px 0; color: var(--ink); }
 .ops-journal { list-style: none; padding: 0; margin: 0 0 6px; max-height: 60vh; overflow-y: auto; font-size: 15px; }
 .ops-journal li { padding: 6px 4px; border-bottom: 1px solid #eef2f7; }
 .ops-journal .mono { font-weight: 700; margin-right: 8px; }

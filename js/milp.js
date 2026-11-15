@@ -4,7 +4,7 @@
 // Graphe des opérations : pour chaque groupe g
 //   S_g  : chargement à la base (matin)         E_g : déchargement à la base (fin)
 //   D_gr : déchargement au sommet de r ∈ C       P_gr : chargement au fond de r ∈ C
-// + dépôt O (départ des hélicos) et Z (retour).
+// + dépôt O (départ de l'hélico) et Z (retour). Un seul hélicoptère.
 // Arcs « chargés » (pickup → drop du même groupe) et arcs « à vide » (drop → pickup, ou dépôt).
 import { BASE, waitPlan, canShutdown } from './model.js';
 
@@ -28,12 +28,12 @@ export function candidateRuns(inst, seqs, size = 12) {
 /**
  * C : descentes candidates communes à tous les groupes.
  * opts.fixedSeq : si fourni (séquences par groupe), les descentes ET leur ordre sont imposés :
- *   le MILP n'optimise plus que l'affectation et le minutage des hélicos (sous-problème exact).
+ *   le MILP n'optimise plus que l'ordre des rotations et le minutage de l'hélico (sous-problème exact).
  */
 export function buildMilp(inst, C, opts = {}) {
   const fixed = opts.fixedSeq ?? null;
   const Cg = (g) => (fixed ? fixed[g] : C);
-  const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, G = inst.groups.length, H = p.nHeli;
+  const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, G = inst.groups.length, H = 1;   // un seul hélicoptère
   const nodes = [];
   const add = (o) => { o.id = nodes.length; nodes.push(o); return o.id; };
   const O = add({ kind: 'O', loc: BASE, name: 'O' });
@@ -201,7 +201,7 @@ export function buildMilp(inst, C, opts = {}) {
   }
 
   // --- Écriture
-  lines.push(`\\ Heliski planner - MILP ${G} groupes, ${H} helicos, ${C.length} descentes candidates`);
+  lines.push(`\\ Heliski planner - MILP ${G} groupes, 1 helico, ${C.length} descentes candidates`);
   lines.push(`\\ Descentes : ${C.map(r => inst.dataset.runs[r].code).join(' ')}${fixed ? ' (sequences imposees)' : ''}`);
   lines.push('Minimize', ` obj: ${lin(obj)}`, 'Subject To', ...cons, 'Bounds');
   for (const n of nodes) {
@@ -231,15 +231,13 @@ export function liftsFromMilp(inst, meta, value) {
     if ((value(`x${a.i}_${a.j}`) ?? 0) > 0.5) { if (a.i === O) fromO.push(a.j); else succ.set(a.i, a.j); }
   }
   const lifts = [];
-  fromO.forEach((first, h) => {
-    let n = first, guard = 0;
-    while (n !== Z && n !== undefined && guard++ < 1000) {
-      const pick = nodes[n], drop = succ.get(n);
-      if (drop === undefined) break;
-      lifts.push({ heli: h, group: pick.g, from: pick.loc, to: nodes[drop].loc, start: value('t' + n) });
-      n = succ.get(drop);
-    }
-  });
+  let n = fromO[0], guard = 0;                       // tournée de l'hélico : O → … → Z
+  while (n !== Z && n !== undefined && guard++ < 1000) {
+    const pick = nodes[n], drop = succ.get(n);
+    if (drop === undefined) break;
+    lifts.push({ group: pick.g, from: pick.loc, to: nodes[drop].loc, start: value('t' + n) });
+    n = succ.get(drop);
+  }
   return lifts;
 }
 
@@ -256,32 +254,28 @@ export function warmStart(inst, meta, lifts) {
     if (loc === BASE) return pick ? S[g] : E[g];
     return pick ? P[g][loc - 1 - inst.R] : D[g][loc - 1];
   };
-  const byHeli = Array.from({ length: p.nHeli }, () => []);
-  for (const l of lifts) byHeli[l.heli].push(l);
-  for (const L of byHeli) {
-    L.sort((a, b) => a.start - b.start);
-    let prev = O, prevEnd = p.dayStart, prevLoc = BASE;
-    for (const l of L) {
-      const i = nodeOf(l.group, l.from, true), j = nodeOf(l.group, l.to, false);
-      if (i === undefined || j === undefined) return null;          // descente hors de C
-      val.set(`x${prev}_${i}`, 1);
-      val.set('t' + i, l.start);
-      val.set('t' + j, l.start + p.loadMin + tau[l.from * N + l.to]);
-      val.set(`x${i}_${j}`, 1);
-      if (prev !== O) {
-        const gap = Math.max(0, l.start - prevEnd - tau[prevLoc * N + l.from]);
-        if (canShutdown(p, prevLoc)) {                                  // coupure + redémarrage, ou attente moteur allumé
-          const w = waitPlan(inst, prevLoc, true, l.from, gap);
-          if (w.kind === 'parked' || w.kind === 'parkedPickup') { if (meta.zs.includes(i)) val.set('z' + i, 1); }
-          else { val.set('sb' + i, w.standby); val.set('lo' + i, w.loiter); }
-        } else { val.set('sb' + i, Math.min(gap, p.maxStandby)); val.set('lo' + i, Math.max(0, gap - p.maxStandby)); }
-      }
-      const r = l.to === BASE ? -1 : l.to - 1;
-      if (r >= 0) val.set(`v${l.group}_${r}`, 1);
-      prev = j; prevEnd = l.start + p.loadMin + tau[l.from * N + l.to] + p.unloadMin; prevLoc = l.to;
+  const L = [...lifts].sort((a, b) => a.start - b.start);
+  let prev = O, prevEnd = p.dayStart, prevLoc = BASE;
+  for (const l of L) {
+    const i = nodeOf(l.group, l.from, true), j = nodeOf(l.group, l.to, false);
+    if (i === undefined || j === undefined) return null;          // descente hors de C
+    val.set(`x${prev}_${i}`, 1);
+    val.set('t' + i, l.start);
+    val.set('t' + j, l.start + p.loadMin + tau[l.from * N + l.to]);
+    val.set(`x${i}_${j}`, 1);
+    if (prev !== O) {
+      const gap = Math.max(0, l.start - prevEnd - tau[prevLoc * N + l.from]);
+      if (canShutdown(p, prevLoc)) {                                  // coupure + redémarrage, ou attente moteur allumé
+        const w = waitPlan(inst, prevLoc, true, l.from, gap);
+        if (w.kind === 'parked' || w.kind === 'parkedPickup') { if (meta.zs.includes(i)) val.set('z' + i, 1); }
+        else { val.set('sb' + i, w.standby); val.set('lo' + i, w.loiter); }
+      } else { val.set('sb' + i, Math.min(gap, p.maxStandby)); val.set('lo' + i, Math.max(0, gap - p.maxStandby)); }
     }
-    val.set(`x${prev}_${Z}`, 1);
+    const r = l.to === BASE ? -1 : l.to - 1;
+    if (r >= 0) val.set(`v${l.group}_${r}`, 1);
+    prev = j; prevEnd = l.start + p.loadMin + tau[l.from * N + l.to] + p.unloadMin; prevLoc = l.to;
   }
+  val.set(`x${prev}_${Z}`, 1);
   for (const y of meta.ys) {                                         // ordre sur les descentes partagées
     const [g, h, r] = y.slice(1).split('_').map(Number);
     const tg = val.get('t' + D[g][r]), th = val.get('t' + D[h][r]);

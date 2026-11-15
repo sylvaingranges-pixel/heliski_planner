@@ -37,17 +37,17 @@ test('heuristique : solution faisable, coût cohérent décodeur / planning / se
   assert.ok(sch.cost < 7500, `coût ${sch.cost}`);
 });
 
-test('variantes : attente client max, arrêt moteur (base, dépose / reprise), 3 hélicos', () => {
+test('variantes : attente client max, arrêt moteur (base, dépose / reprise), descentes non exclusives', () => {
   for (const extra of [{ maxClientWait: 30 }, { allowFieldShutdown: false }, { allowBaseShutdown: true, allowFieldShutdown: false },
     { allowBaseShutdown: true }, { allowBaseShutdown: true, heliStartCost: 300 },
-    { heliStartCost: 0 }, { nHeli: 3, exclusiveRuns: false }]) {
+    { heliStartCost: 0 }, { exclusiveRuns: false }]) {
     const { d, sch, checks } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 2);
     for (const c of checks) assert.ok(c.ok, `${JSON.stringify(extra)} ${c.label} : ${c.errors.join(', ')}`);
     assert.ok(Math.abs(d.cost - sch.cost) < 1e-6);
   }
 });
 
-test('MILP (HiGHS) : affectation hélicos optimale ≤ heuristique, planning valide', async () => {
+test('MILP (HiGHS) : ordre et minutage de l’hélico optimaux ≤ heuristique, planning valide', async () => {
   const highs = await loadHighs();
   const { inst, res, d } = solveAndCheck(DEFAULT_PARAMS);
   const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });
@@ -87,19 +87,16 @@ test('descentes du jour : aucune descente ouverte, pas de plantage', () => {
   assert.deepEqual(candidateRuns(inst, res.sol.seq, 10), []);
 });
 
-test('flotte : un planning à 1 hélico garde son coût avec 2 hélicos (le 2e reste à la base)', () => {
-  for (const extra of [{}, { maxClientWait: 30 }]) {
-    const one = buildInstance(ds, { ...DEFAULT_PARAMS, ...extra, nHeli: 1 }, DEFAULT_GROUPS);
-    const two = buildInstance(ds, { ...DEFAULT_PARAMS, ...extra, nHeli: 2 }, DEFAULT_GROUPS);
-    const res = solveSA(one, { seed: 3, iterations: 10000, restarts: 2 });
-    const sol = { ...res.sol, nUse: 1 };
-    const d1 = decode(one, sol, true), d2 = decode(two, sol, true);
-    assert.ok(Math.abs(d1.f - d2.f) < 1e-9, `${d1.f} ≠ ${d2.f}`);
-    assert.ok(d2.lifts.every(l => l.heli === 0));
-    const sch = buildSchedule(two, d2.lifts);
-    assert.ok(Math.abs(sch.cost - d1.cost) < 1e-6);
-    if (d1.feasible) for (const c of validateSchedule(two, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
-  }
+test('un seul hélico : jamais deux rotations en même temps, une seule trajectoire continue', () => {
+  const { inst, d, sch } = solveAndCheck(DEFAULT_PARAMS);
+  assert.ok(d.lifts.every(l => !('heli' in l)));
+  const L = [...d.lifts].sort((a, b) => a.start - b.start);
+  for (let k = 1; k < L.length; k++) assert.ok(L[k].start >= L[k - 1].end - 1e-9, `rotations ${k - 1} et ${k} se chevauchent`);
+  assert.ok(Array.isArray(sch.heliSeg) && sch.heliSeg.every(s => typeof s.type === 'string'));
+  const loads = sch.heliSeg.filter(s => s.type === 'load').length;
+  assert.equal(loads, d.lifts.length);
+  assert.equal(sch.groupSeg.flat().filter(s => s.type === 'heli').length, d.lifts.length);
+  assert.ok(L[0].start >= inst.params.dayStart - 1e-9);
 });
 
 test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur (base, dépose / reprise)', async () => {
@@ -107,8 +104,8 @@ test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur
   for (const extra of [{ heliStartCost: 50, allowFieldShutdown: false }, { allowBaseShutdown: true, allowFieldShutdown: false, heliStartCost: 150 },
     { heliStartCost: 50 }, { heliStartCost: 0 }, { allowBaseShutdown: true, heliStartCost: 150, maxClientWait: 30 }]) {
     const { inst, res, d, sch: s0 } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 4);
-    assert.ok(s0.totals.starts >= new Set(d.lifts.map(l => l.heli)).size);   // au moins un démarrage par hélico utilisé
-    if (!extra.allowBaseShutdown && extra.allowFieldShutdown === false) assert.equal(s0.totals.starts, new Set(d.lifts.map(l => l.heli)).size);
+    assert.ok(s0.totals.starts >= 1);                                  // au moins le démarrage du matin
+    if (!extra.allowBaseShutdown && extra.allowFieldShutdown === false) assert.equal(s0.totals.starts, 1);
     const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });
     const out = runHighs(highs, lp, { timeLimit: 60, warm: warmStart(inst, meta, d.lifts) });
     assert.ok(out.warmOk, JSON.stringify(extra));
@@ -122,7 +119,7 @@ test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur
 test('un groupe ne skie pas deux fois la même descente dans la journée', () => {
   const noRepeat = (sol) => sol.seq.every(q => new Set(q).size === q.length);
   // Aucun mouvement du recuit ni de la descente locale n'introduit de répétition.
-  for (const extra of [{}, { nHeli: 1 }, { maxClientWait: 30 }]) {
+  for (const extra of [{}, { allowFieldShutdown: false }, { maxClientWait: 30 }]) {
     const inst = buildInstance(ds, { ...DEFAULT_PARAMS, ...extra }, DEFAULT_GROUPS, [...Array(12).keys()]);   // peu de choix
     const rnd = mulberry32(5);
     let sol = initialSolution(inst, rnd);
@@ -183,8 +180,8 @@ test('effort borné en temps (timeMs) : durée respectée, solution faisable', (
 });
 
 test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standby long, jamais plus cher', () => {
-  const off = { ...DEFAULT_PARAMS, nHeli: 1, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
-  const one = DEFAULT_GROUPS.slice(0, 1);                    // 1 groupe, 1 hélico : l'hélico attend pendant chaque descente
+  const off = { ...DEFAULT_PARAMS, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
+  const one = DEFAULT_GROUPS.slice(0, 1);                    // 1 groupe : l'hélico attend pendant chaque descente
   const instOff = buildInstance(ds, off, one), instOn = buildInstance(ds, on, one);
   const sol = solveSA(instOff, { seed: 1, iterations: 10000, restarts: 2 }).sol;
   const dOff = decode(instOff, sol, true), sOff = buildSchedule(instOff, dOff.lifts);
@@ -204,9 +201,9 @@ test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standb
   assert.ok(validateSchedule(instOff, sOn).some(c => !c.ok && /coupure moteur non autorisée/.test(c.errors.join(' '))));
 });
 
-test('robustesse : instance serrée (1 hélico, fin 13 h), toutes les graines faisables', () => {
+test('robustesse : instance serrée (fin 13 h), toutes les graines faisables', () => {
   // Instance où un départ peut finir infaisable : le suivant repart alors de zéro au lieu de chercher autour.
-  const inst = buildInstance(generateDataset({ seed: 123 }), { ...DEFAULT_PARAMS, nHeli: 1, dayEnd: 13 * 60 }, DEFAULT_GROUPS);
+  const inst = buildInstance(generateDataset({ seed: 123 }), { ...DEFAULT_PARAMS, dayEnd: 13 * 60 }, DEFAULT_GROUPS);
   for (let seed = 1; seed <= 4; seed++) {
     const res = solveSA(inst, { seed, iterations: 30000, restarts: 4 });
     const d = decode(inst, res.sol, true);

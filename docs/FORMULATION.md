@@ -1,6 +1,6 @@
 # Formulation du problème
 
-Minimiser le coût des hélicoptères sur une journée en garantissant à chaque groupe le dénivelé de son forfait
+Minimiser le coût de l'hélicoptère sur une journée en garantissant à chaque groupe le dénivelé de son forfait
 (le chiffre d'affaires étant fixé, minimiser le coût = maximiser la marge).
 
 ## Données
@@ -12,7 +12,7 @@ Minimiser le coût des hélicoptères sur une journée en garantissant à chaque
 | $\mathcal R_j\subseteq\mathcal R$ | descentes du jour (réalisables aujourd'hui : neige, météo, avalanches) — seules utilisées | toutes |
 | $\tau_{ij}$ | temps de vol entre deux points, $\tau_{ij}=\tau_0+\max(d_{ij}/v,\,(z_j-z_i)^+/v_z)$ | 1 min, 180 km/h, 300 m/min |
 | $\mathcal G,\ Q_g$ | groupes, dénivelé du jour (forfait / jours) | 4 |
-| $H$ | hélicoptères identiques | 2 |
+| $H$ | hélicoptères identiques (cette branche : un seul) | 1 |
 | $c_v,\ c_s$ | tarif en vol / en standby moteur allumé | 40 / 20 CHF/min |
 | $\delta_c,\ \delta_d$ | chargement / déchargement (moteur allumé, tarif $c_s$) | 6 / 6 min |
 | $\bar w$ | standby maximal | 5 min |
@@ -36,6 +36,7 @@ Variables : $x_{ij}\in\{0,1\}$, $v_{gr}\in\{0,1\}$, $t_i\in[e_i,\ell_i]$, $\sigm
 
 $$\min \sum_{(i,j)\in\mathcal A} c_v\tau_{ij}x_{ij} + \sum_{g,r} c_s(\delta_c+\delta_d)v_{gr} + \sum_{i\ \text{charg.}}(c_s\sigma_i + c_v\lambda_i) + c_d\big(\textstyle\sum_{j\ne Z} x_{Oj} + \sum_j z_j\big) + |\mathcal G|\,c_s(\delta_c+\delta_d)$$
 
+Formulation générale de `main` ; cette branche fixe $H=1$ (une seule tournée $O\to\dots\to Z$).
 Un hélico non utilisé emprunte l'arc $O\to Z$ (coût nul) : un planning à $k<H$ hélicos est admissible ; $c_d$ évite d'en
 démarrer un de plus pour un gain marginal.
 
@@ -69,9 +70,9 @@ Le problème généralise le PDPTW / *dial-a-ride* avec sélection des visites e
    à la fin ; plusieurs chaînes en parallèle. Pénalités adaptatives pendant la recherche (coût + μ·pénalités, μ ∈ [0,05 ; 1]
    ajusté selon la part de solutions infaisables, μ = 1 en fin de départ) pour traverser les zones infaisables ; un départ
    repart de zéro si la meilleure solution est infaisable.
-2. **Décodeur événementiel** : à chaque pas, le couple (groupe prêt, hélico) minimisant
+2. **Décodeur événementiel** : à chaque pas, le groupe prêt minimisant
    `début + prio_g + λ·coût marginal / c_v (− urgence·attente)` est exécuté ; l'attente de l'hélico est facturée au mieux
    (le moins cher entre standby ≤ 5 min / vol d'attente et, si autorisé, coupure moteur au point de reprise ou à la base
    pour $c_d$, ou retour base).
-3. **MILP HiGHS** : (a) descentes imposées → affectation des hélicos exacte ; (b) modèle complet sur un sous-ensemble,
+3. **MILP HiGHS** : (a) descentes imposées → ordre et minutage de l'hélico exacts ; (b) modèle complet sur un sous-ensemble,
    démarré à chaud → borne inférieure et écart garanti. (c) Export `.lp` pour NEOS.

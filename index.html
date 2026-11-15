@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Heliski Planner</title>
-  <meta name="description" content="Optimisation des rotations d'hélicoptères pour l'héliski : minimiser le coût de vol sous contrainte de dénivelé.">
+  <meta name="description" content="Optimisation des rotations de l'hélicoptère pour l'héliski : minimiser le coût de vol sous contrainte de dénivelé.">
   <meta name="theme-color" content="#0f2742">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -66,9 +66,8 @@
         </details>
 
         <details open>
-          <summary>Hélicoptères &amp; coûts</summary>
+          <summary>Hélicoptère &amp; coûts</summary>
           <div class="grid2">
-            <label><span>Hélicoptères&nbsp;<i class="help" tabindex="0" data-tip="Nombre d’hélicoptères disponibles en même temps pour les rotations.">?</i></span> <input type="number" id="p-nHeli" min="1" max="4"></label>
             <label><span>Vol (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute de vol (moteur allumé, en l’air).">?</i></span> <input type="number" id="p-flyRate" step="1"></label>
             <label><span>Standby (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute au sol, moteur au ralenti (attente moteur allumé).">?</i></span> <input type="number" id="p-standbyRate" step="1"></label>
             <label><span>Standby max (min)&nbsp;<i class="help" tabindex="0" data-tip="Durée maximale d’attente au sol moteur allumé ; au-delà, l’hélico vole en attente ou coupe le moteur (si autorisé).">?</i></span> <input type="number" id="p-maxStandby" step="0.5"></label>
@@ -229,11 +228,10 @@
           <p class="muted">Déroulement de la journée à partir du plan de l’onglet <i>Planification</i> : la tablette suit l’hélico
             (GPS), le pilote indique les groupes embarqués, et la suite de la journée est recalculée à chaque changement.</p>
           <div id="ops-plan-summary" class="ops-plan-summary"></div>
-          <div class="ops-field"><span>Cette tablette est dans</span><div class="ops-chips" id="ops-start-heli"></div></div>
           <div class="ops-field"><span>Mode</span>
             <div class="ops-chips" id="ops-start-mode">
               <button class="ops-chip" data-mode="gps">Vol réel<small>heure réelle · GPS de la tablette</small></button>
-              <button class="ops-chip" data-mode="sim">Simulation<small>horloge accélérée · les hélicos suivent le plan</small></button>
+              <button class="ops-chip" data-mode="sim">Simulation<small>horloge accélérée · l’hélico suit le plan</small></button>
             </div>
           </div>
           <label class="ops-field" id="ops-start-simtime"><span>Heure de début de la simulation</span><input type="time" id="ops-sim-start"></label>
@@ -265,9 +263,8 @@
             <button id="ops-menu" class="ops-iconbtn" title="Journée : réglages, journal, fin">⋯</button>
           </div>
           <div id="ops-alerts" class="ops-alerts"></div>
-          <div id="ops-helis" class="ops-helis"></div>
           <div id="ops-heli" class="ops-card ops-heli"></div>
-          <div class="ops-sec"><h4>Programme</h4><button id="ops-agenda-all" class="ops-mini">Tous les hélicos</button></div>
+          <div class="ops-sec"><h4>Programme</h4></div>
           <ol id="ops-agenda" class="ops-agenda"></ol>
           <div class="ops-sec"><h4>Groupes</h4></div>
           <div id="ops-groups" class="ops-groups"></div>

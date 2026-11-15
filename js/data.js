@@ -71,8 +71,8 @@ export const DEFAULT_GROUPS = [
   { name: 'Groupe D', packageM: 10000, days: 4 },
 ];
 
+// Un seul hélicoptère.
 export const DEFAULT_PARAMS = {
-  nHeli: 2,
   flyRate: 20,          // CHF / min en vol
   standbyRate: 8,       // CHF / min au sol moteur allumé
   loadMin: 6,           // chargement (min)

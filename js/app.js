@@ -1,13 +1,13 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
 import { buildInstance, decode, buildSchedule, nodeLabel, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
-import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLORS, GROUP_COLORS, SEG_STYLE } from './render.js';
+import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLOR, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
 import { initOps, showOps } from './ops-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
-const PARAM_KEYS = ['nHeli', 'flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
+const PARAM_KEYS = ['flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
 const STORE = 'heliski-planner-prod-v1';
 // Niveaux d'effort de l'optimisation : durée totale visée (s). Le temps est réparti en chaînes de recuit d'environ 1 s,
 // en parallèle sur les cœurs disponibles : plus d'effort = plus de chaînes indépendantes, on garde la meilleure.
@@ -30,10 +30,11 @@ const state = {
 // ------------------------------------------------------------------ persistance
 // Un paramètre resté à sa valeur par défaut lors de l'enregistrement suit les nouveaux défauts ;
 // seuls ceux modifiés par l'utilisateur sont restaurés. Enregistrements sans `defaults` : anciens défauts.
+// Paramètres disparus (ex. nombre d'hélicos, d'anciennes versions à plusieurs hélicos) : ignorés.
 const OLD_DEFAULTS = { flyRate: 40, standbyRate: 20, heliStartCost: 50, maxClientWait: 0, climbRate: 300 };
 function keptParams(s) {
   const defs = s.defaults ?? OLD_DEFAULTS;
-  return Object.fromEntries(Object.entries(s.params ?? {}).filter(([k, v]) => !(k in defs) || v !== defs[k]));
+  return Object.fromEntries(Object.entries(s.params ?? {}).filter(([k, v]) => k in DEFAULT_PARAMS && (!(k in defs) || v !== defs[k])));
 }
 function save() {
   // Le jeu de base n'est jamais recopié : seule la référence « base » est mémorisée, il est relu depuis le fichier.
@@ -67,7 +68,7 @@ function snapshot() {
 function bindParams() {
   for (const k of PARAM_KEYS) {
     const e = $('p-' + k); e.value = state.params[k];
-    e.onchange = () => { const v = parseFloat(e.value); if (!Number.isNaN(v)) { state.params[k] = k === 'nHeli' ? Math.max(1, Math.min(4, Math.round(v))) : v; paramsChanged(); } };
+    e.onchange = () => { const v = parseFloat(e.value); if (!Number.isNaN(v)) { state.params[k] = v; paramsChanged(); } };
   }
   for (const k of ['dayStart', 'dayEnd']) {
     const e = $('p-' + k); e.value = fmt(state.params[k]);
@@ -219,18 +220,14 @@ function solveHeuristic() {
   if (!state.inst.dayRuns.length) { alert('Aucune descente ouverte aujourd’hui : sélectionnez des descentes du jour.'); return; }
   state.stopSolve?.(false);
   // Chaînes de recuit indépendantes (au plus une par cœur en même temps), on garde la meilleure.
-  // Pour chaque taille de flotte k = 1…nHeli, mêmes graines : un planning à k hélicos reste valable avec plus
-  // d'hélicos, donc ajouter un hélico ne peut jamais donner un résultat moins bon.
   const nW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-  const H = state.inst.params.nHeli;
   const effort = EFFORT[state.effort], btn = $('btn-solve'), bar = $('sa-progress');
-  // Budget : chaînes d'environ 1 s, autant que les cœurs en font tenir dans la durée visée, réparties sur les flottes.
-  const perFleet = Math.max(1, Math.floor(effort.seconds * nW / H));
-  const waves = Math.ceil(H * perFleet / nW);
+  // Budget : chaînes d'environ 1 s, autant que les cœurs en font tenir dans la durée visée.
+  const nJobs = Math.max(1, Math.floor(effort.seconds * nW));
+  const waves = Math.ceil(nJobs / nW);
   const timeMs = Math.max(150, 0.92 * 1000 * effort.seconds / waves - 60);   // marge : démarrage des workers, descente locale
   const restarts = timeMs >= 600 ? 4 : 2, seed0 = 1;
-  const jobs = [];
-  for (let k = H; k >= 1; k--) for (let w = 0; w < perFleet; w++) jobs.push({ fleet: k, seed: seed0 + 1000 * w });
+  const jobs = Array.from({ length: nJobs }, (_, w) => ({ seed: seed0 + 1000 * w }));
   const prog = new Array(jobs.length).fill(0), done = [];
   let bestSeen = Infinity, next = 0;
   const t0 = performance.now();
@@ -240,15 +237,11 @@ function solveHeuristic() {
   const finish = () => {
     reset();
     if (!done.length) return;
-    const best = done.reduce((a, b) => (b.f < a.f - 1e-9 || (Math.abs(b.f - a.f) <= 1e-9 && b.fleet < a.fleet) ? b : a));
+    const best = done.reduce((a, b) => (b.f < a.f - 1e-9 ? b : a));
     const evals = done.reduce((a, b) => a + b.evals, 0);
-    const fleets = Array.from({ length: H }, (_, k) => done.filter(d => d.fleet === k + 1).map(d => d.f))
-      .map((fs, k) => (fs.length ? `${k + 1} → ${Math.round(Math.min(...fs))}` : null)).filter(Boolean);
-    const used = new Set(best.lifts.map(l => l.heli)).size;
     const partial = done.length < jobs.length ? ` (arrêtée, ${done.length} / ${jobs.length} chaînes)` : '';
     setSolution({ label: `Optimisation ${effort.label}${partial}`, sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
-      history: best.history, info: `${done.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations ; ${used} hélico(s) utilisé(s) sur ${H}` +
-        (H > 1 ? ` ; meilleur coût par flotte : ${fleets.join(', ')}` : '') });
+      history: best.history, info: `${done.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations` });
   };
   // Arrêt par le bouton : on garde la meilleure des chaînes déjà terminées ; remplacé par un nouveau calcul : on jette tout.
   state.stopSolve = (keep = true) => {
@@ -273,7 +266,7 @@ function solveHeuristic() {
       }
     };
     w.onerror = (e) => { state.stopSolve?.(false); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { timeMs, restarts, seed: job.seed, fleet: job.fleet } });
+    w.postMessage({ ...snapshot(), opts: { timeMs, restarts, seed: job.seed } });
     state.saWorkers.add(w);
   };
   state.saWorkers = new Set();
@@ -301,11 +294,11 @@ function ensureMapView() {
 // ------------------------------------------------------------------ animation de la journée
 let playTimer = null, pausedAt = null;
 const PLAY_SPEEDS = [0.25, 0.5, 1, 2, 4];         // ×1 : 1 min de journée toutes les 40 ms
-// Fin de l'animation : dernier mouvement (hélicos rentrés, groupes arrivés), borné par le curseur.
+// Fin de l'animation : dernier mouvement (hélico rentré, groupes arrivés), borné par le curseur.
 function playEnd() {
   const max = +$('time').max, sch = state.cur?.sch;
   if (!sch) return max;
-  const last = Math.max(state.inst.params.dayStart, ...[...sch.heliSeg, ...sch.groupSeg].flat().map(s => s.t1));
+  const last = Math.max(state.inst.params.dayStart, ...[...sch.heliSeg, ...sch.groupSeg.flat()].map(s => s.t1));
   return Math.min(max, Math.ceil(last));
 }
 function togglePlay() {
@@ -348,13 +341,13 @@ function renderKpis() {
   const lastEnd = Math.max(...s.gEnd);
   const card = (l, v, cls = '') => `<div class="kpi ${cls}"><div class="l">${l}</div><div class="v">${v}</div></div>`;
   k.innerHTML = [
-    card('Coût hélicos' + (state.cur.stale ? ' (réévalué)' : ''), chf(s.cost), 'main'),
+    card('Coût hélico' + (state.cur.stale ? ' (réévalué)' : ''), chf(s.cost), 'main'),
     card('Contraintes', state.cur.feasible ? '✓ OK' : '✗ violées', state.cur.feasible ? 'ok' : 'bad'),
     card('Coût / 1000 m skiés', chf(s.cost / Math.max(1, vert) * 1000)),
     card('Minutes de vol', `${s.flyMin.toFixed(0)} min`),
     card('dont vol chargé', `${t.flyLoaded.toFixed(0)} min`),
     card('Standby / attente en vol', `${t.standby.toFixed(1)} / ${t.loiter.toFixed(1)} min`),
-    card('Hélicos utilisés', `${new Set(s.lifts.map(l => l.heli)).size} / ${inst.params.nHeli} · ${t.starts} démarr.`),
+    card('Démarrages moteur', `${t.starts}`),
     card('Rotations', `${s.lifts.length} × ${inst.params.loadMin + inst.params.unloadMin} min sol`),
     card('Dénivelé total', `${vert.toLocaleString('fr-CH')} m`),
     card('Dernier retour base', fmt(lastEnd)),
@@ -364,7 +357,6 @@ function renderKpis() {
 
 function renderMapView() {
   const opts = { selectedRun: state.selectedRun, time: state.time, showAllRuns: $('map-all').checked, open: state.inst.open, selectMode: state.sel.on };
-  if (state.focus.startsWith('h')) opts.focusHeli = +state.focus.slice(1);
   if (state.focus.startsWith('g')) opts.focusGroup = +state.focus.slice(1);
   drawMap(ensureMapView(), state.inst, state.cur?.sch ?? null, opts);
 }
@@ -424,11 +416,11 @@ function renderOps() {
   const inst = state.inst, p = inst.params, N = inst.N;
   const rows = [...state.cur.lifts].sort((a, b) => a.start - b.start).map(l => {
     const fl = inst.tau[l.from * N + l.to];
-    return `<tr><td>${fmt(l.start)}</td><td><span class="pill" style="background:${HELI_COLORS[l.heli % HELI_COLORS.length]}">H${l.heli + 1}</span></td>
+    return `<tr><td>${fmt(l.start)}</td>
       <td>${esc(inst.groups[l.group].name)}</td><td>${nodeLabel(inst, l.from)} → ${nodeLabel(inst, l.to)}</td>
       <td>${fl.toFixed(1)}</td><td>${fmt(l.start + p.loadMin + fl + p.unloadMin)}</td></tr>`;
   });
-  el.innerHTML = `<table class="mini"><thead><tr><th>Charg.</th><th>Hélico</th><th>Groupe</th><th>Rotation</th><th>Vol (min)</th><th>Fin</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+  el.innerHTML = `<table class="mini"><thead><tr><th>Charg.</th><th>Groupe</th><th>Rotation</th><th>Vol (min)</th><th>Fin</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 
 function renderCompare() {
@@ -442,14 +434,14 @@ function renderCompare() {
 
 function renderFocusSelect() {
   const s = $('map-focus');
-  const opts = [['all', 'Tout afficher'], ...Array.from({ length: state.params.nHeli }, (_, h) => ['h' + h, `Hélico ${h + 1}`]), ...state.groups.map((g, i) => ['g' + i, g.name])];
+  const opts = [['all', 'Tout afficher'], ...state.groups.map((g, i) => ['g' + i, g.name])];
   s.innerHTML = opts.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
   if (!opts.some(o => o[0] === state.focus)) state.focus = 'all';
   s.value = state.focus;
 }
 
 function renderLegend() {
-  const items = [['flight', 'Vol à vide', HELI_COLORS[0] + '73'], ['flightLoaded', 'Vol chargé', HELI_COLORS[0]], ['load', 'Charg./décharg.', '#f6c453'],
+  const items = [['flight', 'Vol à vide', HELI_COLOR + '73'], ['flightLoaded', 'Vol chargé', HELI_COLOR], ['load', 'Charg./décharg.', '#f6c453'],
     ['standby', 'Standby', '#f08c2e'], ['loiter', 'Vol d’attente', '#c62f2f'], ['parked', 'Moteur coupé', '#e3e8ef'], ['ski', 'Ski', GROUP_COLORS[0]], ['wait', 'Clients attendent', '#f3c6c6']];
   $('gantt-legend').innerHTML = items.map(([k, l, c]) => `<span style="--c:${c}" title="${SEG_STYLE[k].label}">${l}</span>`).join('');
 }
