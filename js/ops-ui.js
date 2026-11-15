@@ -610,18 +610,31 @@ function refresh(full) {
   updateLive();
 }
 
+/**
+ * Simulation : lecture / pause et vitesse. Les contrôles sont créés une seule fois puis seulement mis à jour :
+ * l'en-tête est rafraîchi toutes les 500 ms, recréer la liste déroulante la refermerait pendant qu'on choisit.
+ */
+function renderSimCtl() {
+  const box = $('ops-simctl'), sim = day.mode === 'sim';
+  if (!sim) { box.innerHTML = ''; return; }
+  let play = $('ops-sim-play'), speed = $('ops-sim-speed');
+  if (!play || !speed) {
+    box.innerHTML = `<button class="ops-mini" id="ops-sim-play"></button><select id="ops-sim-speed" class="ops-speed">${SPEEDS.map(x => `<option value="${x}">×${x}</option>`).join('')}</select>`;
+    play = $('ops-sim-play'); speed = $('ops-sim-speed');
+    play.onclick = () => { anchor(); day.sim.paused = !day.sim.paused; day.sim.at = Date.now(); saveDay(); renderHead(); };
+    speed.onchange = (e) => { anchor(); day.sim.speed = +e.target.value; saveDay(); };
+  }
+  play.classList.toggle('go', day.sim.paused);
+  const label = day.sim.paused ? '▶' : '❚❚';
+  if (play.textContent !== label) play.textContent = label;
+  if (document.activeElement !== speed && speed.value !== String(day.sim.speed)) speed.value = String(day.sim.speed);
+}
+
 function renderHead() {
   if (!day) return;
   const t = view?.now ?? clock();
   $('ops-clock').textContent = fmt(Math.floor(t));
-  const sim = day.mode === 'sim';
-  $('ops-simctl').innerHTML = sim
-    ? `<button class="ops-mini ${day.sim.paused ? 'go' : ''}" id="ops-sim-play">${day.sim.paused ? '▶' : '❚❚'}</button><select id="ops-sim-speed" class="ops-speed">${SPEEDS.map(x => `<option value="${x}" ${x === day.sim.speed ? 'selected' : ''}>×${x}</option>`).join('')}</select>`
-    : '';
-  if (sim) {
-    $('ops-sim-play').onclick = () => { anchor(); day.sim.paused = !day.sim.paused; day.sim.at = Date.now(); saveDay(); renderHead(); };
-    $('ops-sim-speed').onchange = (e) => { anchor(); day.sim.speed = +e.target.value; saveDay(); };
-  }
+  renderSimCtl();
   const live = day.mode === 'gps' ? day.live : null;
   const gps = day.mode !== 'gps' ? '<span class="pill-s sim">SIM</span>'
     : ui.gpsErr ? `<span class="pill-s bad" title="${esc(ui.gpsErr)}">GPS ✗</span>`
