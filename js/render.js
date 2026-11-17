@@ -259,6 +259,7 @@ export const SEG_STYLE = {
   loiter: { label: 'Vol d’attente', cls: 'g-loiter' },
   parked: { label: 'Moteur coupé', cls: 'g-parked' },
   wait: { label: 'Clients en attente', cls: 'g-wait' },
+  pause: { label: 'Pause à la base', cls: 'g-pause' },
   stop: { label: 'Arrêt base (plein, client…)', cls: 'g-stop' },
   heli: { label: 'Dans l’hélico', cls: 'g-inheli' },
   ski: { label: 'Ski', cls: 'g-ski' },

@@ -165,6 +165,7 @@ table.mini td { border-bottom: 1px solid #eef2f7; padding: 3px 4px; }
 .gantt .g-parked { fill: #e3e8ef; }
 .gantt .g-stop { fill: #7c8aa0; }
 .gantt .g-wait { fill: #f3c6c6; }
+.gantt .g-pause { fill: #c9d3e0; }
 .gantt .g-inheli { opacity: .55; }
 .gantt .g-ski { opacity: .9; }
 .gantt .g-seglabel { fill: #fff; font-size: 10px; font-weight: 700; pointer-events: none; }
@@ -281,6 +282,7 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .hs-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .ops-btn { flex: 1 1 auto; min-height: 56px; font: inherit; font-size: 17px; font-weight: 650; padding: 8px 14px; border-radius: 12px; border: 2px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }
 .ops-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; flex-basis: 100%; font-size: 19px; }
+.ops-btn.big { min-height: 72px; font-size: 21px; }
 .gchip { display: inline-block; padding: 1px 8px; border-radius: 9px; color: #fff; font-weight: 700; font-size: .92em; text-shadow: 0 1px 1px rgba(0,0,0,.25); }
 
 .ops-sec { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
@@ -309,6 +311,7 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .og-bar .og-plan { opacity: .25; }
 .og-bar span { position: relative; font-size: 12px; font-weight: 700; padding-left: 6px; line-height: 20px; white-space: nowrap; }
 .og-next { font-size: 13px; color: var(--ink); min-height: 1.3em; }
+.og-visit { font-size: 13px; font-weight: 650; color: var(--accent); }
 .og-btns { display: flex; gap: 6px; margin-top: 6px; }
 .og-btns button { flex: 1; min-height: 44px; white-space: nowrap; padding: 0 4px; font: inherit; font-size: 14.5px; font-weight: 650; border-radius: 10px; border: 1px solid var(--line); background: #f7f9fc; cursor: pointer; }
 
@@ -333,7 +336,7 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .sheet-btn.danger { border-color: #f1b9b9; color: var(--bad); }
 .sheet-btn.far { opacity: .7; }
 .sheet-btn.muted-btn { background: #f5f7fa; }
-.sheet-btn:disabled { opacity: .4; }
+.sheet-btn:disabled { opacity: .4; background: #eef0f3; cursor: default; }
 .sheet-btn.half { min-height: 56px; }
 .sheet-cancel { display: block; width: 100%; margin-top: 12px; min-height: 52px; font: inherit; font-size: 17px; border-radius: 12px; border: 0; background: #eef1f6; color: var(--ink); cursor: pointer; }
 .ops-stepper { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 10px 0 16px; }

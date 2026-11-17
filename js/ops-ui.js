@@ -8,7 +8,8 @@
 import { BASE, planChanges } from './model.js';
 import {
   newDay, addEvent, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
-  dropCandidates, nearestRuns, nearNode, heliPosition, displaySchedule, planAlerts, liveFix, onboardArrival, NEAR_KM,
+  dropCandidates, nearestRuns, nearNode, heliPosition, heliMotion, terrainAlt, displaySchedule, planAlerts, liveFix,
+  onboardArrival, NEAR_KM, GROUND_ALT_TOL,
 } from './ops.js';
 import { createMapView, renderGantt, runPath, alongPath, HELI_COLOR, HELI_ICON, GROUP_COLORS } from './render.js';
 import { toLatLon, toXY } from './terrain.js';
@@ -34,6 +35,8 @@ const ui = {
   gpsWatch: null, gpsErr: null, det: null, saveAt: 0, mv: null, traceLayer: null, toastTimer: null,
   startMode: 'sim', fitted: false,
   pendingSim: false,            // simulation : une question du plan est ouverte
+  sheetKind: null,              // 'stop' : question posée à l'arrêt (refermée si l'hélico redécolle)
+  noPickup: null,               // GPS : « ne rien faire » choisi à cet atterrissage → pas d'embarquement déduit au décollage
   snooze: -1e9,                 // simulation : question écartée, reposée à cette heure d'horloge
 };
 
@@ -47,6 +50,7 @@ export function initOps(h) {
       const dset = s.dataset === 'base' ? host.baseDataset() : s.dataset;
       if (dset?.runs?.length) {
         day = s; ds = dset; geo = dayGeo(day, ds);
+        day.visits ??= new Array(day.groups.length).fill(null);   // journée enregistrée avant les passages base des groupes
         if (day.mode === 'sim') day.sim.paused = true;          // reprise d'une simulation : en pause
       }
     }
@@ -102,6 +106,7 @@ function begin() {
 }
 
 function startRun() {
+  ui.heliHtml = null;
   $('ops-start').hidden = true; $('ops-main').hidden = false;
   ensureMap();
   clearInterval(ui.timer); ui.timer = setInterval(tick, 500);
@@ -142,7 +147,7 @@ function tick() {
       if (!tr) { view = v; break; }
       changed = true;
       simTrigger(v, tr); if (!ui.sheet) ui.pendingSim = false;
-      if (ui.sheet) break;
+      if (ui.sheet || t < ui.snooze) break;
     }
   }
   if (changed) { afterEvent(); return; }
@@ -221,58 +226,53 @@ function expectedPickup(v, pos) {
   return l && (!pos || dist(geo.pts[l.from], pos) <= NEAR_KM) ? l.group : -1;
 }
 
+/** Destination affichée d'un groupe qui embarque. */
+function destText(g, run) { return run >= 0 ? runLabel(run) : day.visits[g] ? 'base (pause demandée)' : 'base'; }
+
 function doPickup(g, t, node, extra = {}) {
   const v = opsView(day, ds, clock(), { geo });
   const run = plannedDest(day, g, v);
   addEvent(day, { type: 'pickup', group: g, t, node: node ?? v.state.groups[g].loc, run, ...extra });
   return run;
 }
+function boardedToast(g, run) {
+  toast(`${esc(gname(g))} à bord → ${destText(g, run)}`, { action: '⇄ Destination', fn: destSheet, kind: 'info' });
+}
 
-/** Reprise : le groupe attendu est confirmé d'office s'il est bien là ; sinon (doute) on demande au pilote. */
-function pickupAt(v, node, t, expected, pos = null, extra = {}) {
-  const here = pos ?? geo.pts[node];
-  const cands = pickupCandidates(geo, v.state, here);
-  const exp = expected ?? expectedPickup(v, here);
+/**
+ * GPS : décollage à vide d'un point de reprise sans réponse du pilote. Le groupe attendu est embarqué d'office s'il est
+ * bien là (bandeau « Corriger ») ; en cas de doute on demande qui est à bord.
+ */
+function pickupAt(v, node, t, pos, extra = {}) {
+  const cands = pickupCandidates(geo, v.state, pos);
+  const exp = expectedPickup(v, pos);
   if (exp >= 0 && cands.includes(exp)) {
     const run = doPickup(exp, t, node, extra);
-    toast(`${esc(gname(exp))} à bord → ${run >= 0 ? runLabel(run) : 'base'}`, {
-      action: 'Corriger', fn: () => { undoLast(day); afterEvent(); pickSheet({ node, t, cands, extra }); },
+    toast(`${esc(gname(exp))} à bord → ${destText(exp, run)}`, {
+      action: 'Corriger', fn: () => { undoLast(day); afterEvent(); embarkSheet({ node, t, pos, extra, takeoff: true }); },
     });
     return;
   }
-  if (!cands.length && exp < 0 && pos) return;       // décollage à vide
-  pickSheet({ node, t, cands, expected: exp, extra, allowEmpty: !!pos });
+  if (cands.length) embarkSheet({ node, t, pos, extra, takeoff: true });
 }
 
-function doDrop(g, run, t) { addEvent(day, { type: 'drop', group: g, run, t }); }
-function doDropBase(g, t, done) { addEvent(day, { type: 'dropBase', group: g, t, done }); }
+function doDrop(g, run, t, ski = null) { addEvent(day, { type: 'drop', group: g, run, t, ...(ski != null ? { ski } : {}) }); }
+function doDropBase(g, t, done, pause = 0) { addEvent(day, { type: 'dropBase', group: g, t, done, ...(pause ? { pause } : {}) }); }
 
-/** Arrivée de l'hélico chargé (atterrissage GPS ou fin de vol prévue en simulation) : dépose déduite de la position. */
+/** Arrêt de l'hélico chargé (atterrissage GPS ou fin du vol prévu en simulation) : on propose de débarquer le groupe. */
 function arriveAt(v, pos, t) {
-  const s = v.state.heli, g = s.onboard;
+  const g = v.state.heli.onboard;
   if (g < 0) return;
-  if (dist(pos, geo.pts[BASE]) <= NEAR_KM) {
-    if (s.dest < 0 && groupFinished(day, v, g)) {
-      doDropBase(g, t, true);
-      toast(`${esc(gname(g))} à la base : fin de journée`, { action: 'Corriger', fn: () => { undoLast(day); afterEvent(); baseSheet(g, t); } });
-    } else baseSheet(g, t);
-    return;
-  }
-  const cands = dropCandidates(geo, pos);
-  if (cands.length === 1) {
-    doDrop(g, cands[0], t);
-    toast(`${esc(gname(g))} déposé · ${runLabel(cands[0], true)}`, { action: 'Corriger', fn: () => { undoLast(day); afterEvent(); dropSheet({ t, pos }); } });
-    return;
-  }
-  dropSheet({ t, pos, cands });             // plusieurs itinéraires depuis cette dépose (ou lieu inconnu) : on demande
+  if (dist(pos, geo.pts[BASE]) <= NEAR_KM) baseSheet(g, t);
+  else dropSheet({ t, pos });
 }
 
-/** Simulation : l'hélico suit le plan, les mêmes déductions / questions qu'avec le GPS. */
+/** Simulation : l'hélico suit le plan ; à chaque arrêt, les mêmes questions qu'avec le GPS. */
 function simTrigger(v, tr) {
   ui.pendingSim = true;                                // si le pilote écarte la question, elle revient un peu plus tard
   if (tr.kind === 'fly') applyTrigger(day, v, tr);
   else if (tr.kind === 'stop') { applyTrigger(day, v, tr); toast(`Arrêt base ${Math.round(tr.dur)} min (jusqu’à ${fmt(tr.t + tr.dur)})`, { kind: 'info' }); }
-  else if (tr.kind === 'pickup') pickupAt(v, tr.node, tr.t, tr.group);
+  else if (tr.kind === 'pickup') embarkSheet({ node: tr.node, t: tr.t, pos: geo.pts[tr.node] });
   else if (tr.kind === 'arrive') arriveAt(v, tr.dest >= 0 ? geo.pts[1 + tr.dest] : geo.pts[BASE], tr.t);
 }
 
@@ -301,7 +301,7 @@ function onFix(pos) {
   const here = { x, y };
   if (speed != null && speed > 12) { det.fast++; det.slowSince = null; }
   else if (speed != null && speed < 3) { det.fast = 0; det.groundPos = here; if (det.slowSince == null) { det.slowSince = t; det.slowPos = here; } }
-  day.live = { t, x, y, alt: c.altitude ?? null, air: det.air, acc: c.accuracy };
+  day.live = { t, x, y, alt: c.altitude ?? null, altAcc: c.altitudeAccuracy ?? null, air: det.air, acc: c.accuracy };
   const tr = day.track, last = tr[tr.length - 1];
   if (!last || Math.hypot(last[1] - x, last[2] - y) > 0.03 || t - last[0] > 0.25) { tr.push([Math.round(t * 100) / 100, Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000]); if (tr.length > 6000) tr.splice(0, tr.length - 6000); }
   if (!det.air && det.fast >= 2) {
@@ -310,10 +310,16 @@ function onFix(pos) {
   } else checkLanding(t);
 }
 
-/** Atterrissage : à l'arrêt depuis 20 s (vérifié aussi à chaque tic : certains GPS n'envoient plus rien à l'arrêt). */
+/**
+ * Atterrissage : à l'arrêt depuis 20 s (vérifié aussi à chaque tic : certains GPS n'envoient plus rien à l'arrêt), et,
+ * si l'altitude du terrain est connue ici (point connu, itinéraire tracé), altitude GPS proche du terrain
+ * (sinon : stationnaire en vol, pas posé).
+ */
 function checkLanding(t) {
   const det = ui.det, live = day.live;
   if (!det?.air || det.slowSince == null || t - det.slowSince < 20 / 60 || !live || t - live.t > LIVE_STALE) return;
+  const ground = terrainAlt(geo, det.slowPos ?? live);
+  if (live.alt != null && ground != null && (live.altAcc == null || live.altAcc <= 50) && live.alt - ground > GROUND_ALT_TOL) return;
   det.air = false; live.air = false;
   onLanding(det.slowPos ?? live, det.slowSince);
 }
@@ -324,10 +330,11 @@ function lastLand() {
 }
 
 function onTakeoff(pos, t) {
-  const node = nearNode(geo, pos), v = opsView(day, ds, t, { geo }), s = v.state.heli;
-  if (s.onboard < 0 && !(s.stopUntil != null && s.stopUntil > t)) {
-    const tLoad = Math.max(lastLand() ?? -1e9, t - day.params.loadMin);
-    pickupAt(v, node >= 0 ? node : null, tLoad, null, pos, { takeoff: t });
+  if (ui.sheetKind === 'stop') closeSheet();             // question d'arrêt restée sans réponse : l'hélico est reparti
+  const node = nearNode(geo, pos), v = opsView(day, ds, t, { geo }), s = v.state.heli, land = lastLand();
+  if (s.onboard < 0 && !(s.stopUntil != null && s.stopUntil > t) && !(land != null && ui.noPickup === land)) {
+    const tLoad = Math.max(land ?? -1e9, t - day.params.loadMin);
+    pickupAt(v, node >= 0 ? node : null, tLoad, pos, { takeoff: t });
   }
   addEvent(day, { type: 'takeoff', t, x: pos.x, y: pos.y, node });
   afterEvent();
@@ -343,7 +350,7 @@ function onLanding(pos, t) {
     const dur = day.stop.dur;
     addEvent(day, { type: 'stopStart', t, dur });
     toast(`Arrêt base commencé (${dur} min)`, { action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
-  }
+  } else if (pickupCandidates(geo, v.state, pos).length) embarkSheet({ node: node >= 0 ? node : null, t, pos });
   afterEvent();
 }
 
@@ -351,8 +358,8 @@ function onLanding(pos, t) {
 /**
  * Fenêtre modale à gros boutons. items : [{ label, sub, cls, tag, onClick }] ; la simulation est figée pendant la question.
  */
-function openSheet({ title, sub = '', items = [], html = '', cols = 2, cancel = 'Annuler', onCancel = null, wide = false }) {
-  anchor(); ui.sheet = true;
+function openSheet({ title, sub = '', items = [], html = '', cols = 2, cancel = 'Annuler', onCancel = null, wide = false, kind = null }) {
+  anchor(); ui.sheet = true; ui.sheetKind = kind;
   const bg = $('ops-sheet'), box = bg.firstElementChild;
   box.classList.toggle('wide', wide);
   box.innerHTML = `<h3>${title}</h3>${sub ? `<p class="sheet-sub">${sub}</p>` : ''}${html}
@@ -365,51 +372,99 @@ function openSheet({ title, sub = '', items = [], html = '', cols = 2, cancel = 
 }
 function closeSheet(cancelled = false) {
   if (cancelled && ui.pendingSim && day) ui.snooze = clock() + SNOOZE;
-  ui.pendingSim = false;
+  ui.pendingSim = false; ui.sheetKind = null;
   $('ops-sheet').hidden = true;
   if (ui.sheet) { ui.sheet = false; if (day?.mode === 'sim') day.sim.at = Date.now(); }
+}
+
+/** Rangée de choix (puces) dans une fenêtre : html, puis bindChips pour suivre la sélection. */
+function chipsHtml(name, vals, sel, fmtv) {
+  return `<div class="ops-chips">${vals.map(x => `<button class="ops-chip ${x === sel ? 'on' : ''}" data-${name}="${x}">${fmtv(x)}</button>`).join('')}</div>`;
+}
+function bindChips(box, name, onSel) {
+  const bs = box.querySelectorAll(`[data-${name}]`);
+  bs.forEach(b => { b.onclick = () => { bs.forEach(x => x.classList.toggle('on', x === b)); onSel(+b.dataset[name]); }; });
 }
 
 function groupStatusText(g, v = view) {
   const s = v.state.groups[g], t = v.now;
   if (s.status === 'done') return 'journée terminée';
   if (s.status === 'onboard') return `à bord → ${s.dest >= 0 ? runLabel(s.dest) : 'base'}`;
-  if (s.status === 'base') return s.vert > 0 ? 'à la base' : 'à la base · pas encore parti';
+  if (s.status === 'base') return t < s.ready ? `pause à la base jusqu’à ${fmt(s.ready)}` : s.vert > 0 ? 'à la base' : 'à la base · pas encore parti';
   if (t < s.ready) return `ski ${runLabel(s.run)} · en bas ~${fmt(s.ready)}`;
   return `attend au fond ${runLabel(s.run)} depuis ${Math.round(t - s.ready)} min`;
 }
 
-/** Qui embarque ? (groupes présents à la position d'abord, le groupe attendu en vert). */
-function pickSheet({ node = null, t = null, cands = [], expected = -1, extra = {}, allowEmpty = false } = {}) {
+/**
+ * Arrêt de l'hélico vide : qui embarque ? Le groupe attendu ici par le plan d'abord (en vert), puis les autres présents.
+ * En vol réel, un groupe attendu ailleurs peut aussi être embarqué (la position GPS fait foi).
+ * takeoff : correction d'un embarquement déduit au décollage (« Personne » = vol à vide).
+ */
+function embarkSheet({ node = null, t = null, pos = null, extra = {}, takeoff = false } = {}) {
   const v = opsView(day, ds, clock(), { geo });
-  const order = [...cands, ...v.state.groups.map((_, i) => i).filter(i => !cands.includes(i))]
-    .filter(i => v.state.groups[i].status === 'skiing' || v.state.groups[i].status === 'base');
-  const items = order.map(i => ({
-    label: `<span class="dot" style="background:${gcolor(i)}"></span>${esc(gname(i))}`, sub: groupStatusText(i, v),
-    cls: i === expected ? 'expected' : cands.includes(i) ? '' : 'far', tag: i === expected ? 'prévu' : cands.includes(i) ? 'ici' : '',
-    onClick: () => { const run = doPickup(i, t ?? clock(), cands.includes(i) ? node : null, extra); afterEvent(); toast(`${esc(gname(i))} à bord → ${run >= 0 ? runLabel(run) : 'base'}`, { kind: 'info' }); },
-  }));
-  if (allowEmpty) items.push({ label: 'Personne', sub: 'vol à vide', cls: 'muted-btn', onClick: () => afterEvent() });
-  openSheet({ title: 'Qui embarque ?', sub: node != null ? `Au ${nodeName(node)}` : '', items, cancel: allowEmpty ? null : 'Annuler', onCancel: () => afterEvent() });
+  const here = pos ?? heliPosition(day, v), at = node ?? nearNode(geo, here);
+  const cands = pickupCandidates(geo, v.state, here), exp = expectedPickup(v, here);
+  const order = [...new Set([...(cands.includes(exp) ? [exp] : []), ...cands])];
+  const others = day.mode === 'gps'
+    ? v.state.groups.map((_, i) => i).filter(i => !order.includes(i) && ['skiing', 'base'].includes(v.state.groups[i].status)) : [];
+  if (!order.length && !others.length) {
+    if (ui.pendingSim) ui.snooze = clock() + SNOOZE;      // simulation : question reposée plus tard
+    toast('Aucun groupe à embarquer ici', { kind: 'info', ms: 3000 }); return;
+  }
+  const item = (i, far) => ({
+    label: `▲ <span class="dot" style="background:${gcolor(i)}"></span>${esc(gname(i))}`,
+    sub: `${groupStatusText(i, v)} · → ${destText(i, plannedDest(day, i, v))}`,
+    cls: i === exp ? 'expected' : far ? 'far' : '', tag: i === exp ? 'prévu' : far ? 'ailleurs' : 'ici',
+    onClick: () => { const run = doPickup(i, t ?? clock(), at >= 0 ? at : null, extra); afterEvent(); boardedToast(i, run); },
+  });
+  openSheet({
+    title: takeoff ? 'Qui est à bord ?' : 'Embarquer un groupe ?', sub: at >= 0 ? `Arrêt au ${nodeName(at)}` : 'Arrêt hors point connu',
+    items: [...order.map(i => item(i, false)), ...others.map(i => item(i, true))], kind: 'stop',
+    cancel: takeoff ? 'Personne (vol à vide)' : 'Ne rien faire',
+    onCancel: () => { if (!takeoff && day.mode === 'gps') ui.noPickup = lastLand(); afterEvent(); },
+  });
 }
 
-/** Dépose : quel itinéraire ? (itinéraires partant de cette dépose, le prévu en vert ; autres ; base). */
-function dropSheet({ t = null, pos = null, cands = null, title = null } = {}) {
+const SKI_DELTAS = [-10, -5, 0, 5, 10, 15, 20];
+
+/**
+ * Débarquer en montagne : lieu de reprise = fond d'un itinéraire ouvert (ceux qui partent de cette dépose d'abord, le
+ * prévu en vert ; fermés grisés) et, si besoin, temps de descente annoncé → heure de la reprise au fond.
+ */
+function dropSheet({ t = null, pos = null } = {}) {
   const v = opsView(day, ds, clock(), { geo }), s = v.state.heli, g = s.onboard;
   if (g < 0) return;
-  const here = pos ?? heliPosition(day, v);
-  let list = cands ?? dropCandidates(geo, here);
+  const tDrop = t ?? clock(), here = pos ?? heliPosition(day, v), sg = v.state.groups[g], p = day.params;
+  let list = dropCandidates(geo, here);
   const known = list.length > 0;
-  // Posé à un sommet connu : seulement les itinéraires qui en partent (le prévu, s'il est ailleurs, reste dans « Autre »).
-  if (!known) { list = nearestRuns(geo, here, 8); if (s.dest >= 0 && !list.includes(s.dest)) list = [s.dest, ...list]; }
-  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => { doDrop(g, r, t ?? clock()); afterEvent(); } }));
-  items.push({ label: 'Autre itinéraire…', sub: 'liste complète par distance', cls: 'muted-btn', onClick: () => runPicker(`Dépose de ${esc(gname(g))} : itinéraire`, here, s.dest, (r) => { doDrop(g, r, t ?? clock()); afterEvent(); }) });
-  items.push({ label: '⌂ Base', sub: 'groupe ramené à la base', cls: 'muted-btn', onClick: () => baseSheet(g, t ?? clock()) });
-  openSheet({
-    title: title ?? `${esc(gname(g))} déposé : quel itinéraire ?`,
-    sub: known ? `${list.length > 1 ? 'Plusieurs itinéraires partent de cette dépose.' : ''}` : 'Dépose hors d’un sommet connu : itinéraires les plus proches.',
-    items, onCancel: () => afterEvent(),
+  if (!known) { list = nearestRuns(geo, here, 6); if (s.dest >= 0 && !list.includes(s.dest)) list = [s.dest, ...list]; }
+  const rank = (r) => (r === s.dest ? 0 : geo.open[r] ? 1 : 2);
+  list = list.slice().sort((a, b) => rank(a) - rank(b));
+  let delta = 0;
+  const repT = (r) => tDrop + p.unloadMin + geo.ski[r] + delta;
+  const repTxt = (r) => `reprise ~${fmt(repT(r))} (descente ${geo.ski[r] + delta} min)`;
+  const drop = (r) => {
+    doDrop(g, r, tDrop, delta ? geo.ski[r] + delta : null); afterEvent();
+    toast(`${esc(gname(g))} déposé · reprise au fond ${runLabel(r)} vers ${fmt(repT(r))}`, { kind: 'info', action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
+  };
+  const items = list.map((r) => {
+    const x = ds.runs[r], open = !!geo.open[r], skied = sg.skied.includes(r);
+    return {
+      label: `<b>${x.code}</b> ${esc(x.name)}`,
+      sub: open ? `fond ${x.bottom.alt} m · <span data-rep="${r}">${repTxt(r)}</span>${skied ? ' · déjà skiée' : ''}` : 'fermé aujourd’hui',
+      cls: r === s.dest && open ? 'expected' : !open || skied ? 'far' : '', tag: r === s.dest ? 'prévu' : '', disabled: !open, onClick: () => drop(r),
+    };
   });
+  items.push({ label: 'Autre lieu de reprise…', sub: 'tous les itinéraires ouverts', cls: 'muted-btn', onClick: () => runPicker(`Reprise de ${esc(gname(g))} : au fond de…`, here, s.dest, drop, { disableClosed: true }) });
+  items.push({ label: '⇄ Autre destination', sub: 'le groupe reste à bord', cls: 'muted-btn', onClick: destSheet });
+  const box = openSheet({
+    title: `▼ Débarquer <span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))}`,
+    sub: known ? `Dépose au ${nodeName(1 + list[0])}${list.length > 1 ? ` · ${list.length} itinéraires partent d’ici` : ''}` : 'Dépose hors d’un sommet connu : itinéraires les plus proches.',
+    html: `<div class="ops-field"><span>Temps de descente (si le guide l’annonce)</span>${chipsHtml('dd', SKI_DELTAS, 0, x => (x === 0 ? 'prévu' : `${x > 0 ? '+' : '−'}${Math.abs(x)} min`))}</div>
+      <p class="sheet-sub"><b>Lieu de reprise</b> (fond de l’itinéraire) :</p>`,
+    items, kind: 'stop', cancel: 'Ne rien faire (reste à bord)', onCancel: () => afterEvent(),
+  });
+  bindChips(box, 'dd', (x) => { delta = x; box.querySelectorAll('[data-rep]').forEach(el => { el.textContent = repTxt(+el.dataset.rep); }); });
 }
 
 function runItem(r, { planned = false, onClick, closedOk = true } = {}) {
@@ -420,59 +475,85 @@ function runItem(r, { planned = false, onClick, closedOk = true } = {}) {
   };
 }
 
-/** Liste complète des itinéraires, triés par distance à une position. */
-function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = [] } = {}) {
-  const list = nearestRuns(geo, pos, geo.R, onlyOpen ? geo.open : null).filter(r => !exclude.includes(r));
-  openSheet({ title, items: list.map(r => runItem(r, { planned: r === planned, onClick: () => onPick(r) })), cols: 3, wide: true });
+/** Liste complète des itinéraires, triés par distance à une position (fermés : masqués, ou grisés et inactifs). */
+function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = [], disableClosed = false } = {}) {
+  const list = nearestRuns(geo, pos, geo.R, onlyOpen ? geo.open : null).filter(r => !exclude.includes(r))
+    .sort((a, b) => (disableClosed ? (geo.open[b] ? 1 : 0) - (geo.open[a] ? 1 : 0) : 0));
+  openSheet({ title, items: list.map(r => runItem(r, { planned: r === planned, closedOk: !disableClosed, onClick: () => onPick(r) })), cols: 3, wide: true });
 }
 
+/** Groupe ramené à la base : fin de journée, pause (passage base demandé, client fatigué…), ou reste à bord. */
 function baseSheet(g, t) {
+  const v = opsView(day, ds, clock(), { geo }), visit = day.visits[g], fin = !visit && groupFinished(day, v, g);
+  const items = [];
+  if (visit) items.push({ label: `Pause ${visit.dur} min`, sub: `passage base demandé · repart vers ${fmt(t + day.params.unloadMin + visit.dur)}`, cls: 'expected', tag: 'prévu', onClick: () => { doDropBase(g, t, false, visit.dur); afterEvent(); } });
+  items.push({ label: 'Fin de journée', sub: 'le groupe ne skie plus aujourd’hui', cls: fin ? 'expected' : '', tag: fin ? 'prévu' : '', onClick: () => { doDropBase(g, t, true); afterEvent(); } });
+  if (!visit) items.push({ label: 'Pause', sub: 'débarque, repartira plus tard (client fatigué…)', cls: fin ? '' : 'expected', tag: fin ? '' : 'prévu', onClick: () => { doDropBase(g, t, false); afterEvent(); } });
   openSheet({
-    title: `${esc(gname(g))} à la base`, sub: 'Que fait le groupe ?',
-    items: [
-      { label: 'Fin de journée', sub: 'le groupe ne skie plus aujourd’hui', onClick: () => { doDropBase(g, t, true); afterEvent(); } },
-      { label: 'Pause', sub: 'débarque, repartira plus tard (client fatigué…)', onClick: () => { doDropBase(g, t, false); afterEvent(); } },
-      { label: 'Reste à bord', sub: 'arrêt technique, le groupe repart', cls: 'muted-btn', onClick: () => afterEvent() },
-    ],
-    onCancel: () => afterEvent(),
+    title: `▼ Débarquer <span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))} à la base`, sub: 'Que fait le groupe ?',
+    items, kind: 'stop', cancel: 'Ne rien faire (reste à bord)', onCancel: () => afterEvent(),
   });
+}
+
+/** Passage à la base demandé pour un groupe qui skie : être à la base dans x min, pour y min (repas, client à déposer…). */
+function visitSheet(g) {
+  const t = clock(), cur = day.visits[g];
+  let delay = 30, dur = 30;
+  const box = openSheet({
+    title: `⌂ <span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))} : passage à la base`,
+    sub: cur ? `Demande en cours : à la base avant ${fmt(cur.by)}, pause ${cur.dur} min.` : 'Le plan est recalculé pour ramener le groupe à la base à temps, puis le reprendre après la pause.',
+    html: `<div class="ops-field"><span>Être à la base dans</span>${chipsHtml('vdelay', [0, 15, 30, 45, 60, 90, 120], delay, x => (x ? x + ' min' : 'au plus tôt'))}</div>
+      <div class="ops-field"><span>Temps à la base</span>${chipsHtml('vdur', [10, 15, 20, 30, 45, 60, 90], dur, x => x + ' min')}</div>`,
+    items: [
+      { label: 'Valider', cls: 'primary', onClick: () => { day.visits[g] = { by: t + delay, dur, req: t }; afterEvent(); toast(`${esc(gname(g))} : à la base avant ${fmt(t + delay)}, pause ${dur} min`, { kind: 'info' }); } },
+      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { day.visits[g] = null; afterEvent(); } }] : []),
+    ],
+  });
+  bindChips(box, 'vdelay', (x) => { delay = x; });
+  bindChips(box, 'vdur', (x) => { dur = x; });
 }
 
 function fuelSheet() {
   const t = clock(), cur = day.stop;
   let delay = 20, dur = 10;
-  const chips = (name, vals, sel, fmtv) => `<div class="ops-chips sel-${name}">${vals.map(x => `<button class="ops-chip ${x === sel ? 'on' : ''}" data-${name}="${x}">${fmtv(x)}</button>`).join('')}</div>`;
   const box = openSheet({
     title: '⛽ Passer par la base',
-    sub: cur ? `Demande en cours : à la base avant ${fmt(cur.by)}, ${cur.dur} min.` : 'Le plan est recalculé pour faire passer l’hélico par la base à temps (plein, client à déposer…).',
-    html: `<div class="ops-field"><span>Être à la base dans</span>${chips('delay', [0, 10, 20, 30, 45, 60, 90], delay, x => (x ? x + ' min' : 'maintenant'))}</div>
-      <div class="ops-field"><span>Temps à la base (moteur coupé)</span>${chips('dur', [5, 10, 15, 20, 30, 45], dur, x => x + ' min')}</div>`,
+    sub: cur ? `Demande en cours : à la base avant ${fmt(cur.by)}, ${cur.dur} min.` : 'La suite est recalculée depuis la position actuelle de l’hélico pour passer par la base à temps (plein…).',
+    html: `<div class="ops-field"><span>Être à la base dans</span>${chipsHtml('delay', [0, 10, 20, 30, 45, 60, 90], delay, x => (x ? x + ' min' : 'maintenant'))}</div>
+      <div class="ops-field"><span>Temps à la base (moteur coupé)</span>${chipsHtml('dur', [5, 10, 15, 20, 30, 45], dur, x => x + ' min')}</div>`,
     items: [
       { label: 'Valider', cls: 'primary', onClick: () => { day.stop = { by: t + delay, dur, req: t }; afterEvent(); toast(`Passage base avant ${fmt(t + delay)} (${dur} min)`, { kind: 'info' }); } },
       ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { day.stop = null; afterEvent(); } }] : []),
     ],
   });
-  box.querySelectorAll('[data-delay]').forEach(b => { b.onclick = () => { delay = +b.dataset.delay; box.querySelectorAll('[data-delay]').forEach(x => x.classList.toggle('on', x === b)); }; });
-  box.querySelectorAll('[data-dur]').forEach(b => { b.onclick = () => { dur = +b.dataset.dur; box.querySelectorAll('[data-dur]').forEach(x => x.classList.toggle('on', x === b)); }; });
+  bindChips(box, 'delay', (x) => { delay = x; });
+  bindChips(box, 'dur', (x) => { dur = x; });
 }
 
 function groupSheet(g) {
-  const v = view, s = v.state.groups[g], t = clock();
+  const v = opsView(day, ds, clock(), { geo }), s = v.state.groups[g], t = v.now, m = heliMotion(day, v);
   const items = [];
+  // Embarquer : seulement hélico vide et posé là où se trouve le groupe (pas de saut de l'hélico).
+  if (v.state.heli.onboard < 0 && !m.air && pickupCandidates(geo, v.state, m.pos).includes(g)) {
+    items.push({ label: '▲ Embarquer', sub: 'l’hélico est posé ici', cls: 'primary', onClick: () => { const run = doPickup(g, t, m.node >= 0 ? m.node : null); afterEvent(); boardedToast(g, run); } });
+  }
   if (s.status === 'skiing') {
     for (const d of [-10, -5, 5, 10, 15]) items.push({ label: `${d > 0 ? 'Retard +' : 'Avance '}${d} min`, sub: `en bas vers ${fmt(s.ready + d)}`, cls: 'half', onClick: () => { addEvent(day, { type: 'adjust', group: g, delta: d, t }); afterEvent(); } });
     items.push({ label: 'Changer l’itinéraire en cours', sub: `skie ${runLabel(s.run, true)}`, onClick: () => runPicker(`${esc(gname(g))} skie en fait…`, geo.pts[1 + s.run], s.run, (r) => { addEvent(day, { type: 'changeRun', group: g, run: r, t }); afterEvent(); }, { exclude: s.skied.filter(r => r !== s.run) }) });
   }
-  if (s.status === 'onboard') items.push({ label: 'Changer la destination', sub: `vers ${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}`, onClick: destSheet });
+  if (s.status === 'onboard') items.push({ label: '⇄ Changer la destination', sub: `vers ${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}`, onClick: destSheet });
+  if (s.status === 'skiing' && !s.ended) {
+    const vis = day.visits[g];
+    items.push({ label: vis ? `⌂ Base avant ${fmt(vis.by)} · pause ${vis.dur} min` : '⌂ Passage à la base', sub: vis ? 'toucher pour modifier' : 'dans x min, pour y min (repas, client…)', cls: vis ? 'expected' : '', onClick: () => visitSheet(g) });
+  }
   if (s.status !== 'done' && !s.ended) {
     const f = day.forced[g];
     items.push({ label: f >= 0 ? `Descente suivante imposée : ${runLabel(f)}` : 'Imposer la descente suivante', sub: f >= 0 ? 'toucher pour changer' : 'le plan est recalculé autour', onClick: () => forceSheet(g) });
     if (f >= 0) items.push({ label: 'Libérer la descente suivante', sub: 'laisser le plan choisir', cls: 'muted-btn', onClick: () => { day.forced[g] = -1; afterEvent(); } });
   }
   items.push({ label: 'Objectif de dénivelé', sub: `${day.groups[g].target.toLocaleString('fr-CH')} m aujourd’hui · fait ${s.vert.toLocaleString('fr-CH')} m`, onClick: () => targetSheet(g) });
-  if ((s.status === 'skiing' || s.status === 'base') && view.state.heli.onboard < 0) items.push({ label: 'Embarquer', sub: 'maintenant', onClick: () => { doPickup(g, t, null); afterEvent(); } });
   if (!s.ended && s.status !== 'done') items.push({ label: 'Fin de journée du groupe', sub: s.status === 'base' ? 'ne repart plus' : 'plus de descente : retour base', cls: 'danger', onClick: () => { addEvent(day, { type: 'groupEnd', group: g, t }); afterEvent(); } });
-  openSheet({ title: `<span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))}`, sub: groupStatusText(g), items });
+  openSheet({ title: `<span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))}`, sub: groupStatusText(g, v), items });
 }
 
 function forceSheet(g) {
@@ -483,14 +564,18 @@ function forceSheet(g) {
     { onlyOpen: true, exclude: [...s.skied, ...(s.status === 'onboard' && s.dest >= 0 ? [s.dest] : [])] });
 }
 
+/** Nouvelle destination du groupe à bord : le vol repart de la position actuelle de l'hélico (pas de saut). */
 function destSheet() {
-  const v = view, s = v.state.heli, g = s.onboard;
+  const t = clock(), v = opsView(day, ds, t, { geo }), s = v.state.heli, g = s.onboard;
   if (g < 0) return;
-  const here = heliPosition(day, v);
+  const here = heliPosition(day, v), live = liveFix(day, t);
+  const pos = live?.air ? { x: live.x, y: live.y, alt: live.alt ?? 2600 } : null;
+  const set = (run) => { addEvent(day, { type: 'dest', group: g, run, t, ...(pos ? { pos } : {}) }); afterEvent(); };
   const list = nearestRuns(geo, here, 8, geo.open).filter(r => !v.state.groups[g].skied.includes(r));
-  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => { addEvent(day, { type: 'dest', group: g, run: r, t: clock() }); afterEvent(); } }));
-  items.push({ label: '⌂ Base', sub: 'ramener le groupe (client fatigué…)', cls: s.dest < 0 ? 'expected' : 'muted-btn', onClick: () => { addEvent(day, { type: 'dest', group: g, run: -1, t: clock() }); afterEvent(); } });
-  openSheet({ title: `Destination de ${esc(gname(g))}`, items });
+  const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => set(r) }));
+  items.push({ label: 'Autre itinéraire…', sub: 'tous les itinéraires ouverts', cls: 'muted-btn', onClick: () => runPicker(`Destination de ${esc(gname(g))}`, here, s.dest, set, { onlyOpen: true, exclude: v.state.groups[g].skied }) });
+  items.push({ label: '⌂ Base', sub: 'ramener le groupe (client fatigué…)', cls: s.dest < 0 ? 'expected' : 'muted-btn', onClick: () => set(-1) });
+  openSheet({ title: `⇄ Destination de ${esc(gname(g))}`, sub: 'Le vol repart de la position actuelle ; la suite est recalculée.', items });
 }
 
 function targetSheet(g) {
@@ -541,15 +626,15 @@ function menuSheet() {
 const EV_LABEL = {
   pickup: (e) => `Embarque ${esc(gname(e.group))} au ${nodeName(e.node)} → ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
   dest: (e) => `${esc(gname(e.group))} : destination ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
-  drop: (e) => `Dépose ${esc(gname(e.group))} · ${runLabel(e.run, true)}`,
-  dropBase: (e) => `Ramène ${esc(gname(e.group))} à la base${e.done ? ' (fin de journée)' : ' (pause)'}`,
+  drop: (e) => `Dépose ${esc(gname(e.group))} · ${runLabel(e.run, true)} · reprise au fond${e.ski != null ? ` (descente ${e.ski} min)` : ''}`,
+  dropBase: (e) => `Ramène ${esc(gname(e.group))} à la base${e.done ? ' (fin de journée)' : e.pause ? ` (pause ${e.pause} min)` : ' (pause)'}`,
   adjust: (e) => `${esc(gname(e.group))} : ${e.delta > 0 ? 'retard +' : 'avance '}${e.delta} min`,
   changeRun: (e) => `${esc(gname(e.group))} skie ${runLabel(e.run, true)}`,
   groupEnd: (e) => `${esc(gname(e.group))} : fin de journée`,
   stopStart: (e) => `Arrêt base ${Math.round(e.dur)} min`,
   stopEnd: () => 'Fin de l’arrêt base',
   stopExtend: (e) => `Arrêt base +${e.delta} min`,
-  fly: (e) => `Vol vers ${nodeName(e.to)}`,
+  fly: (e) => (e.from < 0 ? `Changement de cap en vol → ${nodeName(e.to)}` : `Vol vers ${nodeName(e.to)}`),
   takeoff: () => 'Décollage', land: (e) => `Se pose (${e.node >= 0 ? nodeName(e.node) : 'hors point connu'})`,
 };
 function journalSheet() {
@@ -592,8 +677,8 @@ const inMin = (t) => { const d = Math.round(t - view.now); return d <= 0 ? 'main
 /** Signature du plan affiché : on ne redessine la carte / le panneau que si elle change. */
 function signature() {
   const v = view;
-  const h = v.state.heli;
-  return [v.d.lifts.map(l => `${l.group}.${l.to}.${Math.round(l.start)}`).join(','),
+  const h = v.state.heli, m = heliMotion(day, v);
+  return [v.d.lifts.map(l => `${l.group}.${l.to}.${Math.round(l.start)}`).join(','), `${m.air}${m.arrived}${m.node}`, JSON.stringify(day.visits),
     v.state.groups.map(g => `${g.status}${g.run}${g.dest}${Math.round(g.ready)}`).join(','),
     `${h.onboard}${h.dest}${h.node}`, day.open.length, day.forced.join(','),
     JSON.stringify(day.stop), ui.edit, ui.trace].join('|');
@@ -606,7 +691,7 @@ function refresh(full) {
   if (full || sig !== ui.sig || Date.now() - ui.panelAt > 15000) {
     ui.sig = sig; ui.panelAt = Date.now();
     renderPanel(); drawPlan(); renderTimeline();
-  }
+  } else renderHeliCard();
   updateLive();
 }
 
@@ -666,6 +751,7 @@ function renderPanel() {
     return `<div class="ops-group ${s.status} ${waiting ? 'waiting' : ''}" data-g="${g}" style="--c:${gcolor(g)}">
       <div class="og-head"><span class="og-dot">${esc(gletter(g))}</span><b>${esc(gname(g))}</b><span class="og-st">${groupStatusText(g)}</span></div>
       <div class="og-bar"><div style="width:${pct}%"></div><div class="og-plan" style="width:${Math.min(100, 100 * planned / Math.max(1, target))}%"></div><span>${s.vert.toLocaleString('fr-CH')} / ${target.toLocaleString('fr-CH')} m${planned > s.vert ? ` · prévu ${planned.toLocaleString('fr-CH')}` : ''}</span></div>
+      ${day.visits[g] ? `<div class="og-visit">⌂ base avant ${fmt(day.visits[g].by)} · pause ${day.visits[g].dur} min</div>` : ''}
       <div class="og-next">${fut.length || forced >= 0 ? 'Ensuite : ' + fut.map((r, k) => `<b>${runLabel(r)}</b>${k === 0 && r === forced ? ' 📌' : ''}`).join(' → ') : s.status === 'done' ? '' : 'retour base'}</div>
       ${s.status === 'skiing' ? `<div class="og-btns"><button data-adj="-5">−5 min</button><button data-adj="5">+5 min</button><button data-more>⋯</button></div>` : '<div class="og-btns"><button data-more>⋯ Actions</button></div>'}
     </div>`;
@@ -689,7 +775,7 @@ function agenda() {
   for (const l of [...v.d.lifts].sort((a, b) => a.start - b.start)) {
     if (l.stop) { out.push({ t: l.start, icon: '⛽', text: `Base · arrêt ${Math.round(l.end - l.start)} min`, sub: `jusqu’à ${fmt(l.end)} · ${inMin(l.start)}`, cls: 'stop' }); continue; }
     const drop = l.end - p.unloadMin;
-    out.push({ t: l.start, icon: '▲', text: `${gchip(l.group)} ${nodeName(l.from)} → ${l.run >= 0 ? `<b>${runLabel(l.run, true)}</b>` : '<b>base</b>'}`, sub: `${l.run >= 0 ? 'dépose' : 'arrivée'} ${fmt(drop)} · ${inMin(l.start)}` });
+    out.push({ t: l.start, icon: '▲', text: `${gchip(l.group)} ${nodeName(l.from)} → ${l.run >= 0 ? `<b>${runLabel(l.run, true)}</b>` : `<b>base</b>${l.visit ? ` · pause ${l.pause} min` : ''}`}`, sub: `${l.run >= 0 ? 'dépose' : 'arrivée'} ${fmt(drop)} · ${inMin(l.start)}` });
   }
   const segs = v.sch.heliSeg, last = segs[segs.length - 1];
   if (last && (last.to === BASE) && out.length) out.push({ t: last.t1, icon: '⌂', text: 'Retour base', sub: '', cls: 'end' });
@@ -697,46 +783,69 @@ function agenda() {
 }
 const gchip = (g) => `<span class="gchip" style="background:${gcolor(g)}">${esc(gname(g))}</span>`;
 
+/**
+ * Carte de l'hélico. Embarquer / débarquer ne sont proposés que posé (GPS : atterrissage détecté ; simulation : à
+ * l'arrêt entre deux vols) : groupe à bord → débarquer ; vide → embarquer le groupe attendu ici. En vol : seulement
+ * changer de destination (groupe à bord).
+ */
 function renderHeliCard() {
-  const v = view, s = v.state.heli, t = v.now;
-  const live = liveFix(day, t), stop = day.stop;
+  const v = view, s = v.state.heli, t = v.now, stop = day.stop, m = heliMotion(day, v);
   const modeTxt = day.mode === 'gps' ? 'GPS de la tablette' : 'simulation · suit le plan';
-  let status, btns;
+  const where = m.node >= 0 ? nodeName(m.node) : 'hors point connu';
+  const nxt = v.d.lifts.filter(x => x.group >= 0).sort((a, b) => a.start - b.start)[0];
+  const nextTxt = nxt ? `<div class="hs-sub">Prochaine reprise : ${gchip(nxt.group)} au ${nodeName(nxt.from)} à <b>${fmt(nxt.start)}</b> (${inMin(nxt.start)})</div>` : '<div class="hs-sub">Plus de rotation prévue</div>';
+  let status, btns = '';
   if (s.onboard >= 0) {
-    const arr = onboardArrival(day, geo, v.state, t);
-    status = `<div class="hs-main">${gchip(s.onboard)} à bord → <b>${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}</b></div><div class="hs-sub">arrivée ~${fmt(arr)} (${inMin(arr)})</div>`;
-    btns = `<button class="ops-btn primary" data-a="drop">▼ Déposer</button><button class="ops-btn" data-a="dest">⇄ Destination</button><button class="ops-btn" data-a="base">⌂ Base</button>`;
+    const g = s.onboard, arr = onboardArrival(day, geo, v.state, t), dest = s.dest >= 0 ? runLabel(s.dest, true) : 'base';
+    if (m.arrived) {
+      status = `<div class="hs-main">⏸ Posé · ${where} · ${gchip(g)} à bord</div><div class="hs-sub">destination prévue : ${dest}</div>`;
+      btns = `<button class="ops-btn primary big" data-a="drop">▼ Débarquer ${esc(gname(g))}</button><button class="ops-btn" data-a="dest">⇄ Destination</button>`;
+    } else if (m.air) {
+      status = `<div class="hs-main">✈ ${gchip(g)} à bord → <b>${dest}</b></div><div class="hs-sub">arrivée ~${fmt(arr)} (${inMin(arr)})</div>`;
+      btns = '<button class="ops-btn" data-a="dest">⇄ Changer de destination</button>';
+    } else {
+      status = `<div class="hs-main">${gchip(g)} embarque → <b>${dest}</b></div><div class="hs-sub">arrivée ~${fmt(arr)} (${inMin(arr)})</div>`;
+      btns = '<button class="ops-btn" data-a="dest">⇄ Destination</button>';
+    }
   } else if (s.stopUntil != null && s.stopUntil > t) {
     status = `<div class="hs-main">⛽ Arrêt à la base</div><div class="hs-sub">jusqu’à ${fmt(s.stopUntil)} (${inMin(s.stopUntil)})</div>`;
-    btns = `<button class="ops-btn primary" data-a="stopEnd">Repartir maintenant</button><button class="ops-btn" data-a="stop+5">+5 min</button>`;
+    btns = '<button class="ops-btn primary" data-a="stopEnd">Repartir maintenant</button><button class="ops-btn" data-a="stop+5">+5 min</button>';
+  } else if (m.air) {
+    const to = s.leg && s.leg.t1 > t ? ` → ${nodeName(s.leg.to)}` : '';
+    status = `<div class="hs-main">✈ En vol à vide${to}</div>${nextTxt}`;
   } else {
-    const where = live ? (live.air ? 'en vol à vide' : `au sol · ${nearNode(geo, live) >= 0 ? nodeName(nearNode(geo, live)) : 'hors point connu'}`) : `libre · ${nodeName(s.node)}`;
-    const nxt = v.d.lifts.filter(x => x.group >= 0).sort((a, b) => a.start - b.start)[0];
-    status = `<div class="hs-main">Vide · ${where}</div>` + (nxt ? `<div class="hs-sub">Prochaine reprise : ${gchip(nxt.group)} au ${nodeName(nxt.from)} à <b>${fmt(nxt.start)}</b> (${inMin(nxt.start)})</div>` : '<div class="hs-sub">Plus de rotation prévue</div>');
-    btns = `<button class="ops-btn primary" data-a="pick">▲ Embarquer un groupe</button>` + (stop ? '<button class="ops-btn" data-a="stopNow">⛽ Arrêt base maintenant</button>' : '');
+    const cands = pickupCandidates(geo, v.state, m.pos), exp = expectedPickup(v, m.pos);
+    const sug = cands.includes(exp) ? exp : cands[0] ?? -1;
+    status = `<div class="hs-main">⏸ Posé · ${where}</div>${nextTxt}`;
+    if (sug >= 0) btns = `<button class="ops-btn primary big" data-a="board" data-g="${sug}">▲ Embarquer ${esc(gname(sug))}</button>`
+      + (cands.length > 1 || day.mode === 'gps' ? '<button class="ops-btn" data-a="pick">Autre groupe…</button>' : '');
+    else if (day.mode === 'gps') btns = '<button class="ops-btn" data-a="pick">▲ Embarquer…</button>';
+    if (stop && m.node === BASE) btns += '<button class="ops-btn" data-a="stopNow">⛽ Arrêt base maintenant</button>';
   }
   const stopTxt = stop ? `<div class="hs-stop">⛽ Passage base demandé : avant <b>${fmt(stop.by)}</b>, ${stop.dur} min <button data-a="fuel">modifier</button></div>` : '';
+  // Redessinée à chaque tic (heures « dans x min ») mais seulement si elle change : un bouton n'est pas recréé sous le doigt.
+  const html = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${stopTxt}${btns ? `<div class="hs-btns">${btns}</div>` : ''}`;
+  if (html === ui.heliHtml) return;
+  ui.heliHtml = html;
   $('ops-heli').style.setProperty('--c', HELI_COLOR);
-  $('ops-heli').innerHTML = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${stopTxt}<div class="hs-btns">${btns}</div>`;
-  $('ops-heli').querySelectorAll('[data-a]').forEach(b => { b.onclick = () => heliAction(b.dataset.a); });
+  $('ops-heli').innerHTML = html;
+  $('ops-heli').querySelectorAll('[data-a]').forEach(b => { b.onclick = () => heliAction(b.dataset.a, b.dataset.g != null ? +b.dataset.g : -1); });
 }
 
-function heliAction(a) {
-  const t = clock(), v = opsView(day, ds, t, { geo }), s = v.state.heli;
-  if (a === 'pick') {
-    const pos = heliPosition(day, v);
-    const cands = pickupCandidates(geo, v.state, pos);
-    pickSheet({ t, cands, expected: expectedPickup(v, null), node: nearNode(geo, pos) >= 0 ? nearNode(geo, pos) : null });
-  } else if (a === 'drop') {
+function heliAction(a, g = -1) {
+  const t = clock(), v = opsView(day, ds, t, { geo }), s = v.state.heli, m = heliMotion(day, v);
+  const rest = !m.air;                                   // embarquer / débarquer : seulement posé
+  if (a === 'board' && rest && s.onboard < 0 && g >= 0) { const run = doPickup(g, t, m.node >= 0 ? m.node : null); afterEvent(); boardedToast(g, run); }
+  else if (a === 'pick' && rest && s.onboard < 0) embarkSheet({ t, pos: m.pos, node: m.node >= 0 ? m.node : null });
+  else if (a === 'drop' && rest && s.onboard >= 0) {
     const live = liveFix(day, t), landT = lastLand();
-    const pos = live && !live.air ? live : s.dest >= 0 ? geo.pts[1 + s.dest] : heliPosition(day, v);
-    dropSheet({ t: live && !live.air && landT != null ? landT : t, pos });
+    arriveAt(v, m.pos, live && !live.air && landT != null ? landT : t);
   } else if (a === 'dest') destSheet();
-  else if (a === 'base') baseSheet(s.onboard, t);
   else if (a === 'stopEnd') { addEvent(day, { type: 'stopEnd', t }); afterEvent(); }
   else if (a === 'stop+5') { addEvent(day, { type: 'stopExtend', delta: 5, t }); afterEvent(); }
-  else if (a === 'stopNow') { addEvent(day, { type: 'stopStart', t, dur: day.stop.dur }); afterEvent(); }
+  else if (a === 'stopNow' && rest && m.node === BASE && day.stop) { addEvent(day, { type: 'stopStart', t, dur: day.stop.dur }); afterEvent(); }
   else if (a === 'fuel') fuelSheet();
+  else refresh(true);                                    // état changé entre-temps (décollage…) : on redessine
 }
 
 // ------------------------------------------------------------------ carte
@@ -794,7 +903,7 @@ function drawPlan() {
     if (s.t1 < t) continue;
     if ((s.type === 'flight' || s.type === 'flightLoaded') && s.from !== s.to) {
       // v.inst.pts : nœuds de la géométrie + position GPS de l'hélico (nœud virtuel)
-      const a = v.inst.pts[s.from], b = v.inst.pts[s.to], loaded = s.type === 'flightLoaded', soon = s.t0 <= t + NEAR_MIN;
+      const a = s.fromPt ?? v.inst.pts[s.from], b = v.inst.pts[s.to], loaded = s.type === 'flightLoaded', soon = s.t0 <= t + NEAR_MIN;
       L.polyline([llOf(a), llOf(b)], { color: HELI_COLOR, weight: loaded ? 4 : 3, opacity: soon ? 0.95 : 0.22, dashArray: loaded ? null : '8 7', interactive: false }).addTo(mv.plan);
     }
     if (s.type === 'load' && s.t0 >= t - 1 && s.t0 <= t + NEAR_MIN && step < 6) {
@@ -820,7 +929,10 @@ function drawTrace() {
     if (e.type === 'pickup' && e.node != null) pts.push(geo.pts[e.node]);
     else if (e.type === 'drop') pts.push(geo.pts[1 + e.run]);
     else if (e.type === 'dropBase' || e.type === 'stopStart') pts.push(geo.pts[BASE]);
-    else if (e.type === 'fly') pts.push(geo.pts[e.to]);
+    else if (e.type === 'fly') {
+      if (e.from < 0) pts[pts.length - 1] = { x: e.x, y: e.y };     // changement de cap : la destination prévue n'a pas été atteinte
+      pts.push(geo.pts[e.to]);
+    }
   }
   if (pts.length > 1) L.polyline(pts.map(llOf), { color: HELI_COLOR, weight: 3, opacity: 0.6, dashArray: '2 6', interactive: false }).addTo(ui.traceLayer);
 }

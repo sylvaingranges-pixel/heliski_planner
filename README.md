@@ -34,20 +34,30 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
 
 - **Modes** : *Vol réel* (heure réelle, GPS de la tablette) ou *Simulation* (horloge accélérée ×1 à ×60, mise en pause
   pendant chaque question au pilote ; l'hélico suit le plan et les mêmes questions sont posées qu'en vol).
-- **GPS** : décollage (vitesse > 12 m/s) et atterrissage (à l'arrêt 20 s) sont détectés. Au décollage à vide d'un point de
-  reprise, le groupe attendu par le plan est embarqué d'office (bandeau « Corriger ») ; en cas de doute (pas le groupe
-  attendu à cet endroit) l'app demande qui est à bord. À l'atterrissage chargé, la dépose est déduite de la position : s'il
-  part **plusieurs itinéraires de cette dépose** (fréquent : sommets partagés), l'app demande lequel (le prévu en vert).
-  Retour à la base avec un groupe : fin de journée, pause (client fatigué…) ou arrêt technique.
-- **Saisie manuelle** toujours possible (gros boutons) : *Embarquer*, *Déposer*, *Destination*, *Base*, et ↶ *Annuler*.
-- **Réglages en cours de journée** : retard / avance d'un groupe qui skie (±5 min sur sa carte, ±10/15 dans ses actions),
-  itinéraire en cours corrigé, **descente suivante imposée** (aussi en touchant un itinéraire sur la carte),
-  objectif de dénivelé, fin de journée d'un groupe, **itinéraires ouverts / fermés** (mode ✎ sur la carte),
-  **passer par la base** dans un délai donné pour une durée donnée (plein, client à déposer… moteur coupé).
+- **Arrêts** : embarquer et débarquer ne sont proposés **que l'hélico posé** (GPS : à l'arrêt 20 s, et altitude GPS
+  proche de celle du terrain quand elle est connue — point connu ou itinéraire tracé ; simulation : entre deux vols).
+  En vol, seule la destination du groupe à bord peut être changée. À chaque arrêt, l'app suggère l'action :
+  hélico plein → **Débarquer** le groupe ; vide, là où un groupe est attendu par le plan → **Embarquer** ce groupe
+  (en vert ; les autres groupes présents ensuite). « Ne rien faire » est toujours possible.
+- **Dépose en montagne** : l'app demande le **lieu de reprise** (fond d'un itinéraire ; ceux qui partent de ce sommet
+  d'abord, le prévu en vert, les itinéraires fermés grisés et inactifs) et, si le guide l'annonce, le **temps de
+  descente** (prévu, −10 … +20 min) → heure de reprise au fond. À la base : fin de journée, pause, ou reste à bord.
+- **GPS** : décollage (vitesse > 12 m/s) et atterrissage détectés. Au décollage à vide d'un point de reprise sans
+  réponse du pilote, le groupe attendu est embarqué d'office (bandeau « Corriger »).
+- **Sans saut de l'hélico** : un changement de destination en vol repart de la position de l'hélico au moment de la
+  demande (temps de vol recalculé depuis ce point, sans décollage) ; en vol à vide, un passage base demandé ou un nouveau
+  plan fait changer de cap là où il est (la suite est planifiée depuis cette position, pas depuis le prochain arrêt).
+- **Saisie manuelle** (gros boutons sur la carte de l'hélico) : *Embarquer* / *Débarquer* (posé), *Destination*,
+  ⛽ *Passer par la base*, et ↶ *Annuler*.
+- **Réglages en cours de journée** (toucher un groupe) : retard / avance d'un groupe qui skie (±5 min sur sa carte,
+  ±10/15 dans ses actions), itinéraire en cours corrigé, **passage du groupe à la base** dans x min pour y min (repas,
+  client à déposer… : le plan le ramène à temps puis le reprend après la pause), **descente suivante imposée** (aussi
+  en touchant un itinéraire sur la carte), objectif de dénivelé, fin de journée d'un groupe ; **itinéraires ouverts /
+  fermés** (mode ✎ sur la carte) ; **passer par la base** (hélico) dans un délai donné pour une durée donnée.
 - **Recalcul** : à chaque changement, le reste de la journée est re-décodé immédiatement depuis l'état réel
   (positions, horaires réels de dépose / reprise, dénivelé déjà fait, descentes déjà skiées et en cours), puis ré-optimisé
   en arrière-plan (recuit, ~1 s par cœur) **en partant du plan en cours** ; toutes les contraintes restent
-  (objectifs, descentes du jour, une descente par groupe et par jour, exclusivité, attente max, fin de journée, passage base).
+  (objectifs, descentes du jour, une descente par groupe et par jour, exclusivité, attente max, fin de journée, passages base de l'hélico et des groupes).
   Le passé n'est jamais recalculé. **Stabilité** : chaque modification du plan précédent coûte un seuil (CHF 60 par défaut,
   réglable) ; un nouveau plan n'est adopté que s'il fait gagner davantage. Ré-optimisation aussi toutes les 5 min d'horloge.
 - **Affichage** : seule la suite est affichée — carte (descentes à venir par groupe, numérotées ; trajets de l'heure qui

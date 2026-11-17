@@ -22,7 +22,9 @@ export function flightTime(params, a, b, airborne = false) {
 
 /**
  * available : indices des descentes réalisables aujourd'hui (null = toutes).
- * extraPts : points supplémentaires {x, y, alt, airborne?} ajoutés comme nœuds 1+2R+k (position GPS de l'hélico).
+ * extraPts : points supplémentaires {x, y, alt, airborne?, tauTo?} ajoutés comme nœuds 1+2R+k (position de l'hélico en vol).
+ * tauTo : { nœud: minutes } temps de vol imposés depuis ce point (vol en cours : temps restant jusqu'à sa destination) ;
+ * extraMin : minutes ajoutées aux autres temps de vol depuis ce point (changement de cap).
  */
 export function buildInstance(dataset, params, groups, available = null, extraPts = []) {
   const runs = dataset.runs;
@@ -32,7 +34,9 @@ export function buildInstance(dataset, params, groups, available = null, extraPt
   for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
     if (i === j) continue;
     // Matrice de temps de vol fournie (minutes), même indexation des nœuds ; position de l'hélico : formule.
-    tau[i * N + j] = dataset.timeMatrix && i < N0 && j < N0 ? dataset.timeMatrix[i][j] : flightTime(params, pts[i], pts[j], !!pts[i].airborne);
+    const fixed = pts[i].tauTo?.[j];
+    tau[i * N + j] = fixed != null ? fixed
+      : dataset.timeMatrix && i < N0 && j < N0 ? dataset.timeMatrix[i][j] : flightTime(params, pts[i], pts[j], !!pts[i].airborne) + (pts[i].extraMin ?? 0);
   }
   const vert = Int32Array.from(runs, r => r.vert);
   const ski = Float64Array.from(runs, r => r.skiMin);
@@ -96,6 +100,8 @@ export const LATE_PENALTY = { fixed: 1500, perUnit: 200 };      // par groupe en
 export const WAIT_PENALTY = { fixed: 1500, perUnit: 100 };        // par attente client > max, par min de dépassement
 export const CLOSED_PENALTY = 5000;                                // par passage sur une descente hors du jour
 export const REPEAT_PENALTY = 5000;                                // par descente refaite par le même groupe dans la journée
+const VISIT_MARGIN = 10;     // min : passage base d'un groupe, marge pour la reprise au fond (l'hélico peut être occupé)
+const VISIT_BOOST = 60;      // min : priorité du groupe qui doit rentrer à la base (passage demandé)
 
 /**
  * Exploitation : nombre de modifications d'un plan par rapport au plan de référence (le précédent).
@@ -128,7 +134,9 @@ export function decode(inst, sol, record = false) {
   const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
   const occEnd = new Float64Array(R).fill(-1e9);
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
-  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0, stopLate = 0;
+  let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0, stopLate = 0, visitLate = 0;
+  // Passage à la base demandé pour un groupe (exploitation) : { by (arrivée à la base au plus tard), dur (pause) }.
+  const gVisit = new Array(G).fill(null);
   const lifts = record ? [] : null;
   // Journée en cours : état de départ (hélico, groupes, descentes occupées), descente imposée en tête de séquence,
   // passage base demandé (stop.by : arrivée à la base au plus tard, stop.dur : durée moteur coupé).
@@ -140,6 +148,7 @@ export function decode(inst, sol, record = false) {
       const sg = st.groups[g];
       gReady[g] = sg.ready; gLoc[g] = sg.loc; gVert[g] = sg.vert; gEnd[g] = sg.end ?? sg.ready; gDone[g] = sg.done ? 1 : 0;
       seqs[g] = sg.noMore ? [] : sg.next >= 0 ? [sg.next, ...sol.seq[g]] : sol.seq[g];
+      if (sg.visit && !sg.done) gVisit[g] = sg.visit;
     }
     for (const [r, until] of st.occ) if (until > occEnd[r]) occEnd[r] = until;
   }
@@ -155,14 +164,20 @@ export function decode(inst, sol, record = false) {
   };
 
   while (pending > 0) {
-    let bS = Infinity, bg = -1, bStart = 0, bW = null, bC = 0, bStop = -1;
+    let bS = Infinity, bg = -1, bStart = 0, bW = null, bC = 0, bStop = -1, bD = BASE, bVisit = false;
     for (let g = 0; g < G; g++) {
       if (gDone[g]) continue;
       const o = gLoc[g], seq = seqs[g], k = gK[g];
-      const d = k < seq.length ? 1 + seq[k] : BASE;
-      const fl = tau[o * N + d];
-      let ready = gReady[g];
+      let d = k < seq.length ? 1 + seq[k] : BASE;
+      let fl = tau[o * N + d];
+      let ready = gReady[g], visit = false;
       if (d !== BASE && p.exclusiveRuns) ready = Math.max(ready, occEnd[d - 1] - p.loadMin - fl);
+      if (gVisit[g] && d !== BASE) {
+        // Passage base du groupe : fait maintenant si, après la descente suivante, le groupe arriverait trop tard à la base.
+        const r = d - 1, a0 = Math.max(ready, hT + tau[hL * N + o]);
+        const atBase = a0 + p.loadMin + fl + p.unloadMin + inst.ski[r] + VISIT_MARGIN + p.loadMin + tau[(1 + R + r) * N];
+        if (atBase > gVisit[g].by + 1e-9) { d = BASE; fl = tau[o * N]; ready = gReady[g]; visit = true; }
+      }
       let hl = hL, ht = hT, hs = hStarted, pre = 0, stopAt = -1;
       if (stop) {
         // Passage base demandé : repoussé tant que la rotation et le retour à la base tiennent avant l'échéance,
@@ -181,10 +196,10 @@ export function decode(inst, sol, record = false) {
       let s = start + (prio ? prio[g] : 0) + lam * c / p.flyRate;
       // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
       if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
-      if (s < bS) { bS = s; bg = g; bStart = start; bW = w; bC = c; bStop = stopAt; }
+      if (gVisit[g] && d === BASE) s -= VISIT_BOOST;           // passage base du groupe : le ramener dès qu'il est prêt
+      if (s < bS) { bS = s; bg = g; bStart = start; bW = w; bC = c; bStop = stopAt; bD = d; bVisit = visit; }
     }
-    const g = bg, o = gLoc[g], seq = seqs[g], k = gK[g];
-    const d = k < seq.length ? 1 + seq[k] : BASE;
+    const g = bg, o = gLoc[g], seq = seqs[g], k = gK[g], d = bD;
     const fl = tau[o * N + d];
     const end = bStart + p.loadMin + fl + p.unloadMin;
     if (bStop >= 0) doStop(bStop);
@@ -195,10 +210,13 @@ export function decode(inst, sol, record = false) {
       const ex = bStart - gReady[g] - p.maxClientWait;
       waitExcess += ex; waitPen += WAIT_PENALTY.fixed + WAIT_PENALTY.perUnit * ex;
     }
-    if (record) lifts.push({ group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: bW, readyAt: gReady[g] });
+    const pause = bVisit ? gVisit[g].dur : 0;
+    if (record) lifts.push({ group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: bW, readyAt: gReady[g], ...(bVisit ? { visit: true, pause } : {}) });
     hT = end; hL = d; hStarted = true;
     if (d === BASE && stop) doStop(end);                     // l'hélico est à la base : l'arrêt demandé se fait maintenant
-    if (d === BASE) { gDone[g] = 1; gEnd[g] = end; pending--; }
+    if (d === BASE && gVisit[g]) { visitLate += Math.max(0, end - p.unloadMin - gVisit[g].by); gVisit[g] = null; }
+    if (bVisit && k < seq.length) { gLoc[g] = BASE; gReady[g] = end + pause; gEnd[g] = end; }   // pause, puis il repart
+    else if (d === BASE) { gDone[g] = 1; gEnd[g] = end; pending--; }
     else {
       const r = d - 1;
       if (!inst.open[r]) closed++;
@@ -223,10 +241,11 @@ export function decode(inst, sol, record = false) {
     if (lt > 1e-9) { late += lt; penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * lt; }
   }
   if (stopLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * stopLate;
+  if (visitLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * visitLate;
   // Stabilité (exploitation) : chaque modification du plan précédent coûte changePenalty ; un nouveau plan n'est retenu
   // que s'il fait gagner davantage.
   const change = inst.ref && p.changePenalty > 0 ? p.changePenalty * planChanges(sol.seq, inst.ref) : 0;
-  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6, lifts, clientWait, waitExcess, closed, repeats };
+  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, visitLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6 && visitLate < 1e-6, lifts, clientWait, waitExcess, closed, repeats };
 }
 
 /**
@@ -304,7 +323,10 @@ export function buildSchedule(inst, lifts) {
       const te = l.start + p.loadMin + tau[l.from * N + l.to] + p.unloadMin;
       groupSeg[g].push({ type: 'heli', t0: l.start, t1: te, from: l.from, to: l.to });
       t = te; loc = l.to;
-      if (l.to !== BASE) {
+      if (l.visit) {                                   // passage base du groupe : pause, puis il repart
+        if (l.pause > 0) groupSeg[g].push({ type: 'pause', t0: te, t1: te + l.pause, from: BASE, to: BASE });
+        t = te + l.pause; gEnd[g] = te;
+      } else if (l.to !== BASE) {
         const r = l.to - 1;
         groupSeg[g].push({ type: 'ski', t0: t, t1: t + inst.ski[r], from: l.to, to: 1 + R + r, run: r });
         t += inst.ski[r]; loc = 1 + R + r; gVert[g] += inst.vert[r];

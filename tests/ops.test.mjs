@@ -7,6 +7,7 @@ import { buildInstance, decode, buildSchedule, planChanges, BASE } from '../js/m
 import { solveSA } from '../js/solver.js';
 import {
   newDay, addEvent, undoLast, opsView, dueTrigger, applyTrigger, deriveState, dropCandidates, pickupCandidates, nearNode, dayGeo,
+  heliPosition, heliMotion, onboardArrival, terrainAlt,
 } from '../js/ops.js';
 
 const ds = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
@@ -29,10 +30,10 @@ function startDay(params = P) {
  * Déroule la journée : l'hélico suit le plan (simulation), ré-optimisation (courte) après chaque événement.
  * hooks(now, day) : actions du pilote à heure donnée. Vérifie la cohérence décodeur / planning à chaque étape.
  */
-function runDay(day, { hooks = () => {}, until = 17 * 60, optIters = 1200 } = {}) {
+function runDay(day, { hooks = () => {}, until = 17 * 60, optIters = 1200, step = 0.5, onStep = null } = {}) {
   let now = day.params.dayStart, n = 0;
   while (now < until) {
-    now += 0.5;
+    now += step;
     hooks(now, day);
     for (let k = 0; k < 50; k++) {
       const v = opsView(day, ds, now);
@@ -45,6 +46,7 @@ function runDay(day, { hooks = () => {}, until = 17 * 60, optIters = 1200 } = {}
       const r = solveSA(v2.inst, { seed: n, iterations: optIters, restarts: 1, init: v2.plan });
       if (decode(v2.inst, r.sol).f < v2.d.f - 1e-6) day.plan = r.sol;
     }
+    onStep?.(now, day);
   }
   return deriveState(day, dayGeo(day, ds), now);
 }
@@ -177,4 +179,136 @@ test('exploitation : déductions GPS (dépose partagée, reprise), annulation', 
   assert.equal(ev.type, 'pickup');
   assert.equal(day.forced[1], 5);
   assert.ok(!day.events.some(e => e.type === 'pickup'));
+});
+
+const KM_PER_MIN = P.heliSpeedKmh / 60;
+/** Suivi de la position de l'hélico pas à pas : jamais plus loin que ce qu'il peut voler (pas de saut). */
+function jumpWatcher(step) {
+  let prev = null, maxJump = 0;
+  return {
+    onStep: (now, day) => {
+      const v = opsView(day, ds, now), hp = heliPosition(day, v);
+      if (prev) maxJump = Math.max(maxJump, Math.hypot(hp.x - prev.x, hp.y - prev.y) - KM_PER_MIN * step);
+      prev = hp;
+    },
+    get maxJump() { return maxJump; },
+  };
+}
+
+test('exploitation : journée suivie pas à pas — l’hélico ne fait jamais de saut', () => {
+  const { day } = startDay();
+  const w = jumpWatcher(0.25);
+  runDay(day, { step: 0.25, onStep: w.onStep, optIters: 600 });
+  assert.ok(w.maxJump < 0.05, `saut de ${w.maxJump.toFixed(2)} km`);
+});
+
+test('exploitation : changement de destination en vol — le vol repart de la position actuelle', () => {
+  const { day } = startDay();
+  runDay(day, { until: 10 * 60 });
+  // Attendre un vol chargé en cours (simulation)
+  let now = 10 * 60, v = opsView(day, ds, now);
+  for (let k = 0; k < 400 && !(v.state.heli.onboard >= 0 && heliMotion(day, v).air); k++) {
+    now += 0.25; v = opsView(day, ds, now);
+    const tr = dueTrigger(day, v); if (tr) { applyTrigger(day, v, tr); v = opsView(day, ds, now); }
+  }
+  const s = v.state.heli, g = s.onboard;
+  assert.ok(g >= 0 && heliMotion(day, v).air, 'pas de vol chargé trouvé');
+  const before = heliPosition(day, v), geo = dayGeo(day, ds);
+  // Nouvelle destination : un autre itinéraire ouvert, pas encore skié
+  const alt = [...v.inst.dayRuns].find(r => r !== s.dest && !v.state.groups[g].skied.includes(r));
+  addEvent(day, { type: 'dest', group: g, run: alt, t: now });
+  const v2 = opsView(day, ds, now), after = heliPosition(day, v2);
+  assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 1e-6, 'saut au changement de destination');
+  assert.ok(heliMotion(day, v2).air);
+  // Arrivée : temps de vol depuis la position actuelle (sans décollage), pas depuis le point de reprise
+  const arr = onboardArrival(day, geo, v2.state, now);
+  const direct = Math.hypot(geo.pts[1 + alt].x - before.x, geo.pts[1 + alt].y - before.y) / KM_PER_MIN;
+  assert.ok(arr >= now + direct - 0.2 && arr <= now + direct + Math.max(0, (geo.pts[1 + alt].alt - before.alt) / P.climbRate) + 1, `arrivée ${arr - now} min, vol direct ${direct} min`);
+  // La suite part de la nouvelle dépose
+  assert.equal(v2.inst.start.heli.loc, 1 + alt);
+  assert.equal(v2.inst.start.groups[g].loc, 1 + geo.R + alt);
+});
+
+test('exploitation : passage base demandé en vol à vide — demi-tour depuis la position, sans saut', () => {
+  const { day } = startDay();
+  let asked = null, flying = false;
+  const w = jumpWatcher(0.25);
+  runDay(day, {
+    step: 0.25, optIters: 600,
+    onStep: (now, d) => {
+      w.onStep(now, d);
+      if (asked != null) return;
+      const v = opsView(d, ds, now), s = v.state.heli;
+      // Vol à vide en cours, loin de la base : on demande la base maintenant
+      if (now > 10 * 60 && s.onboard < 0 && s.leg && s.leg.t1 > now + 2 && s.leg.to !== BASE) {
+        d.stop = { by: now, dur: 10, req: now }; asked = now;
+        const v2 = opsView(d, ds, now);
+        flying = heliMotion(d, v2).air;
+        // La suite part de la position actuelle (nœud virtuel en vol), pas de la destination du vol en cours
+        assert.ok(v2.inst.start.heli.loc > 2 * v2.inst.R, 'la suite doit partir de la position de l’hélico');
+        assert.equal(v2.sch.heliSeg[0].to, BASE);
+      }
+    },
+  });
+  assert.ok(asked != null && flying, 'pas de vol à vide trouvé');
+  const turn = day.events.find(e => e.type === 'fly' && e.from < 0 && e.t >= asked);
+  assert.ok(turn && turn.to === BASE && turn.t - asked < 0.3, 'demi-tour vers la base attendu');
+  const stop = day.events.find(e => e.type === 'stopStart' && e.t >= asked);
+  assert.ok(stop, 'arrêt base fait');
+  assert.ok(w.maxJump < 0.05, `saut de ${w.maxJump.toFixed(2)} km`);
+  // Pas d'hésitation : peu de changements de cap dans la journée
+  assert.ok(day.events.filter(e => e.type === 'fly' && e.from < 0).length <= 6);
+});
+
+test('exploitation : passage à la base d’un groupe (dans x min, pour y min), puis il repart', () => {
+  const { day } = startDay();
+  runDay(day, { until: 10 * 60 });
+  const v = opsView(day, ds, 10 * 60);
+  const g = v.state.groups.findIndex(x => x.status === 'skiing');
+  assert.ok(g >= 0);
+  const by = 10 * 60 + 30, dur = 30;
+  day.visits[g] = { by, dur, req: 10 * 60 };
+  const v2 = opsView(day, ds, 10 * 60);
+  const lift = v2.d.lifts.find(l => l.group === g && l.visit);
+  assert.ok(lift && lift.to === BASE && lift.pause === dur, 'rotation vers la base avec pause');
+  assert.ok(lift.end - P.unloadMin <= by + 1e-6, 'à la base à temps');
+  assert.ok(Math.abs(v2.sch.cost - v2.d.cost) < 1e-6);
+  const st = runDay(day, { hooks: () => {}, until: 17 * 60 });
+  const back = day.events.find(e => e.type === 'dropBase' && e.group === g && e.t >= 10 * 60);
+  assert.ok(back && back.pause === dur && !back.done && back.t <= by + 1e-6, `retour base ${back?.t}`);
+  assert.equal(day.visits[g], null);
+  const next = day.events.find(e => e.type === 'pickup' && e.group === g && e.t > back.t);
+  assert.ok(next && next.t >= back.t + P.unloadMin + dur - 1e-6, 'repris après la pause');
+  st.groups.forEach((x, i) => assert.ok(x.vert >= day.groups[i].target, `${groups[i].name} : ${x.vert}`));
+  // Annulation du retour base : la demande est restaurée
+  const d2 = startDay().day; d2.visits[1] = { by: 600, dur: 20, req: 540 };
+  addEvent(d2, { type: 'dropBase', group: 1, t: 560, done: false, pause: 20 });
+  assert.equal(d2.visits[1], null);
+  undoLast(d2);
+  assert.deepEqual(d2.visits[1], { by: 600, dur: 20, req: 540 });
+});
+
+test('exploitation : dépose avec temps de descente annoncé, arrêt / vol, altitude du terrain', () => {
+  const { day } = startDay();
+  const geo = dayGeo(day, ds);
+  addEvent(day, { type: 'pickup', group: 0, t: P.dayStart, node: BASE, run: 3 });
+  let v = opsView(day, ds, P.dayStart + 1);
+  assert.equal(heliMotion(day, v).air, false);                    // chargement : posé
+  const arr = onboardArrival(day, geo, v.state, P.dayStart);
+  v = opsView(day, ds, (P.dayStart + P.loadMin + arr) / 2);
+  assert.equal(heliMotion(day, v).air, true);                     // en vol : ni embarquer ni débarquer
+  v = opsView(day, ds, arr + 0.1);
+  const m = heliMotion(day, v);
+  assert.ok(!m.air && m.arrived && m.node === 1 + 3);             // posé au sommet : débarquer
+  addEvent(day, { type: 'drop', group: 0, run: 3, t: arr, ski: geo.ski[3] + 15 });
+  v = opsView(day, ds, arr + 1);
+  assert.ok(Math.abs(v.state.groups[0].ready - (arr + P.unloadMin + geo.ski[3] + 15)) < 1e-6);
+  assert.ok(Math.abs(v.inst.start.groups[0].ready - v.state.groups[0].ready) < 1e-6);
+  // Altitude du terrain : connue aux points et le long des itinéraires, inconnue ailleurs
+  const r = ds.runs[3];
+  assert.equal(terrainAlt(geo, r.top), r.top.alt);
+  const mid = r.path[Math.floor(r.path.length / 2)];
+  const a = terrainAlt(geo, { x: mid[0], y: mid[1] });
+  assert.ok(a != null && a <= r.top.alt && a >= r.bottom.alt);
+  assert.equal(terrainAlt(geo, { x: 60, y: 60 }), null);
 });
