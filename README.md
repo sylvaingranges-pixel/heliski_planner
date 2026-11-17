@@ -115,6 +115,7 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 
 ## Structure
 
+
 | Fichier | Rôle |
 |---|---|
 | `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
