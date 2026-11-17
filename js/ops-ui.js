@@ -17,6 +17,7 @@ import { fmt } from './validate.js';
 const L = globalThis.L;
 const STORE = 'heliski-planner-day-v2';     // v2 : un seul hélico (les journées v1 à plusieurs hélicos sont ignorées)
 const SPEEDS = [1, 5, 10, 30, 60];
+const TICK_MS = 250;            // boucle logique (événements simulés, panneau) ; l'affichage est animé à chaque image
 const OPT_EVERY = 5;          // min d'horloge : ré-optimisation périodique (les horaires dérivent avec le temps réel)
 const OPT_MS = 1200;          // durée d'une chaîne de recuit (ms) ; une chaîne par cœur
 const LIVE_STALE = 2;         // min : sans position GPS depuis plus longtemps, pas de déduction d'atterrissage
@@ -33,6 +34,7 @@ const ui = {
   optGen: 0, workers: null, optAt: -1e9, optTimer: null, status: '', sig: '', panelAt: 0,
   gpsWatch: null, gpsErr: null, det: null, saveAt: 0, mv: null, traceLayer: null, toastTimer: null,
   startMode: 'sim', fitted: false,
+  raf: 0, dueAt: 0, gantt: null, ganttKey: null,   // animation fluide (hélico, groupes, curseur du Gantt) entre deux tics
   pendingSim: false,            // simulation : une question du plan est ouverte
   snooze: -1e9,                 // simulation : question écartée, reposée à cette heure d'horloge
 };
@@ -104,7 +106,8 @@ function begin() {
 function startRun() {
   $('ops-start').hidden = true; $('ops-main').hidden = false;
   ensureMap();
-  clearInterval(ui.timer); ui.timer = setInterval(tick, 500);
+  clearInterval(ui.timer); ui.timer = setInterval(tick, TICK_MS);
+  startAnim();
   if (day.mode === 'gps') startGps();
   view = opsView(day, ds, clock(), { geo });
   refresh(true);
@@ -114,6 +117,7 @@ function startRun() {
 
 function endDay() {
   clearInterval(ui.timer); ui.timer = null;
+  stopAnim();
   stopGps(); cancelOpt();
   try { localStorage.removeItem(STORE); } catch { /* ignore */ }
   day = null; view = null;
@@ -152,6 +156,28 @@ function tick() {
   if (t - ui.optAt >= OPT_EVERY && !ui.workers) scheduleOpt(0);
   if (Date.now() - ui.saveAt > 30000) saveDay();
 }
+
+/**
+ * Animation entre deux tics (simulation en lecture) : la logique (événements, plan, panneau) reste au rythme du tic,
+ * seules les positions sur la carte et le curseur du Gantt sont recalculées à chaque image, à partir de la dernière
+ * vue et de l'heure courante (interpolation le long du vol ou de la descente en cours). Évite les sauts à ×30 / ×60.
+ */
+function startAnim() {
+  stopAnim();
+  const frame = () => {
+    ui.raf = requestAnimationFrame(frame);
+    if (!day || !view || day.mode !== 'sim' || day.sim.paused || ui.sheet || document.hidden) return;
+    const t = clock();
+    if (t <= view.now) return;
+    const v = { ...view, now: t };
+    // Événement simulé dû (décollage, embarquement, arrivée) : traité tout de suite plutôt qu'au tic suivant.
+    if (t >= ui.snooze && performance.now() - ui.dueAt > 50 && dueTrigger(day, v)) { ui.dueAt = performance.now(); tick(); return; }
+    updateLive(v, false);
+    ui.gantt?.update(t);
+  };
+  ui.raf = requestAnimationFrame(frame);
+}
+function stopAnim() { cancelAnimationFrame(ui.raf); ui.raf = 0; }
 
 /** Après un événement ou un réglage : sauvegarde, vue immédiate (plan en cours adapté), ré-optimisation en arrière-plan. */
 function afterEvent() {
@@ -606,13 +632,13 @@ function refresh(full) {
   if (full || sig !== ui.sig || Date.now() - ui.panelAt > 15000) {
     ui.sig = sig; ui.panelAt = Date.now();
     renderPanel(); drawPlan(); renderTimeline();
-  }
-  updateLive();
+  } else if (Math.floor(view.now / 10) !== ui.ganttKey) renderTimeline();   // fenêtre du Gantt décalée toutes les 10 min
+  updateLive(view, true);
 }
 
 /**
  * Simulation : lecture / pause et vitesse. Les contrôles sont créés une seule fois puis seulement mis à jour :
- * l'en-tête est rafraîchi toutes les 500 ms, recréer la liste déroulante la refermerait pendant qu'on choisit.
+ * l'en-tête est rafraîchi à chaque tic (TICK_MS), recréer la liste déroulante la refermerait pendant qu'on choisit.
  */
 function renderSimCtl() {
   const box = $('ops-simctl'), sim = day.mode === 'sim';
@@ -826,9 +852,9 @@ function drawTrace() {
 }
 
 /** Positions actuelles : hélico (GPS ou déduite), groupes (sur leur descente, au fond, à bord, à la base). */
-function updateLive() {
-  const mv = ui.mv, v = view;
-  if (!mv) return;
+function updateLive(v = view, follow = true) {
+  const mv = ui.mv;
+  if (!mv || !v) return;
   const { layers } = mv, t = v.now;
   if (!mv.liveMarkers) {
     layers.live.clearLayers();
@@ -851,7 +877,7 @@ function updateLive() {
   });
   const live = liveFix(day, t);
   if (live) mv.liveMarkers.acc.setLatLng(llOf(live)).setRadius(live.acc ?? 1); else mv.liveMarkers.acc.setRadius(0);
-  if (ui.follow) {
+  if (follow && ui.follow) {
     const ll = L.latLng(llOf(hp));
     if (!mv.map.getBounds().pad(-0.25).contains(ll)) mv.map.panTo(ll, { animate: true });
   }
@@ -868,8 +894,9 @@ function fitPlan() {
 
 function renderTimeline() {
   const v = view, svg = $('ops-gantt');
-  if (!svg.getBoundingClientRect().width) return;
-  renderGantt(svg, v.inst, displaySchedule(day, v), { time: v.now, from: Math.floor(v.now / 10) * 10 - 10 });
+  if (!svg.getBoundingClientRect().width) { ui.gantt = null; return; }
+  ui.ganttKey = Math.floor(v.now / 10);
+  ui.gantt = renderGantt(svg, v.inst, displaySchedule(day, v), { time: v.now, from: ui.ganttKey * 10 - 10 });
 }
 
 // ------------------------------------------------------------------ liaisons
