@@ -18,9 +18,10 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
   deux différents) ; à la fin, une sélection max-min parmi toutes les archives propose jusqu'à 8 plannings de coût proche
   mais réellement différents — descentes choisies (Jaccard sur les couples groupe × descente) et forme du planning
   (attente au départ du matin, attente au fond, ordre de service, heures de fin ; `planDistance` dans `js/model.js`).
-  On les fait défiler au-dessus de la carte (◀ ▶, flèches du clavier, liste, ou onglet *Comparaison*) ; *Démarrer la
+  On les fait défiler dans le panneau *Variantes* de la barre latérale, à côté de la carte et du planning qui suivent
+  (◀ ▶, flèches du clavier, liste, ou onglet *Comparaison*) ; *Démarrer la
   journée* part de la variante affichée. Écart de coût toléré (max(3 %, CHF 100)), nombre de variantes et poids
-  descentes / planning se règlent dans le bloc *Variantes* de la barre latérale.
+  descentes / planning se règlent dans *Réglages des variantes*, sous le panneau.
 - **Jeu de base fixe** : `data/base-dataset.json` (base de Le Châble, 50 descentes tracées sur le relief réel, graine 42).
   Il est chargé au premier lancement, toujours identique, disponible hors ligne. Dans l'onglet *Données* → *Jeu de données* :
   générer de nouvelles descentes, placer la base sur la carte, importer un JSON… puis **Revenir au jeu de base** d'un clic.

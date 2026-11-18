@@ -290,6 +290,7 @@ function solveHeuristic() {
     const v = setVariants({ label, seconds, info, pool, history: best.history }, false);
     state.results.push({ label, cost: v.list[0].sch.cost, seconds, feasible: true, info: `${info}, ${pool.length} plannings faisables, ${v.list.length} variantes` });
     showVariant(0);
+    revealVariants();
   };
   // Arrêt par le bouton : on garde la meilleure des chaînes déjà terminées ; remplacé par un nouveau calcul : on jette tout.
   state.stopSolve = (keep = true) => {
@@ -414,33 +415,49 @@ function fillVariantSelect() {
   sel.innerHTML = V.list.map((x, i) => `<option value="${i}">${i + 1} · ${chf(x.stats.cost)}${i ? ` (+${Math.round(x.stats.cost - b)})` : ' (meilleure)'}</option>`).join('');
 }
 
-/** Bandeau des variantes (au-dessus de la carte et du Gantt). */
+/**
+ * Panneau des variantes (barre latérale gauche, toujours visible à côté de la carte et du planning) :
+ * navigation, chiffres clés, puis pour chaque groupe son départ et ce qui change par rapport à la meilleure.
+ */
 function renderVariantBar() {
   const bar = $('variant-bar'), V = state.variants;
   const on = !!V && state.cur?.variant != null;
-  bar.hidden = !on;
+  bar.hidden = !on; $('variant-empty').hidden = on;
   if (!on) return;
-  const n = V.list.length, x = V.list[V.idx], st = x.stats, b = V.list[0].stats, inst = state.inst;
+  const n = V.list.length, x = V.list[V.idx], st = x.stats, b = V.list[0].stats, inst = state.inst, p = inst.params;
   $('var-title').textContent = `Variante ${V.idx + 1} / ${n}`;
   $('var-select').value = String(V.idx);
   $('var-prev').disabled = $('var-next').disabled = n < 2;
   const dc = st.cost - b.cost;
-  const chip = (l, v, cls = '') => `<span class="vchip ${cls}"><small>${l}</small>${v}</span>`;
+  const chip = (l, v, cls = '', sub = '') => `<span class="vchip ${cls}"><small>${l}</small>${v}${sub ? `<small>${sub}</small>` : ''}</span>`;
   $('var-stats').innerHTML = [
     chip('Coût', chf(st.cost), 'main'),
-    chip('Écart', V.idx === 0 ? 'meilleure' : `+${chf(dc)} · +${(100 * dc / b.cost).toFixed(1)} %`, V.idx === 0 ? 'ok' : ''),
+    V.idx === 0 ? chip('Écart', 'meilleure', 'ok') : chip('Écart', `+${chf(dc)}`, '', `+${(100 * dc / b.cost).toFixed(1)} %`),
     chip('Rotations', st.rotations), chip('Démarrages', st.starts), chip('Retour hélico', fmt(st.heliBack)),
-    chip('Attente client au fond', fmtDur(st.clientWait)),
+    chip('Attente au fond', fmtDur(st.clientWait)),
   ].join('');
-  $('var-waits').innerHTML = '<span class="muted">Départ (attente le matin) :</span> ' + inst.groups.map((g, i) =>
-    `<span class="vwait"><span class="dot" style="background:${GROUP_COLORS[i % GROUP_COLORS.length]}"></span>${esc(g.name)} ${fmtDur(st.startWait[i] ?? 0)}</span>`).join('');
   const d = x.diff;
-  $('var-diff').innerHTML = V.idx === 0
+  $('var-note').innerHTML = V.idx === 0
     ? (n > 1 ? `<span class="muted">Meilleur planning trouvé. ◀ ▶ (ou flèches du clavier) : ${n - 1} autre${n > 2 ? 's' : ''} planning${n > 2 ? 's' : ''} de coût proche.</span>`
       : `<span class="muted">Une seule variante distincte dans l’écart de coût toléré${state.effort === 'fast' ? ' — un effort Moyen en trouve en général davantage' : ''}.</span>`)
-    : `<div class="muted">Par rapport à la meilleure${d.groups.length || d.general.length ? '' : ' : écarts de quelques minutes seulement'}</div>` +
-      d.groups.map(({ g, items }) => `<div class="vdiff"><span class="dot" style="background:${GROUP_COLORS[g % GROUP_COLORS.length]}"></span><b>${esc(inst.groups[g].name)}</b> ${items.map(esc).join(' · ')}</div>`).join('') +
-      (d.general.length ? `<div class="vdiff">${d.general.map(esc).join(' · ')}</div>` : '');
+    : `<span class="muted">Par rapport à la meilleure${d.groups.length || d.general.length ? ' :' : ' : écarts de quelques minutes seulement'}</span>`;
+  const byG = new Map((d?.groups ?? []).map(({ g, items }) => [g, items]));
+  $('var-groups').innerHTML = inst.groups.map((grp, g) => {
+    const w = st.startWait[g] ?? 0, items = byG.get(g);
+    return `<div class="vgrp"><div class="vgrp-head"><span class="dot" style="background:${GROUP_COLORS[g % GROUP_COLORS.length]}"></span><b>${esc(grp.name)}</b>
+      <span class="muted">départ ${fmt(p.dayStart + w)}${w >= 1 ? ` · attente ${fmtDur(w)}` : ''}</span></div>` +
+      (items ? `<div class="vgrp-diff">${items.map(esc).join(' · ')}</div>` : '') + '</div>';
+  }).join('');
+  $('var-general').innerHTML = d?.general.length ? d.general.map(esc).join(' · ') : '';
+}
+
+/** Après un calcul : le panneau des variantes est amené dans la partie visible de la barre latérale (si elle défile). */
+function revealVariants() {
+  const side = document.querySelector('#view-plan .sidebar'), box = $('variants-box');
+  if (!side || side.scrollHeight <= side.clientHeight + 1 || getComputedStyle(side).position !== 'sticky') return;
+  const top = box.getBoundingClientRect().top - side.getBoundingClientRect().top + side.scrollTop, bottom = top + box.offsetHeight;
+  if (top < side.scrollTop) side.scrollTop = top;
+  else if (bottom > side.scrollTop + side.clientHeight) side.scrollTop = Math.min(top, bottom - side.clientHeight);
 }
 
 // ------------------------------------------------------------------ rendu
@@ -603,7 +620,7 @@ function renderCompare() {
       V.list.map((x, i) => `<tr data-var="${i}" class="${i === V.idx && state.cur?.variant != null ? 'current' : ''}"><td>${i + 1}</td><td>${chf(x.stats.cost)}</td>
         <td>${i ? `+${Math.round(x.stats.cost - b)} (${(100 * (x.stats.cost - b) / b).toFixed(1)} %)` : '—'}</td><td>${x.stats.rotations}</td><td>${x.stats.starts}</td>
         <td>${fmt(x.stats.heliBack)}</td><td>${fmtDur(x.stats.clientWait)}</td><td class="small">${i ? esc(diffText(state.inst, x.diff) || 'quelques minutes') : 'meilleure'}</td></tr>`).join('') +
-      '</tbody></table><div class="note">Touchez une ligne pour afficher la variante (aussi ◀ ▶ au-dessus de la carte). « Démarrer la journée » (onglet Exploitation) part de la variante affichée.</div>';
+      '</tbody></table><div class="note">Touchez une ligne pour afficher la variante (aussi ◀ ▶ dans la barre de gauche, panneau <i>Variantes</i>). « Démarrer la journée » (onglet Exploitation) part de la variante affichée.</div>';
   }
   if (state.results.length) html += `<h4>Calculs</h4><table class="mini"><thead><tr><th>Méthode</th><th>Coût</th><th>Temps</th><th>OK</th></tr></thead><tbody>` +
     state.results.map(r => `<tr><td title="${esc(r.info)}">${esc(r.label)}</td><td>${chf(r.cost)}</td>
@@ -775,7 +792,7 @@ async function init() {
   $('sel-all').onclick = () => setDayRuns(null);
   $('sel-none').onclick = () => setDayRuns([]);
   $('sel-invert').onclick = () => setDayRuns(state.ds.runs.map(r => r.id).filter(r => !state.inst.open[r]));
-  // Variantes : ◀ ▶, liste déroulante, flèches gauche / droite du clavier (onglet Planification, hors champs de saisie).
+  // Variantes (barre latérale) : ◀ ▶, liste déroulante, flèches gauche / droite du clavier (onglet Planification, hors champs de saisie).
   $('var-prev').onclick = () => stepVariant(-1);
   $('var-next').onclick = () => stepVariant(1);
   $('var-select').onchange = (e) => showVariant(+e.target.value);
