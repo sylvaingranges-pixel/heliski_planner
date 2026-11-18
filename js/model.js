@@ -350,3 +350,82 @@ export function seqFromLifts(G, lifts) {
   for (const l of [...lifts].sort((a, b) => a.start - b.start)) if (l.to !== BASE) seq[l.group].push(l.to - 1);
   return seq;
 }
+
+// ------------------------------------------------------------------ distance entre deux plannings (variantes)
+// Deux composantes : les descentes choisies (distance de Jaccard sur les couples groupe × descente) et la forme du
+// planning (attente de chaque groupe au départ du matin, attente au fond, ordre de service du matin, heure de fin).
+// Chaque écart de temps est normalisé : |Δ| / PLAN_SHAPE_SCALE_MIN, plafonné à 1. Distance = poids.runs × Jaccard
+// + poids.shape × forme, dans [0, 1]. Deux plannings qui ne diffèrent que de quelques minutes ou par l'ordre de deux
+// rotations sont quasi identiques (≈ 0,01–0,03) ; une descente changée pour un groupe vaut ≈ 0,05.
+export const PLAN_DIST_WEIGHTS = { runs: 0.5, shape: 0.5 };
+export const PLAN_SHAPE_WEIGHTS = { startWait: 1, clientWait: 1, order: 1, end: 1 };
+export const PLAN_SHAPE_SCALE_MIN = 30;
+
+/**
+ * Profil d'un planning pour la mesure de distance, à partir des rotations décodées (decode(…, true).lifts).
+ * pairs : clés g × R + r triées ; startWait[g] : 1re prise en charge − début de journée ; clientWait[g] : attente
+ * cumulée au fond (reprise − fin de la descente) ; order : groupes dans l'ordre de leur 1re prise en charge ;
+ * end[g] : heure de fin (dernier déchargement) ; first[g] : heure de la 1re prise en charge.
+ */
+export function planProfile(inst, lifts) {
+  const G = inst.groups.length, R = inst.R, p = inst.params, t0 = inst.start ? inst.start.heli.t : p.dayStart;
+  const first = new Array(G).fill(Infinity), end = new Array(G).fill(t0), clientWait = new Array(G).fill(0);
+  const ready = new Array(G).fill(-1), pairs = [];
+  const L = [...lifts].sort((a, b) => a.start - b.start);
+  for (const l of L) {
+    const g = l.group;
+    if (g < 0) continue;
+    if (l.start < first[g]) first[g] = l.start;
+    if (ready[g] >= 0 && l.from !== BASE) clientWait[g] += Math.max(0, l.start - ready[g]);
+    if (l.end > end[g]) end[g] = l.end;
+    if (l.to !== BASE && !l.visit) { const r = l.to - 1; pairs.push(g * R + r); ready[g] = l.end + inst.ski[r]; }
+    else ready[g] = -1;                              // à la base : pas d'attente « au fond »
+  }
+  const startWait = first.map(f => (Number.isFinite(f) ? f - t0 : 0));
+  const order = [...Array(G).keys()].filter(g => Number.isFinite(first[g])).sort((a, b) => first[a] - first[b] || a - b);
+  return { pairs: Int32Array.from(new Set(pairs)).sort(), startWait, clientWait, order, end, first, R, G };
+}
+
+/** Distance de Jaccard entre deux listes triées de clés (couples groupe × descente). */
+function jaccardSorted(a, b) {
+  let i = 0, j = 0, inter = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { inter++; i++; j++; } else if (a[i] < b[j]) i++; else j++;
+  }
+  const union = a.length + b.length - inter;
+  return union ? 1 - inter / union : 0;
+}
+
+/** Écart de forme dans [0, 1] : moyenne pondérée des écarts (temps normalisés, ordre : paires de groupes inversées). */
+export function planShapeDistance(a, b, sw = PLAN_SHAPE_WEIGHTS, scale = PLAN_SHAPE_SCALE_MIN) {
+  const G = Math.max(a.G, b.G);
+  if (!G) return 0;
+  const n = (x) => Math.min(1, Math.abs(x) / scale);
+  let dS = 0, dW = 0, dE = 0;
+  for (let g = 0; g < G; g++) {
+    dS += n((a.startWait[g] ?? 0) - (b.startWait[g] ?? 0));
+    dW += n((a.clientWait[g] ?? 0) - (b.clientWait[g] ?? 0));
+    dE += n((a.end[g] ?? 0) - (b.end[g] ?? 0));
+  }
+  // Ordre du matin : part des paires de groupes servies dans l'ordre inverse (distance de Kendall normalisée).
+  let disc = 0, pairsN = 0;
+  const posA = new Array(G).fill(G), posB = new Array(G).fill(G);
+  a.order.forEach((g, k) => { posA[g] = k; }); b.order.forEach((g, k) => { posB[g] = k; });
+  for (let g = 0; g < G; g++) for (let h = g + 1; h < G; h++) {
+    pairsN++;
+    if (Math.sign(posA[g] - posA[h]) !== Math.sign(posB[g] - posB[h])) disc++;
+  }
+  const dO = pairsN ? disc / pairsN : 0;
+  const wsum = sw.startWait + sw.clientWait + sw.order + sw.end;
+  return wsum > 0 ? (sw.startWait * dS / G + sw.clientWait * dW / G + sw.order * dO + sw.end * dE / G) / wsum : 0;
+}
+
+/**
+ * Distance entre deux plannings (profils de planProfile), dans [0, 1] : 0 = identiques.
+ * weights = { runs, shape } (normalisés) : diversité des descentes ↔ diversité de la forme du planning.
+ */
+export function planDistance(a, b, weights = PLAN_DIST_WEIGHTS) {
+  const wr = weights.runs ?? 0, ws = weights.shape ?? 0, tot = wr + ws;
+  if (tot <= 0) return 0;
+  return (wr * (wr > 0 ? jaccardSorted(a.pairs, b.pairs) : 0) + ws * (ws > 0 ? planShapeDistance(a, b) : 0)) / tot;
+}
