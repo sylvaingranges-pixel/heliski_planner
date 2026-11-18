@@ -610,7 +610,6 @@ export function planAlerts(day, view) {
   if (d.visitLate > 1e-6) out.push(`passage base d’un groupe en retard de ${Math.round(d.visitLate)} min`);
   if (d.closed) out.push('descente fermée dans le plan');
   const rf = refuelParams(p);
-  if (rf && d.fuelOver > 1e-6) out.push(`plus de ${rf.max} min de vol sans plein (${Math.round(d.fuelOver)} min de trop)`);
-  if (rf && d.fuelEarly > 1e-6) out.push(`plein avant ${rf.min} min de vol (${Math.round(d.fuelEarly)} min trop tôt)`);
+  if (rf && d.fuelOver > 1e-6) out.push(`autonomie dépassée : plus de ${rf.max} min de vol sans plein (${Math.round(d.fuelOver)} min de trop)`);
   return out;
 }

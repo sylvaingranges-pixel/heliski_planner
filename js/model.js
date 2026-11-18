@@ -100,7 +100,7 @@ export const LATE_PENALTY = { fixed: 1500, perUnit: 200 };      // par groupe en
 export const WAIT_PENALTY = { fixed: 1500, perUnit: 100 };        // par attente client > max, par min de dépassement
 export const CLOSED_PENALTY = 5000;                                // par passage sur une descente hors du jour
 export const REPEAT_PENALTY = 5000;                                // par descente refaite par le même groupe dans la journée
-export const FUEL_PENALTY = { fixed: 1500, perUnit: 100 };         // plein hors de la plage [X, Y] min de vol, par min d'écart
+export const FUEL_PENALTY = { fixed: 1500, perUnit: 100 };         // vol sans plein au-delà de l'autonomie, par min de dépassement
 const VISIT_MARGIN = 10;     // min : passage base d'un groupe, marge pour la reprise au fond (l'hélico peut être occupé)
 const VISIT_BOOST = 60;      // min : priorité du groupe qui doit rentrer à la base (passage demandé)
 
@@ -121,14 +121,13 @@ export function planChanges(seq, ref) {
 }
 
 /**
- * Ravitaillement (plein à la base) : paramètres normalisés, null si désactivé.
- * min : minutes de vol depuis le dernier plein avant lesquelles on ne fait pas le plein (X) ;
- * max : minutes de vol au-delà desquelles l'hélico ne doit pas voler sans plein (Y, retour à la base compris) ;
+ * Ravitaillement (plein à la base) : paramètres normalisés, null si l'autonomie n'est pas limitée (0).
+ * max : autonomie, minutes de vol au plus entre deux pleins (retour à la base compris) ;
  * dur : durée du plein ; off : moteur coupé pendant le plein (redémarrage payant), sinon moteur allumé (tarif standby).
  */
 export function refuelParams(p) {
-  if (!p.refuelEnabled || !(p.refuelMaxFly > 0)) return null;
-  return { min: Math.max(0, Math.min(p.refuelMinFly ?? 0, p.refuelMaxFly)), max: p.refuelMaxFly, dur: Math.max(0, p.refuelMin ?? 0), off: p.refuelEngineOff !== false };
+  if (!(p.autonomyMin > 0)) return null;
+  return { max: p.autonomyMin, dur: Math.max(0, p.refuelMin ?? 0), off: p.refuelEngineOff !== false };
 }
 
 /**
@@ -137,9 +136,9 @@ export function refuelParams(p) {
  * À chaque étape, l'hélico sert le groupe qui minimise
  *   début du chargement + prio[g] + lambda * (coût marginal / tarif vol) − urgence (attente client proche du max),
  * puis on « exécute » la rotation. Renvoie le coût et, si record, la liste des rotations.
- * Ravitaillement : le plein se fait à la base, hélico vide, en allant chercher le groupe suivant (avant qu'il embarque).
- * Obligatoire avant une rotation qui, retour à la base compris, dépasserait Y min de vol depuis le dernier plein ;
- * possible dès X min de vol (le recuit règle fuelGain : bonus, en minutes, d'un plein fait plus tôt que nécessaire).
+ * Ravitaillement : le plein se fait à la base, hélico vide, en allant chercher le groupe suivant (avant qu'il embarque),
+ * à n'importe quel moment. Obligatoire avant une rotation qui, retour à la base compris, dépasserait l'autonomie ;
+ * sinon retenu s'il est assez intéressant : bonus fuelGain (min, réglé par le recuit) × part de l'autonomie consommée.
  */
 export function decode(inst, sol, record = false) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, st = inst.start;
@@ -150,9 +149,9 @@ export function decode(inst, sol, record = false) {
   const occEnd = new Float64Array(R).fill(-1e9);
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
   let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0, stopLate = 0, visitLate = 0;
-  // Ravitaillement : fuel = minutes de vol depuis le dernier plein ; fuelEarly / fuelOver : écarts à la plage [X, Y].
+  // Ravitaillement : fuel = minutes de vol depuis le dernier plein ; fuelOver : vol au-delà de l'autonomie.
   const rf = refuelParams(p), fuelGain = rf ? sol.fuelGain ?? 10 : 0;
-  let fuel = st?.heli.fuel ?? 0, fuelEarly = 0, fuelOver = 0, refuels = 0;
+  let fuel = st?.heli.fuel ?? 0, fuelOver = 0, refuels = 0;
   // Passage à la base demandé pour un groupe (exploitation) : { by (arrivée à la base au plus tard), dur (pause) }.
   const gVisit = new Array(G).fill(null);
   const lifts = record ? [] : null;
@@ -226,12 +225,13 @@ export function decode(inst, sol, record = false) {
         return { s, start, w, c, fuel: fu, over: rf ? Math.max(0, fu + back - rf.max) : 0, refuelAt };
       };
       let best = option(hl, ht, hs, pre, f0, -1);
-      if (rf && g !== carry && stopAt < 0 && (best.over > 1e-9 || f0 >= rf.min - 1e-9)) {
+      if (rf && g !== carry && stopAt < 0 && f0 > 1e-9) {
         // Plein d'abord : vol vers la base (s'il n'y est pas), plein, puis vers le groupe. Obligatoire si la rotation ne
-        // tient pas dans l'autonomie ; sinon retenu s'il est assez intéressant (bonus fuelGain).
+        // tient pas dans l'autonomie ; sinon retenu s'il est assez intéressant (bonus d'autant plus fort que le réservoir
+        // est entamé).
         const dB = tau[hl * N], at = ht + dB;
         const r = option(BASE, at + rf.dur, !rf.off, pre + p.flyRate * dB + (rf.off ? 0 : p.standbyRate * rf.dur), 0, at);
-        if (best.over > 1e-9 ? r.over < best.over - 1e-9 : r.s - fuelGain < best.s) best = r;
+        if (best.over > 1e-9 ? r.over < best.over - 1e-9 : r.s - fuelGain * f0 / rf.max < best.s) best = r;
       }
       if (best.s < bS) { bS = best.s; bg = g; bStart = best.start; bW = best.w; bC = best.c; bStop = stopAt; bD = d; bVisit = visit; bRef = best.refuelAt; bFuel = best.fuel; }
     }
@@ -242,7 +242,6 @@ export function decode(inst, sol, record = false) {
     if (bStop >= 0) doStop(bStop);
     if (bRef >= 0) {                                         // plein à la base avant d'aller chercher le groupe
       const fb = fuel + tau[hL * N];
-      if (fb < rf.min - 1e-9) fuelEarly += rf.min - fb;
       if (fb > rf.max + 1e-9) fuelOver += fb - rf.max;
       refuels++;
       if (record) lifts.push({ group: -1, from: BASE, to: BASE, start: bRef, end: bRef + rf.dur, run: -1, refuel: true, engineOff: rf.off, flown: fb });
@@ -289,11 +288,10 @@ export function decode(inst, sol, record = false) {
   if (stopLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * stopLate;
   if (visitLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * visitLate;
   if (fuelOver > 1e-9) penalty += FUEL_PENALTY.fixed + FUEL_PENALTY.perUnit * fuelOver;
-  if (fuelEarly > 1e-9) penalty += FUEL_PENALTY.fixed + FUEL_PENALTY.perUnit * fuelEarly;
   // Stabilité (exploitation) : chaque modification du plan précédent coûte changePenalty ; un nouveau plan n'est retenu
   // que s'il fait gagner davantage.
   const change = inst.ref && p.changePenalty > 0 ? p.changePenalty * planChanges(sol.seq, inst.ref) : 0;
-  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, visitLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6 && visitLate < 1e-6 && fuelOver < 1e-6 && fuelEarly < 1e-6, lifts, clientWait, waitExcess, closed, repeats, fuelOver, fuelEarly, refuels };
+  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, visitLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6 && visitLate < 1e-6 && fuelOver < 1e-6, lifts, clientWait, waitExcess, closed, repeats, fuelOver, refuels };
 }
 
 /**

@@ -896,7 +896,7 @@ function renderHeliCard() {
   }
   // Ravitaillement : vol depuis le dernier plein, prochain plein prévu.
   const rf = refuelParams(day.params), rs = rf ? v.sch.heliSeg.find(x => x.type === 'refuel' && x.t0 >= t - 1e-9) : null;
-  const fuelTxt = rf && !(s.stopUntil != null && s.stopUntil > t) ? `<div class="hs-fuel ${s.flown > rf.max - 5 ? 'warn' : ''}">⛽ ${Math.round(s.flown)} / ${rf.max} min de vol depuis le plein${rs ? ` · plein prévu ${fmt(rs.t0)}` : ''}</div>` : '';
+  const fuelTxt = rf && !(s.stopUntil != null && s.stopUntil > t) ? `<div class="hs-fuel ${s.flown > rf.max - 5 ? 'warn' : ''}">⛽ ${Math.round(s.flown)} / ${rf.max} min de vol depuis le plein (autonomie)${rs ? ` · plein prévu ${fmt(rs.t0)}` : ''}</div>` : '';
   const stopTxt = stop ? `<div class="hs-stop">⛽ Passage base demandé : avant <b>${fmt(stop.by)}</b>, ${stop.dur} min <button data-a="fuel">modifier</button></div>` : '';
   // Redessinée à chaque tic (heures « dans x min ») mais seulement si elle change : un bouton n'est pas recréé sous le doigt.
   const html = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${auto}${stopTxt}${fuelTxt}${btns ? `<div class="hs-btns">${btns}</div>` : ''}`;

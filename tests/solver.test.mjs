@@ -12,7 +12,7 @@ import loadHighs from '../lib/highs/highs.mjs';
 
 const ds = generateDataset({ seed: 42 });
 // Le MILP ne modélise pas le ravitaillement : comparaisons heuristique / MILP sans plein.
-const NO_FUEL = { ...DEFAULT_PARAMS, refuelEnabled: false };
+const NO_FUEL = { ...DEFAULT_PARAMS, autonomyMin: 0 };
 
 test('jeu de données : 50 descentes dans un rayon de 15 km', () => {
   assert.equal(ds.runs.length, 50);
@@ -183,7 +183,8 @@ test('effort borné en temps (timeMs) : durée respectée, solution faisable', (
 });
 
 test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standby long, jamais plus cher', () => {
-  const off = { ...DEFAULT_PARAMS, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
+  // Sans plein : sinon l'hélico profite de l'attente pour aller faire le plein à la base au lieu de tourner en l'air.
+  const off = { ...NO_FUEL, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
   const one = DEFAULT_GROUPS.slice(0, 1);                    // 1 groupe : l'hélico attend pendant chaque descente
   const instOff = buildInstance(ds, off, one), instOn = buildInstance(ds, on, one);
   const sol = solveSA(instOff, { seed: 1, iterations: 10000, restarts: 2 }).sol;
@@ -217,7 +218,7 @@ test('robustesse : instance serrée (fin 13 h), toutes les graines faisables', (
   }
 });
 
-test('ravitaillement : plein à la base, hélico vide, entre X et Y min de vol ; vérifié et compté', () => {
+test('ravitaillement : plein à la base, hélico vide, jamais plus que l’autonomie sans plein ; vérifié et compté', () => {
   const flown = (segs) => {                              // minutes de vol entre deux pleins (retour base compris)
     const out = []; let f = 0;
     for (const s of segs) {
@@ -227,17 +228,13 @@ test('ravitaillement : plein à la base, hélico vide, entre X et Y min de vol ;
     out.push({ f, refuel: false });
     return out;
   };
-  for (const extra of [{ refuelMinFly: 30, refuelMaxFly: 60 }, { refuelMinFly: 20, refuelMaxFly: 35, refuelEngineOff: false },
-    { refuelMinFly: 15, refuelMaxFly: 30, refuelMin: 12, maxClientWait: 30 }]) {
+  for (const extra of [{ autonomyMin: 60 }, { autonomyMin: 35, refuelEngineOff: false }, { autonomyMin: 30, refuelMin: 12, maxClientWait: 30 }]) {
     const { inst, d, sch, checks } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 3);
     for (const c of checks) assert.ok(c.ok, `${JSON.stringify(extra)} ${c.label} : ${c.errors.join(', ')}`);
     assert.ok(d.feasible, JSON.stringify(extra));
     assert.ok(Math.abs(d.cost - sch.cost) < 1e-6);
     assert.ok(sch.totals.refuels >= 1 && sch.totals.refuels === d.refuels, `${JSON.stringify(extra)} : ${sch.totals.refuels} plein(s)`);
-    for (const x of flown(sch.heliSeg)) {
-      assert.ok(x.f <= extra.refuelMaxFly + 1e-6, `${JSON.stringify(extra)} : ${x.f} min sans plein`);
-      if (x.refuel) assert.ok(x.f >= extra.refuelMinFly - 1e-6, `${JSON.stringify(extra)} : plein après ${x.f} min`);
-    }
+    for (const x of flown(sch.heliSeg)) assert.ok(x.f <= extra.autonomyMin + 1e-6, `${JSON.stringify(extra)} : ${x.f} min sans plein`);
     sch.heliSeg.forEach((s, k) => {
       if (s.type !== 'refuel') return;
       assert.equal(s.from, 0); assert.equal(s.engineOff, extra.refuelEngineOff !== false);
@@ -250,18 +247,21 @@ test('ravitaillement : plein à la base, hélico vide, entre X et Y min de vol ;
   // Sans ravitaillement : aucun plein ; un plan qui vole trop longtemps sans plein est signalé.
   const off = solveAndCheck(NO_FUEL);
   assert.equal(off.sch.totals.refuels, 0);
-  const tight = buildInstance(ds, { ...DEFAULT_PARAMS, refuelMinFly: 30, refuelMaxFly: 60 }, DEFAULT_GROUPS);
+  const tight = buildInstance(ds, { ...DEFAULT_PARAMS, autonomyMin: 60 }, DEFAULT_GROUPS);
   assert.ok(validateSchedule(tight, off.sch).some(c => !c.ok && /sans plein/.test(c.errors.join(' '))));
 });
 
 test('ravitaillement : plein obligatoire avant une rotation hors d’autonomie, pénalité si impossible', () => {
-  const params = { ...DEFAULT_PARAMS, refuelMinFly: 10, refuelMaxFly: 40 };
-  const inst = buildInstance(ds, params, DEFAULT_GROUPS);
-  const sol = solveSA(inst, { seed: 1, iterations: 4000, restarts: 1 }).sol;
-  const d = decode(inst, sol, true);
-  assert.ok(d.refuels >= 1 && d.fuelOver === 0 && d.fuelEarly === 0);
-  // Plein interdit avant 39 min de vol alors que l'autonomie est de 40 : la journée n'est plus faisable sans écart.
-  const strict = buildInstance(ds, { ...params, refuelMinFly: 39.9 }, DEFAULT_GROUPS);
-  const ds2 = decode(strict, sol, true);
-  assert.ok(!ds2.feasible && ds2.fuelOver + ds2.fuelEarly > 0 && ds2.penalty > 0);
+  const inst = buildInstance(ds, { ...DEFAULT_PARAMS, autonomyMin: 40 }, DEFAULT_GROUPS);
+  // Même sans bonus de plein anticipé (fuelGain = 0), le décodeur insère les pleins nécessaires.
+  for (const fuelGain of [0, 10, 80]) {
+    const sol = { ...solveSA(inst, { seed: 1, iterations: 4000, restarts: 1 }).sol, fuelGain };
+    const d = decode(inst, sol, true);
+    assert.ok(d.refuels >= 1 && d.fuelOver === 0, `fuelGain ${fuelGain} : ${d.refuels} plein(s), ${d.fuelOver} min de trop`);
+  }
+  // Autonomie plus courte qu'une rotation (aller-retour base compris) : dépassement pénalisé, solution infaisable.
+  const tiny = buildInstance(ds, { ...DEFAULT_PARAMS, autonomyMin: 3 }, DEFAULT_GROUPS);
+  const d2 = decode(tiny, solveSA(tiny, { seed: 1, iterations: 500, restarts: 1 }).sol, true);
+  assert.ok(!d2.feasible && d2.fuelOver > 0 && d2.penalty > 0);
+  assert.ok(validateSchedule(tiny, buildSchedule(tiny, d2.lifts)).some(c => !c.ok && /sans plein/.test(c.errors.join(' '))));
 });

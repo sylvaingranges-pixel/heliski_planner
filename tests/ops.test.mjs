@@ -360,7 +360,7 @@ test('exploitation : dépose avec temps de descente annoncé, arrêt / vol, alti
 });
 
 test('exploitation : ravitaillement — l’hélico fait le plein prévu, le compteur de vol repart de zéro', () => {
-  const params = { ...P, refuelMinFly: 25, refuelMaxFly: 45 };
+  const params = { ...P, autonomyMin: 45 };
   const { day } = startDay(params);
   let maxFlown = 0;
   const st = runDay(day, {
@@ -374,13 +374,13 @@ test('exploitation : ravitaillement — l’hélico fait le plein prévu, le com
   const refuels = day.events.filter(e => e.type === 'stopStart' && e.refuel);
   assert.ok(refuels.length >= 1, 'aucun plein fait');
   assert.ok(refuels.every(e => e.dur === params.refuelMin));
-  assert.ok(maxFlown <= params.refuelMaxFly + 1e-6, `${maxFlown} min de vol sans plein`);
+  assert.ok(maxFlown <= params.autonomyMin + 1e-6, `${maxFlown} min de vol sans plein`);
   // Juste après un plein : compteur à zéro ; les pleins se font hélico vide.
   for (const e of refuels) {
     const k = day.events.indexOf(e), before = day.events.slice(0, k);
     const s = deriveState({ ...day, events: before }, dayGeo(day, ds), e.t);
     assert.ok(s.heli.onboard < 0, 'plein avec un groupe à bord');
-    assert.ok(s.heli.flown >= params.refuelMinFly - 1e-6, `plein après ${s.heli.flown} min seulement`);
+    assert.ok(s.heli.flown > 0 && s.heli.flown <= params.autonomyMin + 1e-6, `plein après ${s.heli.flown} min de vol`);
     assert.equal(deriveState({ ...day, events: day.events.slice(0, k + 1) }, dayGeo(day, ds), e.t + 1).heli.flown, 0);
   }
   st.groups.forEach((g, i) => assert.ok(g.vert >= groups[i].target, `${groups[i].name} : ${g.vert}`));

@@ -7,9 +7,9 @@ import { initOps, showOps } from './ops-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
-// Onglet Paramètres : hélicoptère (tarifs, vitesses, chargement) ; Planification : journée et ravitaillement.
+// Onglet Paramètres : hélicoptère (tarifs, vitesses, chargement, autonomie, plein) ; Planification : journée.
 const PARAM_KEYS = ['flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait',
-  'refuelMinFly', 'refuelMaxFly', 'refuelMin'];
+  'autonomyMin', 'refuelMin'];
 const STORE = 'heliski-planner-prod-v1';
 // Niveaux d'effort de l'optimisation : durée totale visée (s). Le temps est réparti en chaînes de recuit d'environ 1 s,
 // en parallèle sur les cœurs disponibles : plus d'effort = plus de chaînes indépendantes, on garde la meilleure.
@@ -76,7 +76,7 @@ function bindParams() {
     const e = $('p-' + k); e.value = fmt(state.params[k]);
     e.onchange = () => { const [h, m] = e.value.split(':').map(Number); if (!Number.isNaN(h)) { state.params[k] = h * 60 + (m || 0); paramsChanged(); } };
   }
-  for (const k of ['exclusiveRuns', 'allowBaseShutdown', 'allowFieldShutdown', 'refuelEnabled', 'refuelEngineOff']) {
+  for (const k of ['exclusiveRuns', 'allowBaseShutdown', 'allowFieldShutdown', 'refuelEngineOff']) {
     const e = $('p-' + k); e.checked = !!state.params[k];
     e.onchange = () => { state.params[k] = e.checked; paramsChanged(); };
   }
@@ -108,18 +108,6 @@ function renderGroupsTable() {
 }
 
 function paramsChanged() { save(); rebuild(); reevaluate(); }
-
-/** Ravitaillement : champs actifs seulement si les pleins sont planifiés ; pleins du planning affiché. */
-function renderRefuelInfo() {
-  const on = !!state.params.refuelEnabled;
-  $('refuel-fields').querySelectorAll('input').forEach(e => { e.disabled = !on; });
-  $('p-refuelEngineOff').disabled = !on;
-  const rf = refuelParams(state.params), el = $('refuel-info');
-  if (!rf) { el.textContent = on ? 'Autonomie (plein avant) à renseigner.' : 'Pas de plein planifié : autonomie illimitée.'; return; }
-  const segs = state.cur?.sch.heliSeg.filter(x => x.type === 'refuel') ?? [];
-  el.innerHTML = `Plein entre ${rf.min} et ${rf.max} min de vol, ${rf.dur} min à la base` +
-    (state.cur ? ` · ${segs.length ? `plein${segs.length > 1 ? 's' : ''} à ${segs.map(x => fmt(x.t0)).join(', ')}` : 'aucun plein nécessaire'} (${Math.round(state.cur.sch.flyMin)} min de vol au total)` : '');
-}
 function groupsChanged(structural = false) {
   save(); renderGroupsTable(); rebuild(); renderDayInfo();
   if (structural) { state.cur = null; state.results = []; renderAll(); } else reevaluate();
@@ -344,7 +332,7 @@ function syncPlayButtons() {
 
 function renderAll() {
   if (!state.cur && playTimer) stopPlay();
-  renderKpis(); renderMapView(); renderGanttView(); renderChecks(); renderGroupsSub(); renderOps(); renderCompare(); renderRefuelInfo(); updateTime();
+  renderKpis(); renderMapView(); renderGanttView(); renderChecks(); renderGroupsSub(); renderOps(); renderCompare(); updateTime();
 }
 
 function renderKpis() {

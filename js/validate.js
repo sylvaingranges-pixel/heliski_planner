@@ -61,8 +61,7 @@ export function validateSchedule(inst, sch) {
     });
     add(`Chargement ${p.loadMin} min / déchargement ${p.unloadMin} min, 1 groupe à bord`, e);
   }
-  // 4b. Ravitaillement : plein à la base, hélico vide, entre X et Y min de vol depuis le précédent ; jamais plus de Y min
-  // de vol sans plein (retour à la base compris).
+  // 4b. Ravitaillement : plein à la base, hélico vide ; jamais plus que l'autonomie en vol sans plein (retour base compris).
   const rf = refuelParams(p);
   if (rf || segs.some(s => s.type === 'refuel')) {
     const e = [];
@@ -76,15 +75,14 @@ export function validateSchedule(inst, sch) {
       if (s.type === 'parked' && s.stop) flown = 0;                       // passage base demandé : plein
       if (s.type !== 'refuel') continue;
       n++;
-      if (!rf) { e.push(`plein à ${fmt(s.t0)} alors que le ravitaillement est désactivé`); continue; }
+      if (!rf) { e.push(`plein à ${fmt(s.t0)} alors que l’autonomie n’est pas limitée`); continue; }
       if (s.from !== BASE || s.to !== BASE) e.push(`plein hors de la base à ${fmt(s.t0)}`);
       if (onboard) e.push(`plein avec un groupe à bord à ${fmt(s.t0)}`);
       if (Math.abs(s.t1 - s.t0 - rf.dur) > EPS) e.push(`plein ${fmt(s.t0)} : durée ${(s.t1 - s.t0).toFixed(1)} ≠ ${rf.dur} min`);
-      if (flown >= 0 && flown < rf.min - EPS) e.push(`plein à ${fmt(s.t0)} après ${flown.toFixed(0)} min de vol seulement (min ${rf.min})`);
       if (!!s.engineOff !== rf.off) e.push(`plein ${fmt(s.t0)} : moteur ${s.engineOff ? 'coupé' : 'allumé'}`);
       flown = 0;
     }
-    add(rf ? `Plein à la base, hélico vide, après ${rf.min} min et avant ${rf.max} min de vol (${n} plein${n > 1 ? 's' : ''})` : 'Pas de plein (ravitaillement désactivé)', e);
+    add(rf ? `Autonomie ${rf.max} min : plein à la base, hélico vide, jamais plus de ${rf.max} min de vol sans plein (${n} plein${n > 1 ? 's' : ''})` : 'Pas de plein (autonomie non limitée)', e);
   }
   // 5. Cohérence groupes : chaque transport du groupe correspond à un vol chargé d'un hélico.
   const loadedFlights = segs.filter(s => s.type === 'flightLoaded');

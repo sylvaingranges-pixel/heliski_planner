@@ -20,18 +20,19 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
   Le jeu modifié est mémorisé dans le navigateur ; le jeu de base n'est jamais modifié.
 - **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui. Sur la carte, mode *Sélection d'itinéraires*
   (clic, rectangle ou lasso) ; dans l'onglet *Itinéraires*, filtres altitude du sommet / du fond, dénivelé min., difficulté.
-- **Onglets** : *Planification* (résolution, descentes du jour, groupes, journée : horaires et attente des clients,
-  ravitaillement), *Itinéraires* (jeu de descentes, filtres, import / export), *Paramètres* (paramètres de base de
-  l'hélicoptère : tarifs vol / standby, démarrage moteur, standby max, chargement / déchargement, vitesse, montée,
-  décollage + approche, arrêts moteur autorisés), *Exploitation*.
-- **Ravitaillement (plein)** en cours de journée, réglé dans *Planification* : plein après **X** min de vol depuis le
-  dernier plein (pas avant) et au plus tard avant **Y** min de vol (retour à la base compris), durée du plein, moteur
-  coupé (redémarrage payant) ou allumé (tarif standby). Le plein se fait à la base, hélico vide : typiquement en allant
-  rechercher un groupe, avant qu'il embarque (vol vers la base, plein, puis vers le point de reprise), ou quand l'hélico
-  passe par la base. Le décodeur l'impose avant toute rotation qui sortirait de l'autonomie, et peut l'avancer dès X min
-  quand c'est intéressant (bonus réglé par le recuit). Le vérificateur contrôle la plage [X, Y], la base, l'hélico vide
-  et la durée ; carte *Pleins* dans les indicateurs, segment turquoise dans le planning, ligne ⛽ dans le journal.
-  Le départ du matin se fait plein fait.
+- **Onglets** : *Planification* (résolution, descentes du jour, groupes, journée : horaires et attente des clients),
+  *Itinéraires* (jeu de descentes, filtres, import / export), *Paramètres* (paramètres de base de l'hélicoptère :
+  tarifs vol / standby, démarrage moteur, standby max, chargement / déchargement, vitesse, montée, décollage + approche,
+  autonomie, durée du plein, arrêts moteur autorisés), *Exploitation*.
+- **Ravitaillement (plein)** en cours de journée : un seul paramètre, l'**autonomie** (minutes de vol au plus entre deux
+  pleins, retour à la base compris ; 0 = illimitée), avec la durée du plein et moteur coupé (redémarrage payant) ou
+  allumé (tarif standby), dans *Paramètres*. L'optimisation ajoute les pleins où elle veut, du moment qu'aucun bloc de vol
+  sans plein ne dépasse l'autonomie. Le plein se fait à la base, hélico vide : typiquement en allant rechercher un groupe,
+  avant qu'il embarque (vol vers la base, plein, puis vers le point de reprise), ou quand l'hélico passe par la base.
+  Le décodeur l'impose avant toute rotation qui sortirait de l'autonomie, et peut l'avancer quand c'est intéressant
+  (bonus réglé par le recuit, d'autant plus fort que le réservoir est entamé). Le vérificateur contrôle l'autonomie,
+  la base, l'hélico vide et la durée ; carte *Pleins* dans les indicateurs, segment turquoise dans le planning, ligne ⛽
+  dans le journal. Le départ du matin se fait plein fait.
 - **Arrêt moteur** à chaque dépose / reprise (option, active par défaut) et / ou à la base : l'attente moteur coupé est
   gratuite mais chaque redémarrage coûte le prix d'un démarrage ; l'heuristique ne coupe que si c'est moins cher que le
   standby ou le vol d'attente, et le vérificateur le contrôle.
@@ -124,14 +125,14 @@ réel, une connexion est nécessaire ; sans connexion, repli sur un jeu synthét
 Temps de vol = 1 min + max(distance / 180 km/h, montée / 400 m/min).
 4 groupes (forfaits 10 000 m / 5 j, 12 000 m / 5 j, 15 000 m / 5 j, 10 000 m / 4 j → 2 000, 2 400, 3 000, 2 500 m/jour),
 1 hélicoptère, 20.–/min en vol, 8.–/min en standby, 100.– par démarrage moteur, 6 + 6 min de chargement / déchargement,
-standby ≤ 5 min, attente des clients au fond ≤ 20 min, 9 h – 15 h, plein entre 30 et 60 min de vol (8 min, moteur coupé).
+standby ≤ 5 min, attente des clients au fond ≤ 20 min, 9 h – 15 h, autonomie 60 min de vol (plein de 8 min, moteur coupé).
 L'hélico peut couper le moteur à chaque dépose / reprise (attente gratuite, redémarrage 100.–) : plus de vol d'attente ni de standby long.
 
 | Résultat sur le jeu de base (Node, chaînes de ~0,9 s comme dans le navigateur à 3 workers) | Coût hélico |
 |---|---|
-| Rapide (6 chaînes), plein entre 30 et 60 min de vol | ~CHF 3 490 (15 rotations, 1 plein vers 11 h 40, 2 démarrages, retour vers 13 h 50) |
-| Moyen (30 chaînes), plein entre 30 et 60 min de vol | ~CHF 3 480 (15 rotations, 1 plein vers 11 h 40, 2 démarrages) |
-| Sans ravitaillement : Rapide | ~CHF 3 340 (15 rotations, 2 démarrages, retour vers 13 h 50) |
+| Rapide (6 chaînes), autonomie 60 min | ~CHF 3 500 (15 rotations, 1 plein vers 11 h 30, 2 démarrages, retour vers 13 h 50) |
+| Moyen (30 chaînes), autonomie 60 min | ~CHF 3 480 (15 rotations, 1 plein vers 11 h 40, 2 démarrages) |
+| Sans ravitaillement (autonomie 0) : Rapide | ~CHF 3 340 (15 rotations, 2 démarrages, retour vers 13 h 50) |
 | Sans ravitaillement : Moyen | ~CHF 3 260 (14 rotations, 2 démarrages, 0 min de vol d'attente) |
 | Sans ravitaillement ni arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 340 (1 démarrage, ~12 min de standby) |
 

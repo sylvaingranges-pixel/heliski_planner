@@ -75,19 +75,7 @@
             <label><span>Attente max au fond (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps d’attente maximum d’un groupe au fond d’une descente avant d’être repris ; 0 = illimité.">?</i></span> <input type="number" id="p-maxClientWait" step="5" min="0"></label>
           </div>
           <label class="check"><input type="checkbox" id="p-exclusiveRuns"> Une descente = un seul groupe à la fois&nbsp;<i class="help" tabindex="0" data-tip="Interdit à deux groupes de skier la même descente en même temps.">?</i></label>
-          <p class="muted small" style="margin:6px 0 0">Tarifs, vitesses, chargement et arrêts moteur de l’hélico : onglet <i>Paramètres</i>.</p>
-        </details>
-
-        <details open>
-          <summary>Ravitaillement (plein)</summary>
-          <label class="check"><input type="checkbox" id="p-refuelEnabled"> Planifier les pleins en cours de journée&nbsp;<i class="help" tabindex="0" data-tip="Le plein se fait à la base, hélico vide : en allant chercher un groupe, avant qu’il embarque (ou à la base quand l’hélico y passe).">?</i></label>
-          <div class="grid2" id="refuel-fields">
-            <label><span>Plein après (min de vol)&nbsp;<i class="help" tabindex="0" data-tip="X : pas de plein avant X minutes de vol depuis le dernier plein (ou depuis le départ du matin, plein fait).">?</i></span> <input type="number" id="p-refuelMinFly" step="5" min="0"></label>
-            <label><span>Plein avant (min de vol)&nbsp;<i class="help" tabindex="0" data-tip="Y : jamais plus de Y minutes de vol sans plein, retour à la base compris (autonomie).">?</i></span> <input type="number" id="p-refuelMaxFly" step="5" min="1"></label>
-            <label><span>Durée du plein (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps passé à la base pour faire le plein.">?</i></span> <input type="number" id="p-refuelMin" step="1" min="0"></label>
-          </div>
-          <label class="check"><input type="checkbox" id="p-refuelEngineOff"> Moteur coupé pendant le plein&nbsp;<i class="help" tabindex="0" data-tip="Coché : moteur coupé, redémarrage payant. Décoché : plein moteur allumé, au tarif standby.">?</i></label>
-          <div id="refuel-info" class="muted small"></div>
+          <p class="muted small" style="margin:6px 0 0">Tarifs, vitesses, chargement, autonomie et arrêts moteur de l’hélico : onglet <i>Paramètres</i>.</p>
         </details>
 
       </aside>
@@ -157,7 +145,7 @@
       <div class="card params-card">
         <div class="card-head"><h3>Hélicoptère &amp; coûts</h3></div>
         <p class="muted small" style="margin:0 0 10px">Paramètres de base de l’hélicoptère, communs à toutes les journées. Les réglages propres à la journée
-          (horaires, attente des clients, pleins) sont dans l’onglet <i>Planification</i>.</p>
+          (horaires, attente des clients) sont dans l’onglet <i>Planification</i>.</p>
         <div class="grid2">
           <label><span>Vol (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute de vol (moteur allumé, en l’air).">?</i></span> <input type="number" id="p-flyRate" step="1"></label>
           <label><span>Standby (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute au sol, moteur au ralenti (attente moteur allumé).">?</i></span> <input type="number" id="p-standbyRate" step="1"></label>
@@ -168,8 +156,11 @@
           <label><span>Vitesse (km/h)&nbsp;<i class="help" tabindex="0" data-tip="Vitesse de croisière horizontale de l’hélico.">?</i></span> <input type="number" id="p-heliSpeedKmh"></label>
           <label><span>Montée (m/min)&nbsp;<i class="help" tabindex="0" data-tip="Vitesse de montée verticale : le temps de vol d’un segment est le plus long entre la distance horizontale et le dénivelé à gravir.">?</i></span> <input type="number" id="p-climbRate"></label>
           <label><span>Décollage+appr. (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps ajouté à chaque vol pour le décollage et l’approche.">?</i></span> <input type="number" id="p-flightOverhead" step="0.5"></label>
+          <label><span>Autonomie (min de vol)&nbsp;<i class="help" tabindex="0" data-tip="Minutes de vol au plus entre deux pleins, retour à la base compris. L’optimisation place les pleins (à la base, hélico vide, avant qu’un groupe embarque) où elle veut tant qu’aucun bloc de vol ne dépasse l’autonomie. 0 = illimitée, pas de plein.">?</i></span> <input type="number" id="p-autonomyMin" step="5" min="0"></label>
+          <label><span>Durée du plein (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps passé à la base pour faire le plein.">?</i></span> <input type="number" id="p-refuelMin" step="1" min="0"></label>
         </div>
         <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée&nbsp;<i class="help" tabindex="0" data-tip="L’hélico peut couper le moteur à la base entre deux rotations (0.-/min), le redémarrage est payant.">?</i></label>
+        <label class="check"><input type="checkbox" id="p-refuelEngineOff"> Moteur coupé pendant le plein&nbsp;<i class="help" tabindex="0" data-tip="Coché : moteur coupé, redémarrage payant. Décoché : plein moteur allumé, au tarif standby.">?</i></label>
         <label class="check"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise&nbsp;<i class="help" tabindex="0" data-tip="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long.">?</i></label>
       </div>
     </section>

@@ -90,9 +90,7 @@ export const DEFAULT_PARAMS = {
   clientWaitPenalty: 0, // CHF / min d'attente client (0 = coût pur hélico)
   maxClientWait: 20,    // attente max d'un groupe au fond d'une descente (min), 0 = illimitée
   // Ravitaillement en cours de journée : plein à la base, hélico vide (en allant chercher un groupe, avant qu'il embarque).
-  refuelEnabled: true,  // planifier les pleins
-  refuelMinFly: 30,     // X : pas de plein avant X min de vol depuis le dernier plein
-  refuelMaxFly: 60,     // Y : au plus Y min de vol entre deux pleins (retour à la base compris)
+  autonomyMin: 60,      // autonomie : au plus 60 min de vol entre deux pleins (retour à la base compris) ; 0 = illimitée
   refuelMin: 8,         // durée du plein (min)
   refuelEngineOff: true, // moteur coupé pendant le plein (redémarrage payant) ; sinon moteur allumé (tarif standby)
 };
