@@ -5,11 +5,11 @@
 //   déduits), ou en simulation il suit le plan et les mêmes questions sont posées.
 // - À chaque événement : état réel → suite de la journée re-décodée tout de suite, puis ré-optimisée en arrière-plan
 //   (workers) en partant du plan en cours ; un nouveau plan n'est adopté que s'il gagne plus que le seuil de stabilité.
-import { BASE, planChanges } from './model.js';
+import { BASE, planChanges, refuelParams } from './model.js';
 import {
   newDay, addEvent, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
   dropCandidates, nearestRuns, nearNode, heliPosition, heliMotion, terrainAlt, displaySchedule, planAlerts, liveFix,
-  onboardArrival, redirectCarry, NEAR_KM, GROUND_ALT_TOL,
+  onboardArrival, redirectCarry, nextRefuel, refuelEvent, NEAR_KM, GROUND_ALT_TOL,
 } from './ops.js';
 import { createMapView, renderGantt, runPath, alongPath, HELI_COLOR, HELI_ICON, GROUP_COLORS } from './render.js';
 import { toLatLon, toXY } from './terrain.js';
@@ -316,7 +316,7 @@ function arriveAt(v, pos, t) {
 function simTrigger(v, tr) {
   ui.pendingSim = true;                                // si le pilote écarte la question, elle revient un peu plus tard
   if (tr.kind === 'fly') applyTrigger(day, v, tr);
-  else if (tr.kind === 'stop') { applyTrigger(day, v, tr); toast(`Arrêt base ${Math.round(tr.dur)} min (jusqu’à ${fmt(tr.t + tr.dur)})`, { kind: 'info' }); }
+  else if (tr.kind === 'stop') { applyTrigger(day, v, tr); toast(`${tr.refuel ? '⛽ Plein' : 'Arrêt base'} ${Math.round(tr.dur)} min (jusqu’à ${fmt(tr.t + tr.dur)})`, { kind: 'info' }); }
   else if (tr.kind === 'pickup') embarkSheet({ node: tr.node, t: tr.t, pos: geo.pts[tr.node] });
   else if (tr.kind === 'arrive') arriveAt(v, tr.dest >= 0 ? geo.pts[1 + tr.dest] : geo.pts[BASE], tr.t);
 }
@@ -391,10 +391,10 @@ function onLanding(pos, t) {
   const v = opsView(day, ds, t, { geo }), s = v.state.heli;
   if (s.onboard >= 0) {
     if (dist(pos, geo.pts[s.pickNode]) > NEAR_KM) arriveAt(v, pos, t);   // reposé au point de reprise : ignoré
-  } else if (day.stop && node === BASE) {
-    const dur = day.stop.dur;
-    addEvent(day, { type: 'stopStart', t, dur });
-    toast(`Arrêt base commencé (${dur} min)`, { action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
+  } else if (node === BASE && (day.stop || nextRefuel(v))) {
+    // Passage base demandé, ou plein prévu par le plan avant la prochaine reprise : il commence à l'atterrissage.
+    const rs = nextRefuel(v), ev = addEvent(day, rs ? refuelEvent(day, { t, dur: rs.t1 - rs.t0, refuel: true, hot: !rs.engineOff }) : { type: 'stopStart', t, dur: day.stop.dur });
+    toast(`${ev.refuel ? '⛽ Plein' : 'Arrêt base'} commencé (${Math.round(ev.dur)} min)`, { action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
   } else if (pickupCandidates(geo, v.state, pos).length) embarkSheet({ node: node >= 0 ? node : null, t, pos });
   afterEvent();
 }
@@ -676,7 +676,7 @@ const EV_LABEL = {
   adjust: (e) => `${esc(gname(e.group))} : ${e.delta > 0 ? 'retard +' : 'avance '}${e.delta} min`,
   changeRun: (e) => `${esc(gname(e.group))} skie ${runLabel(e.run, true)}`,
   groupEnd: (e) => `${esc(gname(e.group))} : fin de journée`,
-  stopStart: (e) => `Arrêt base ${Math.round(e.dur)} min`,
+  stopStart: (e) => `${e.refuel ? 'Plein à la base' : 'Arrêt base'} ${Math.round(e.dur)} min${e.hot ? ' (moteur allumé)' : ''}`,
   stopEnd: () => 'Fin de l’arrêt base',
   stopExtend: (e) => `Arrêt base +${e.delta} min`,
   fly: (e) => (e.from < 0 ? `Changement de cap en vol → ${nodeName(e.to)}` : `Vol vers ${nodeName(e.to)}`),
@@ -820,10 +820,11 @@ function agenda() {
   if (s.onboard >= 0) {
     const arr = onboardArrival(day, geo, v.state, v.now);
     now.push({ t: arr, icon: '▼', cls: 'now', text: s.dest >= 0 ? `Dépose ${gchip(s.onboard)} · ${runLabel(s.dest, true)}` : `${gchip(s.onboard)} à la base`, sub: s.dest >= 0 ? `sommet ${ds.runs[s.dest].top.alt} m · ${inMin(arr)}` : inMin(arr) });
-  } else if (s.stopUntil != null && s.stopUntil > v.now) now.push({ t: s.stopUntil, icon: '⛽', cls: 'now', text: 'Fin de l’arrêt base', sub: inMin(s.stopUntil) });
+  } else if (s.stopUntil != null && s.stopUntil > v.now) now.push({ t: s.stopUntil, icon: '⛽', cls: 'now', text: s.stopRefuel ? 'Fin du plein' : 'Fin de l’arrêt base', sub: inMin(s.stopUntil) });
   for (const l of [...v.d.lifts].sort((a, b) => a.start - b.start)) {
     if (l.carry) continue;                               // groupe à bord : déjà en tête (dépose)
     if (l.stop) { out.push({ t: l.start, icon: '⛽', text: `Base · arrêt ${Math.round(l.end - l.start)} min`, sub: `jusqu’à ${fmt(l.end)} · ${inMin(l.start)}`, cls: 'stop' }); continue; }
+    if (l.refuel) { out.push({ t: l.start, icon: '⛽', text: `Plein à la base · ${Math.round(l.end - l.start)} min`, sub: `après ${Math.round(l.flown)} min de vol · jusqu’à ${fmt(l.end)} · ${inMin(l.start)}`, cls: 'stop' }); continue; }
     const drop = l.end - p.unloadMin;
     out.push({ t: l.start, icon: '▲', text: `${gchip(l.group)} ${nodeName(l.from)} → ${l.run >= 0 ? `<b>${runLabel(l.run, true)}</b>` : `<b>base</b>${l.visit ? ` · pause ${l.pause} min` : ''}`}`, sub: `${l.run >= 0 ? 'dépose' : 'arrivée'} ${fmt(drop)} · ${inMin(l.start)}` });
   }
@@ -834,8 +835,8 @@ function agenda() {
       if (x.t1 <= v.now + 1e-9) return;
       const cur = x.t0 <= v.now;
       if (x.type === 'flight' && x.from !== x.to) {
-        const nx = segs.slice(k + 1).find(y => y.type === 'load' || y.type === 'flight' || (y.type === 'parked' && y.stop));
-        const why = nx?.type === 'load' && nx.from === x.to ? ` · reprise ${gchip(nx.group)}` : nx?.stop ? ' · arrêt base' : '';
+        const nx = segs.slice(k + 1).find(y => y.type === 'load' || y.type === 'flight' || y.type === 'refuel' || (y.type === 'parked' && y.stop));
+        const why = nx?.type === 'load' && nx.from === x.to ? ` · reprise ${gchip(nx.group)}` : nx?.type === 'refuel' ? ' · plein' : nx?.stop ? ' · arrêt base' : '';
         const end = x === last && x.to === BASE;
         out.push({
           t: x.t0, icon: end ? '⌂' : '✈', cls: 'empty' + (cur ? ' now' : ''),
@@ -878,7 +879,7 @@ function renderHeliCard() {
       btns = '<button class="ops-btn" data-a="dest">⇄ Destination</button>';
     }
   } else if (s.stopUntil != null && s.stopUntil > t) {
-    status = `<div class="hs-main">⛽ Arrêt à la base</div><div class="hs-sub">jusqu’à ${fmt(s.stopUntil)} (${inMin(s.stopUntil)})</div>`;
+    status = `<div class="hs-main">⛽ ${s.stopRefuel ? 'Plein à la base' : 'Arrêt à la base'}</div><div class="hs-sub">jusqu’à ${fmt(s.stopUntil)} (${inMin(s.stopUntil)})</div>`;
     btns = '<button class="ops-btn primary" data-a="stopEnd">Repartir maintenant</button><button class="ops-btn" data-a="stop+5">+5 min</button>';
   } else if (m.air) {
     const to = s.leg && s.leg.t1 > t ? ` → ${nodeName(s.leg.to)}` : '';
@@ -890,11 +891,15 @@ function renderHeliCard() {
     if (sug >= 0) btns = `<button class="ops-btn primary big" data-a="board" data-g="${sug}">▲ Embarquer ${esc(gname(sug))}</button>`
       + (cands.length > 1 || day.mode === 'gps' ? '<button class="ops-btn" data-a="pick">Autre groupe…</button>' : '');
     else if (day.mode === 'gps') btns = '<button class="ops-btn" data-a="pick">▲ Embarquer…</button>';
-    if (stop && m.node === BASE) btns += '<button class="ops-btn" data-a="stopNow">⛽ Arrêt base maintenant</button>';
+    if (m.node === BASE && nextRefuel(v)) btns += '<button class="ops-btn" data-a="refuelNow">⛽ Plein maintenant</button>';
+    else if (stop && m.node === BASE) btns += '<button class="ops-btn" data-a="stopNow">⛽ Arrêt base maintenant</button>';
   }
+  // Ravitaillement : vol depuis le dernier plein, prochain plein prévu.
+  const rf = refuelParams(day.params), rs = rf ? v.sch.heliSeg.find(x => x.type === 'refuel' && x.t0 >= t - 1e-9) : null;
+  const fuelTxt = rf && !(s.stopUntil != null && s.stopUntil > t) ? `<div class="hs-fuel ${s.flown > rf.max - 5 ? 'warn' : ''}">⛽ ${Math.round(s.flown)} / ${rf.max} min de vol depuis le plein${rs ? ` · plein prévu ${fmt(rs.t0)}` : ''}</div>` : '';
   const stopTxt = stop ? `<div class="hs-stop">⛽ Passage base demandé : avant <b>${fmt(stop.by)}</b>, ${stop.dur} min <button data-a="fuel">modifier</button></div>` : '';
   // Redessinée à chaque tic (heures « dans x min ») mais seulement si elle change : un bouton n'est pas recréé sous le doigt.
-  const html = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${auto}${stopTxt}${btns ? `<div class="hs-btns">${btns}</div>` : ''}`;
+  const html = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${auto}${stopTxt}${fuelTxt}${btns ? `<div class="hs-btns">${btns}</div>` : ''}`;
   if (html === ui.heliHtml) return;
   ui.heliHtml = html;
   $('ops-heli').style.setProperty('--c', HELI_COLOR);
@@ -914,6 +919,10 @@ function heliAction(a, g = -1) {
   else if (a === 'stopEnd') { addEvent(day, { type: 'stopEnd', t }); afterEvent(); }
   else if (a === 'stop+5') { addEvent(day, { type: 'stopExtend', delta: 5, t }); afterEvent(); }
   else if (a === 'stopNow' && rest && m.node === BASE && day.stop) { addEvent(day, { type: 'stopStart', t, dur: day.stop.dur }); afterEvent(); }
+  else if (a === 'refuelNow' && rest && m.node === BASE && s.onboard < 0) {
+    const rs = nextRefuel(v), rf = refuelParams(day.params);
+    if (rs || rf) { addEvent(day, refuelEvent(day, { t, dur: rs ? rs.t1 - rs.t0 : rf.dur, refuel: true, hot: rs ? !rs.engineOff : !rf.off })); afterEvent(); }
+  }
   else if (a === 'fuel') fuelSheet();
   else refresh(true);                                    // état changé entre-temps (décollage…) : on redessine
 }

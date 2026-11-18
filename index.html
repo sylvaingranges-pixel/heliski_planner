@@ -17,7 +17,8 @@
     <div class="brand"><img src="icons/icon.svg" alt="" width="28" height="28"><span>Heliski Planner</span></div>
     <nav class="tabs" role="tablist">
       <button class="tab active" data-view="plan" role="tab">Planification</button>
-      <button class="tab" data-view="data" role="tab">Données</button>
+      <button class="tab" data-view="data" role="tab">Itinéraires</button>
+      <button class="tab" data-view="params" role="tab">Paramètres</button>
       <button class="tab tab-ops" data-view="ops" role="tab">Exploitation</button>
     </nav>
     <button id="install" class="btn btn-ghost" hidden>Installer l’app</button>
@@ -48,7 +49,7 @@
         <details open>
           <summary>Descentes du jour</summary>
           <p class="muted small" style="margin:0 0 6px">Descentes réalisables aujourd’hui (neige, météo, avalanches…) :
-            l’optimisation ne travaille que sur celles-ci. Choix sur la carte, ou par filtres dans l’onglet <i>Données</i>.</p>
+            l’optimisation ne travaille que sur celles-ci. Choix sur la carte, ou par filtres dans l’onglet <i>Itinéraires</i>.</p>
           <div class="row" style="margin:0 0 6px">
             <button id="btn-day-select" class="btn">Sélectionner sur la carte</button>
             <button id="btn-day-all" class="btn btn-ghost">Toutes</button>
@@ -66,25 +67,27 @@
         </details>
 
         <details open>
-          <summary>Hélicoptère &amp; coûts</summary>
+          <summary>Journée</summary>
           <div class="grid2">
-            <label><span>Vol (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute de vol (moteur allumé, en l’air).">?</i></span> <input type="number" id="p-flyRate" step="1"></label>
-            <label><span>Standby (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute au sol, moteur au ralenti (attente moteur allumé).">?</i></span> <input type="number" id="p-standbyRate" step="1"></label>
-            <label><span>Standby max (min)&nbsp;<i class="help" tabindex="0" data-tip="Durée maximale d’attente au sol moteur allumé ; au-delà, l’hélico vole en attente ou coupe le moteur (si autorisé).">?</i></span> <input type="number" id="p-maxStandby" step="0.5"></label>
-            <label><span>Démarrage moteur (CHF)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’un cycle turbine : 1er départ du jour et chaque redémarrage après une coupure (base, dépose, reprise).">?</i></span> <input type="number" id="p-heliStartCost" step="10" min="0"></label>
-            <label><span>Chargement (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps d’embarquement d’un groupe (skieurs + matériel).">?</i></span> <input type="number" id="p-loadMin" step="0.5"></label>
-            <label><span>Déchargement (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps de débarquement d’un groupe au sommet.">?</i></span> <input type="number" id="p-unloadMin" step="0.5"></label>
             <label><span>Début&nbsp;<i class="help" tabindex="0" data-tip="Heure du premier décollage possible.">?</i></span> <input type="time" id="p-dayStart"></label>
             <label><span>Fin&nbsp;<i class="help" tabindex="0" data-tip="Heure à laquelle toutes les rotations doivent être terminées.">?</i></span> <input type="time" id="p-dayEnd"></label>
-            <label><span>Vitesse (km/h)&nbsp;<i class="help" tabindex="0" data-tip="Vitesse de croisière horizontale de l’hélico.">?</i></span> <input type="number" id="p-heliSpeedKmh"></label>
-            <label><span>Montée (m/min)&nbsp;<i class="help" tabindex="0" data-tip="Vitesse de montée verticale : le temps de vol d’un segment est le plus long entre la distance horizontale et le dénivelé à gravir.">?</i></span> <input type="number" id="p-climbRate"></label>
-            <label><span>Décollage+appr. (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps ajouté à chaque vol pour le décollage et l’approche.">?</i></span> <input type="number" id="p-flightOverhead" step="0.5"></label>
             <label><span>Attente client (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût fictif par minute d’attente d’un groupe, pour pénaliser l’attente des clients (0 = coût hélico seul).">?</i></span> <input type="number" id="p-clientWaitPenalty" step="0.5"></label>
             <label><span>Attente max au fond (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps d’attente maximum d’un groupe au fond d’une descente avant d’être repris ; 0 = illimité.">?</i></span> <input type="number" id="p-maxClientWait" step="5" min="0"></label>
           </div>
           <label class="check"><input type="checkbox" id="p-exclusiveRuns"> Une descente = un seul groupe à la fois&nbsp;<i class="help" tabindex="0" data-tip="Interdit à deux groupes de skier la même descente en même temps.">?</i></label>
-          <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée&nbsp;<i class="help" tabindex="0" data-tip="L’hélico peut couper le moteur à la base entre deux rotations (0.-/min), le redémarrage est payant.">?</i></label>
-          <label class="check"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise&nbsp;<i class="help" tabindex="0" data-tip="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long.">?</i></label>
+          <p class="muted small" style="margin:6px 0 0">Tarifs, vitesses, chargement et arrêts moteur de l’hélico : onglet <i>Paramètres</i>.</p>
+        </details>
+
+        <details open>
+          <summary>Ravitaillement (plein)</summary>
+          <label class="check"><input type="checkbox" id="p-refuelEnabled"> Planifier les pleins en cours de journée&nbsp;<i class="help" tabindex="0" data-tip="Le plein se fait à la base, hélico vide : en allant chercher un groupe, avant qu’il embarque (ou à la base quand l’hélico y passe).">?</i></label>
+          <div class="grid2" id="refuel-fields">
+            <label><span>Plein après (min de vol)&nbsp;<i class="help" tabindex="0" data-tip="X : pas de plein avant X minutes de vol depuis le dernier plein (ou depuis le départ du matin, plein fait).">?</i></span> <input type="number" id="p-refuelMinFly" step="5" min="0"></label>
+            <label><span>Plein avant (min de vol)&nbsp;<i class="help" tabindex="0" data-tip="Y : jamais plus de Y minutes de vol sans plein, retour à la base compris (autonomie).">?</i></span> <input type="number" id="p-refuelMaxFly" step="5" min="1"></label>
+            <label><span>Durée du plein (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps passé à la base pour faire le plein.">?</i></span> <input type="number" id="p-refuelMin" step="1" min="0"></label>
+          </div>
+          <label class="check"><input type="checkbox" id="p-refuelEngineOff"> Moteur coupé pendant le plein&nbsp;<i class="help" tabindex="0" data-tip="Coché : moteur coupé, redémarrage payant. Décoché : plein moteur allumé, au tarif standby.">?</i></label>
+          <div id="refuel-info" class="muted small"></div>
         </details>
 
       </aside>
@@ -149,7 +152,29 @@
       </div>
     </section>
 
-    <!-- ======================================================= DONNÉES -->
+    <!-- ======================================================= PARAMÈTRES (hélicoptère) -->
+    <section id="view-params" class="view">
+      <div class="card params-card">
+        <div class="card-head"><h3>Hélicoptère &amp; coûts</h3></div>
+        <p class="muted small" style="margin:0 0 10px">Paramètres de base de l’hélicoptère, communs à toutes les journées. Les réglages propres à la journée
+          (horaires, attente des clients, pleins) sont dans l’onglet <i>Planification</i>.</p>
+        <div class="grid2">
+          <label><span>Vol (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute de vol (moteur allumé, en l’air).">?</i></span> <input type="number" id="p-flyRate" step="1"></label>
+          <label><span>Standby (CHF/min)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’une minute au sol, moteur au ralenti (attente moteur allumé).">?</i></span> <input type="number" id="p-standbyRate" step="1"></label>
+          <label><span>Standby max (min)&nbsp;<i class="help" tabindex="0" data-tip="Durée maximale d’attente au sol moteur allumé ; au-delà, l’hélico vole en attente ou coupe le moteur (si autorisé).">?</i></span> <input type="number" id="p-maxStandby" step="0.5"></label>
+          <label><span>Démarrage moteur (CHF)&nbsp;<i class="help" tabindex="0" data-tip="Coût d’un cycle turbine : 1er départ du jour et chaque redémarrage après une coupure (base, dépose, reprise).">?</i></span> <input type="number" id="p-heliStartCost" step="10" min="0"></label>
+          <label><span>Chargement (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps d’embarquement d’un groupe (skieurs + matériel).">?</i></span> <input type="number" id="p-loadMin" step="0.5"></label>
+          <label><span>Déchargement (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps de débarquement d’un groupe au sommet.">?</i></span> <input type="number" id="p-unloadMin" step="0.5"></label>
+          <label><span>Vitesse (km/h)&nbsp;<i class="help" tabindex="0" data-tip="Vitesse de croisière horizontale de l’hélico.">?</i></span> <input type="number" id="p-heliSpeedKmh"></label>
+          <label><span>Montée (m/min)&nbsp;<i class="help" tabindex="0" data-tip="Vitesse de montée verticale : le temps de vol d’un segment est le plus long entre la distance horizontale et le dénivelé à gravir.">?</i></span> <input type="number" id="p-climbRate"></label>
+          <label><span>Décollage+appr. (min)&nbsp;<i class="help" tabindex="0" data-tip="Temps ajouté à chaque vol pour le décollage et l’approche.">?</i></span> <input type="number" id="p-flightOverhead" step="0.5"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée&nbsp;<i class="help" tabindex="0" data-tip="L’hélico peut couper le moteur à la base entre deux rotations (0.-/min), le redémarrage est payant.">?</i></label>
+        <label class="check"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise&nbsp;<i class="help" tabindex="0" data-tip="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long.">?</i></label>
+      </div>
+    </section>
+
+    <!-- ======================================================= ITINÉRAIRES (jeu de descentes) -->
     <section id="view-data" class="view">
       <div class="card">
         <div class="card-head"><h3>Jeu de données</h3><span id="ds-info" class="small"></span></div>

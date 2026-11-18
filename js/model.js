@@ -100,6 +100,7 @@ export const LATE_PENALTY = { fixed: 1500, perUnit: 200 };      // par groupe en
 export const WAIT_PENALTY = { fixed: 1500, perUnit: 100 };        // par attente client > max, par min de dépassement
 export const CLOSED_PENALTY = 5000;                                // par passage sur une descente hors du jour
 export const REPEAT_PENALTY = 5000;                                // par descente refaite par le même groupe dans la journée
+export const FUEL_PENALTY = { fixed: 1500, perUnit: 100 };         // plein hors de la plage [X, Y] min de vol, par min d'écart
 const VISIT_MARGIN = 10;     // min : passage base d'un groupe, marge pour la reprise au fond (l'hélico peut être occupé)
 const VISIT_BOOST = 60;      // min : priorité du groupe qui doit rentrer à la base (passage demandé)
 
@@ -120,11 +121,25 @@ export function planChanges(seq, ref) {
 }
 
 /**
+ * Ravitaillement (plein à la base) : paramètres normalisés, null si désactivé.
+ * min : minutes de vol depuis le dernier plein avant lesquelles on ne fait pas le plein (X) ;
+ * max : minutes de vol au-delà desquelles l'hélico ne doit pas voler sans plein (Y, retour à la base compris) ;
+ * dur : durée du plein ; off : moteur coupé pendant le plein (redémarrage payant), sinon moteur allumé (tarif standby).
+ */
+export function refuelParams(p) {
+  if (!p.refuelEnabled || !(p.refuelMaxFly > 0)) return null;
+  return { min: Math.max(0, Math.min(p.refuelMinFly ?? 0, p.refuelMaxFly)), max: p.refuelMaxFly, dur: Math.max(0, p.refuelMin ?? 0), off: p.refuelEngineOff !== false };
+}
+
+/**
  * Décodeur glouton événementiel (un seul hélicoptère).
- * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number, urgency: number }
+ * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number, urgency: number, fuelGain: number }
  * À chaque étape, l'hélico sert le groupe qui minimise
  *   début du chargement + prio[g] + lambda * (coût marginal / tarif vol) − urgence (attente client proche du max),
  * puis on « exécute » la rotation. Renvoie le coût et, si record, la liste des rotations.
+ * Ravitaillement : le plein se fait à la base, hélico vide, en allant chercher le groupe suivant (avant qu'il embarque).
+ * Obligatoire avant une rotation qui, retour à la base compris, dépasserait Y min de vol depuis le dernier plein ;
+ * possible dès X min de vol (le recuit règle fuelGain : bonus, en minutes, d'un plein fait plus tôt que nécessaire).
  */
 export function decode(inst, sol, record = false) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, st = inst.start;
@@ -135,6 +150,9 @@ export function decode(inst, sol, record = false) {
   const occEnd = new Float64Array(R).fill(-1e9);
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
   let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0, stopLate = 0, visitLate = 0;
+  // Ravitaillement : fuel = minutes de vol depuis le dernier plein ; fuelEarly / fuelOver : écarts à la plage [X, Y].
+  const rf = refuelParams(p), fuelGain = rf ? sol.fuelGain ?? 10 : 0;
+  let fuel = st?.heli.fuel ?? 0, fuelEarly = 0, fuelOver = 0, refuels = 0;
   // Passage à la base demandé pour un groupe (exploitation) : { by (arrivée à la base au plus tard), dur (pause) }.
   const gVisit = new Array(G).fill(null);
   const lifts = record ? [] : null;
@@ -163,11 +181,12 @@ export function decode(inst, sol, record = false) {
   const doStop = (at) => {
     if (record) lifts.push({ group: -1, from: BASE, to: BASE, start: at, end: at + stop.dur, run: -1, stop: true });
     stopLate += Math.max(0, at - stop.by);
-    hL = BASE; hT = at + stop.dur; hStarted = false; stop = null;
+    if (rf && fuel + tau[hL * N] > rf.max + 1e-9) fuelOver += fuel + tau[hL * N] - rf.max;
+    hL = BASE; hT = at + stop.dur; hStarted = false; stop = null; fuel = 0;   // passage base : le plein est fait
   };
 
   while (pending > 0) {
-    let bS = Infinity, bg = -1, bStart = 0, bW = null, bC = 0, bStop = -1, bD = BASE, bVisit = false;
+    let bS = Infinity, bg = -1, bStart = 0, bW = null, bC = 0, bStop = -1, bD = BASE, bVisit = false, bRef = -1, bFuel = 0;
     for (let g = 0; g < G; g++) {
       if (gDone[g] || (carry >= 0 && g !== carry)) continue;
       const o = gLoc[g], seq = seqs[g], k = gK[g], lm = g === carry ? 0 : p.loadMin;
@@ -191,22 +210,44 @@ export function decode(inst, sol, record = false) {
           ht = stopAt + stop.dur; hl = BASE; hs = false;
         }
       }
-      const dh = tau[hl * N + o];
-      const a = ht + dh;
-      const start = a > ready ? a : ready;
-      const w = waitPlan(inst, hl, hs, o, start - a);
-      const c = pre + p.flyRate * dh + w.cost + startCost(inst, hs) + p.clientWaitPenalty * (start - gReady[g]);
-      let s = start + (prio ? prio[g] : 0) + lam * c / p.flyRate;
-      // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
-      if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
-      if (gVisit[g] && d === BASE) s -= VISIT_BOOST;           // passage base du groupe : le ramener dès qu'il est prêt
-      if (s < bS) { bS = s; bg = g; bStart = start; bW = w; bC = c; bStop = stopAt; bD = d; bVisit = visit; }
+      const back = tau[d * N], f0 = stopAt >= 0 ? 0 : fuel;   // vol depuis le dernier plein (passage base = plein)
+      /** Rotation depuis (hl, ht, hs) ; refuelAt ≥ 0 : plein à la base d'abord (arrivée à refuelAt). */
+      const option = (hl, ht, hs, cost0, fuel0, refuelAt) => {
+        const dh = tau[hl * N + o];
+        const a = ht + dh;
+        const start = a > ready ? a : ready;
+        const w = waitPlan(inst, hl, hs, o, start - a);
+        const c = cost0 + p.flyRate * dh + w.cost + startCost(inst, hs) + p.clientWaitPenalty * (start - gReady[g]);
+        let s = start + (prio ? prio[g] : 0) + lam * c / p.flyRate;
+        // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
+        if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
+        if (gVisit[g] && d === BASE) s -= VISIT_BOOST;           // passage base du groupe : le ramener dès qu'il est prêt
+        const fu = fuel0 + dh + w.loiter + w.extraFly + fl;      // minutes de vol après la rotation (sans le retour)
+        return { s, start, w, c, fuel: fu, over: rf ? Math.max(0, fu + back - rf.max) : 0, refuelAt };
+      };
+      let best = option(hl, ht, hs, pre, f0, -1);
+      if (rf && g !== carry && stopAt < 0 && (best.over > 1e-9 || f0 >= rf.min - 1e-9)) {
+        // Plein d'abord : vol vers la base (s'il n'y est pas), plein, puis vers le groupe. Obligatoire si la rotation ne
+        // tient pas dans l'autonomie ; sinon retenu s'il est assez intéressant (bonus fuelGain).
+        const dB = tau[hl * N], at = ht + dB;
+        const r = option(BASE, at + rf.dur, !rf.off, pre + p.flyRate * dB + (rf.off ? 0 : p.standbyRate * rf.dur), 0, at);
+        if (best.over > 1e-9 ? r.over < best.over - 1e-9 : r.s - fuelGain < best.s) best = r;
+      }
+      if (best.s < bS) { bS = best.s; bg = g; bStart = best.start; bW = best.w; bC = best.c; bStop = stopAt; bD = d; bVisit = visit; bRef = best.refuelAt; bFuel = best.fuel; }
     }
     const g = bg, o = gLoc[g], seq = seqs[g], k = gK[g], d = bD, carried = g === carry, lm = carried ? 0 : p.loadMin;
     carry = -1;
     const fl = tau[o * N + d];
     const end = bStart + lm + fl + p.unloadMin;
     if (bStop >= 0) doStop(bStop);
+    if (bRef >= 0) {                                         // plein à la base avant d'aller chercher le groupe
+      const fb = fuel + tau[hL * N];
+      if (fb < rf.min - 1e-9) fuelEarly += rf.min - fb;
+      if (fb > rf.max + 1e-9) fuelOver += fb - rf.max;
+      refuels++;
+      if (record) lifts.push({ group: -1, from: BASE, to: BASE, start: bRef, end: bRef + rf.dur, run: -1, refuel: true, engineOff: rf.off, flown: fb });
+    }
+    fuel = bFuel;
     cost += bC - p.clientWaitPenalty * (bStart - gReady[g])
       + p.standbyRate * (lm + p.unloadMin) + p.flyRate * fl;
     clientWait += bStart - gReady[g];
@@ -234,7 +275,8 @@ export function decode(inst, sol, record = false) {
   }
   // Passage base encore dû (plus de rotation) : au retour à la base.
   if (stop) { cost += p.flyRate * tau[hL * N]; doStop(hT + tau[hL * N]); }
-  // Retour de l'hélico à la base.
+  // Retour de l'hélico à la base (dans l'autonomie depuis le dernier plein).
+  if (rf && fuel + tau[hL * N] > rf.max + 1e-9) fuelOver += fuel + tau[hL * N] - rf.max;
   cost += p.flyRate * tau[hL * N];
   cost += p.clientWaitPenalty * clientWait;
 
@@ -246,10 +288,12 @@ export function decode(inst, sol, record = false) {
   }
   if (stopLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * stopLate;
   if (visitLate > 1e-9) penalty += LATE_PENALTY.fixed + LATE_PENALTY.perUnit * visitLate;
+  if (fuelOver > 1e-9) penalty += FUEL_PENALTY.fixed + FUEL_PENALTY.perUnit * fuelOver;
+  if (fuelEarly > 1e-9) penalty += FUEL_PENALTY.fixed + FUEL_PENALTY.perUnit * fuelEarly;
   // Stabilité (exploitation) : chaque modification du plan précédent coûte changePenalty ; un nouveau plan n'est retenu
   // que s'il fait gagner davantage.
   const change = inst.ref && p.changePenalty > 0 ? p.changePenalty * planChanges(sol.seq, inst.ref) : 0;
-  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, visitLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6 && visitLate < 1e-6, lifts, clientWait, waitExcess, closed, repeats };
+  return { cost, penalty, change, f: cost + penalty + change, shortfall, late, stopLate, visitLate, feasible: shortfall < 1e-6 && late < 1e-6 && waitExcess < 1e-6 && !closed && !repeats && stopLate < 1e-6 && visitLate < 1e-6 && fuelOver < 1e-6 && fuelEarly < 1e-6, lifts, clientWait, waitExcess, closed, repeats, fuelOver, fuelEarly, refuels };
 }
 
 /**
@@ -261,12 +305,12 @@ export function buildSchedule(inst, lifts) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, G = inst.groups.length;
   const heliSeg = [];
   const groupSeg = Array.from({ length: G }, () => []);
-  const totals = { fly: 0, flyLoaded: 0, standby: 0, loiter: 0, service: 0, parked: 0, starts: 0 };
+  const totals = { fly: 0, flyLoaded: 0, standby: 0, loiter: 0, service: 0, parked: 0, starts: 0, refuels: 0, refuel: 0, refuelHot: 0 };
   const st = inst.start;                               // journée en cours : on part de l'état réel
 
   let t = st ? st.heli.t : p.dayStart, loc = st ? st.heli.loc : BASE, started = st ? !!st.heli.started : false;
   const started0 = started;
-  const push = (type, t0, t1, from, to, extra = {}) => { if (t1 - t0 > 1e-9 || type === 'flight') heliSeg.push({ type, t0, t1, from, to, ...extra }); };
+  const push = (type, t0, t1, from, to, extra = {}) => { if (t1 - t0 > 1e-9 || type === 'flight' || type === 'refuel') heliSeg.push({ type, t0, t1, from, to, ...extra }); };
   for (const l of [...lifts].sort((a, b) => a.start - b.start)) {
     if (l.stop) {                                     // passage base demandé : vol vers la base, arrêt moteur coupé
       const dh = tau[loc * N];
@@ -274,6 +318,15 @@ export function buildSchedule(inst, lifts) {
       push('parked', l.start, l.end, BASE, BASE, { stop: true });
       totals.fly += dh; totals.parked += l.end - l.start;
       t = l.end; loc = BASE; started = false;
+      continue;
+    }
+    if (l.refuel) {                                   // plein : vol vers la base, plein (moteur coupé ou allumé)
+      const dh = tau[loc * N];
+      if (loc !== BASE) push('flight', t, t + dh, loc, BASE);
+      push('refuel', l.start, l.end, BASE, BASE, { engineOff: !!l.engineOff });
+      totals.fly += dh; totals.refuels++; totals.refuel += l.end - l.start;
+      if (!l.engineOff) totals.refuelHot += l.end - l.start;
+      t = l.end; loc = BASE; started = !l.engineOff;
       continue;
     }
     const dh = tau[loc * N + l.from];
@@ -311,7 +364,8 @@ export function buildSchedule(inst, lifts) {
   }
   if (loc !== BASE) { push('flight', t, t + tau[loc * N], loc, BASE); totals.fly += tau[loc * N]; }
   // Démarrages moteur : 1er segment hors « base, moteur coupé » (sauf moteur déjà en route), puis après chaque coupure.
-  heliSeg.forEach((s, k) => { if (s.type !== 'parked' && (k === 0 ? !started0 : heliSeg[k - 1].type === 'parked')) totals.starts++; });
+  const off = (s) => s.type === 'parked' || (s.type === 'refuel' && s.engineOff);
+  heliSeg.forEach((s, k) => { if (!off(s) && (k === 0 ? !started0 : off(heliSeg[k - 1]))) totals.starts++; });
 
   // Planning des groupes.
   const gVert = new Array(G).fill(0), gEnd = new Array(G).fill(p.dayStart), gWait = new Array(G).fill(0);
@@ -339,7 +393,7 @@ export function buildSchedule(inst, lifts) {
   }
 
   const flyMin = totals.fly + totals.flyLoaded + totals.loiter;
-  const cost = p.flyRate * flyMin + p.standbyRate * (totals.standby + totals.service) + (p.heliStartCost ?? 0) * totals.starts
+  const cost = p.flyRate * flyMin + p.standbyRate * (totals.standby + totals.service + totals.refuelHot) + (p.heliStartCost ?? 0) * totals.starts
     + p.clientWaitPenalty * gWait.reduce((a, b) => a + b, 0);
   return { heliSeg, groupSeg, totals, flyMin, cost, gVert, gEnd, gWait, lifts };
 }
@@ -347,6 +401,6 @@ export function buildSchedule(inst, lifts) {
 /** Séquences de descentes par groupe déduites d'une liste de rotations. */
 export function seqFromLifts(G, lifts) {
   const seq = Array.from({ length: G }, () => []);
-  for (const l of [...lifts].sort((a, b) => a.start - b.start)) if (l.to !== BASE) seq[l.group].push(l.to - 1);
+  for (const l of [...lifts].sort((a, b) => a.start - b.start)) if (l.group >= 0 && l.to !== BASE) seq[l.group].push(l.to - 1);
   return seq;
 }

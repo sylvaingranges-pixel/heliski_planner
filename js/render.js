@@ -261,6 +261,7 @@ export const SEG_STYLE = {
   wait: { label: 'Clients en attente', cls: 'g-wait' },
   pause: { label: 'Pause à la base', cls: 'g-pause' },
   stop: { label: 'Arrêt base (plein, client…)', cls: 'g-stop' },
+  refuel: { label: 'Plein à la base', cls: 'g-refuel' },
   heli: { label: 'Dans l’hélico', cls: 'g-inheli' },
   ski: { label: 'Ski', cls: 'g-ski' },
 };
@@ -307,6 +308,7 @@ export function renderGantt(svg, inst, sch, opts = {}) {
       const r = el('rect', attrs, rows);
       let tip = `${st.label} ${fmt(s.t0)}–${fmt(s.t1)} (${(s.t1 - s.t0).toFixed(1)} min)`;
       if (s.group != null) tip += `\n${inst.groups[s.group].name}`;
+      if (s.type === 'refuel') tip += s.engineOff ? ' · moteur coupé' : ' · moteur allumé';
       if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'heli' || s.type === 'ski') tip += `\n${nodeName(inst, s.from)} → ${nodeName(inst, s.to)}`;
       title(r, tip);
       if (!isHeli && s.type === 'ski' && w > 26) el('text', { x: x + w / 2, y: y + 17, 'text-anchor': 'middle', class: 'g-seglabel' }, rows, inst.dataset.runs[s.run].code);

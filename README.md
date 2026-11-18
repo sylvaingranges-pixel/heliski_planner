@@ -15,16 +15,28 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
   Le décodeur fait servir par l'hélico, à chaque étape, le groupe le plus intéressant (début du chargement, priorité,
   coût marginal, urgence de l'attente client) ; le recuit choisit les descentes de chaque groupe et ces poids.
 - **Jeu de base fixe** : `data/base-dataset.json` (base de Le Châble, 50 descentes tracées sur le relief réel, graine 42).
-  Il est chargé au premier lancement, toujours identique, disponible hors ligne. Dans l'onglet *Données* → *Jeu de données* :
+  Il est chargé au premier lancement, toujours identique, disponible hors ligne. Dans l'onglet *Itinéraires* → *Jeu de données* :
   générer de nouvelles descentes, placer la base sur la carte, importer un JSON… puis **Revenir au jeu de base** d'un clic.
   Le jeu modifié est mémorisé dans le navigateur ; le jeu de base n'est jamais modifié.
 - **Descentes du jour** : sous-ensemble des descentes réalisables aujourd'hui. Sur la carte, mode *Sélection d'itinéraires*
-  (clic, rectangle ou lasso) ; dans l'onglet *Données*, filtres altitude du sommet / du fond, dénivelé min., difficulté.
+  (clic, rectangle ou lasso) ; dans l'onglet *Itinéraires*, filtres altitude du sommet / du fond, dénivelé min., difficulté.
+- **Onglets** : *Planification* (résolution, descentes du jour, groupes, journée : horaires et attente des clients,
+  ravitaillement), *Itinéraires* (jeu de descentes, filtres, import / export), *Paramètres* (paramètres de base de
+  l'hélicoptère : tarifs vol / standby, démarrage moteur, standby max, chargement / déchargement, vitesse, montée,
+  décollage + approche, arrêts moteur autorisés), *Exploitation*.
+- **Ravitaillement (plein)** en cours de journée, réglé dans *Planification* : plein après **X** min de vol depuis le
+  dernier plein (pas avant) et au plus tard avant **Y** min de vol (retour à la base compris), durée du plein, moteur
+  coupé (redémarrage payant) ou allumé (tarif standby). Le plein se fait à la base, hélico vide : typiquement en allant
+  rechercher un groupe, avant qu'il embarque (vol vers la base, plein, puis vers le point de reprise), ou quand l'hélico
+  passe par la base. Le décodeur l'impose avant toute rotation qui sortirait de l'autonomie, et peut l'avancer dès X min
+  quand c'est intéressant (bonus réglé par le recuit). Le vérificateur contrôle la plage [X, Y], la base, l'hélico vide
+  et la durée ; carte *Pleins* dans les indicateurs, segment turquoise dans le planning, ligne ⛽ dans le journal.
+  Le départ du matin se fait plein fait.
 - **Arrêt moteur** à chaque dépose / reprise (option, active par défaut) et / ou à la base : l'attente moteur coupé est
   gratuite mais chaque redémarrage coûte le prix d'un démarrage ; l'heuristique ne coupe que si c'est moins cher que le
   standby ou le vol d'attente, et le vérificateur le contrôle.
 - **Vérification indépendante** de chaque planning (continuité, durées de vol, standby ≤ 5 min, chargement 6 min,
-  dénivelé, fenêtre horaire, exclusivité des descentes, recalcul du coût).
+  dénivelé, fenêtre horaire, exclusivité des descentes, pleins, recalcul du coût).
 - Carte des descentes (animation de la journée), diagramme de Gantt hélico / groupes, contrôles, groupes, journal des rotations, comparaison.
 
 ## Exploitation : la journée en cours (onglet *Exploitation*)
@@ -60,10 +72,15 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
   client à déposer… : le plan le ramène à temps puis le reprend après la pause), **descente suivante imposée** (aussi
   en touchant un itinéraire sur la carte), objectif de dénivelé, fin de journée d'un groupe ; **itinéraires ouverts /
   fermés** (mode ✎ sur la carte) ; **passer par la base** (hélico) dans un délai donné pour une durée donnée.
+- **Pleins** : les pleins planifiés sont dans le programme (⛽ *Plein à la base*) ; la carte de l'hélico affiche les
+  minutes de vol depuis le dernier plein (temps en l'air entre décollages / atterrissages GPS, sinon durées des trajets du
+  journal) et l'heure du prochain plein. Simulation : l'hélico fait le plein prévu ; GPS : le plein commence à
+  l'atterrissage à la base quand il est prévu avant la prochaine reprise (ou bouton *⛽ Plein maintenant*). Tout arrêt
+  base remet le compteur à zéro ; la suite est replanifiée avec l'autonomie restante.
 - **Recalcul** : à chaque changement, le reste de la journée est re-décodé immédiatement depuis l'état réel
   (positions, horaires réels de dépose / reprise, dénivelé déjà fait, descentes déjà skiées et en cours), puis ré-optimisé
   en arrière-plan (recuit, ~1 s par cœur) **en partant du plan en cours** ; toutes les contraintes restent
-  (objectifs, descentes du jour, une descente par groupe et par jour, exclusivité, attente max, fin de journée, passages base de l'hélico et des groupes).
+  (objectifs, descentes du jour, une descente par groupe et par jour, exclusivité, attente max, fin de journée, passages base de l'hélico et des groupes, pleins).
   Le passé n'est jamais recalculé. **Stabilité** : chaque modification du plan précédent coûte un seuil (CHF 60 par défaut,
   réglable) ; un nouveau plan n'est adopté que s'il fait gagner davantage. Ré-optimisation aussi toutes les 5 min d'horloge.
 - **Affichage** : seule la suite est affichée — carte (descentes à venir par groupe, numérotées ; trajets de l'heure qui
@@ -107,14 +124,19 @@ réel, une connexion est nécessaire ; sans connexion, repli sur un jeu synthét
 Temps de vol = 1 min + max(distance / 180 km/h, montée / 400 m/min).
 4 groupes (forfaits 10 000 m / 5 j, 12 000 m / 5 j, 15 000 m / 5 j, 10 000 m / 4 j → 2 000, 2 400, 3 000, 2 500 m/jour),
 1 hélicoptère, 20.–/min en vol, 8.–/min en standby, 100.– par démarrage moteur, 6 + 6 min de chargement / déchargement,
-standby ≤ 5 min, attente des clients au fond ≤ 20 min, 9 h – 15 h.
+standby ≤ 5 min, attente des clients au fond ≤ 20 min, 9 h – 15 h, plein entre 30 et 60 min de vol (8 min, moteur coupé).
 L'hélico peut couper le moteur à chaque dépose / reprise (attente gratuite, redémarrage 100.–) : plus de vol d'attente ni de standby long.
 
 | Résultat sur le jeu de base (Node, chaînes de ~0,9 s comme dans le navigateur à 3 workers) | Coût hélico |
 |---|---|
-| Rapide (6 chaînes) | ~CHF 3 340 (15 rotations, 2 démarrages, retour vers 13 h 50) |
-| Moyen (30 chaînes) | ~CHF 3 260 (14 rotations, 2 démarrages, 0 min de vol d'attente) |
-| Sans arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 340 (1 démarrage, ~12 min de standby) |
+| Rapide (6 chaînes), plein entre 30 et 60 min de vol | ~CHF 3 490 (15 rotations, 1 plein vers 11 h 40, 2 démarrages, retour vers 13 h 50) |
+| Moyen (30 chaînes), plein entre 30 et 60 min de vol | ~CHF 3 480 (15 rotations, 1 plein vers 11 h 40, 2 démarrages) |
+| Sans ravitaillement : Rapide | ~CHF 3 340 (15 rotations, 2 démarrages, retour vers 13 h 50) |
+| Sans ravitaillement : Moyen | ~CHF 3 260 (14 rotations, 2 démarrages, 0 min de vol d'attente) |
+| Sans ravitaillement ni arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 340 (1 démarrage, ~12 min de standby) |
+
+La journée du jeu de base compte ~85 min de vol : avec une autonomie de 60 min, un plein est nécessaire (~CHF 150–200 :
+détour par la base, 8 min de plein, redémarrage).
 
 Constat : le coût étant facturé à la minute de vol, un second hélicoptère n'apportait presque rien au coût (mêmes
 paramètres, ancienne version à 2 hélicos : ~CHF 3 320 en Moyen) — il servait surtout à réduire l'attente des clients,
@@ -135,10 +157,10 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 | `js/ops-ui.js` | onglet *Exploitation* (tablette du pilote) : horloge, GPS, recalcul en arrière-plan, carte, programme, fenêtres tactiles |
 | `data/base-dataset.json` | jeu de base fixe (Le Châble, 50 descentes, relief réel) |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |
-| `js/milp.js`, `js/neos.js`, `lib/highs/`, `netlify/functions/neos.mjs` | MILP / NEOS (banc d'essai, branche `main`, ici restreint à 1 hélico) : tests uniquement |
+| `js/milp.js`, `js/neos.js`, `lib/highs/`, `netlify/functions/neos.mjs` | MILP / NEOS (banc d'essai, branche `main`, ici restreint à 1 hélico, sans ravitaillement) : tests uniquement |
 | `lib/leaflet/` | Leaflet 1.9.4 (licence BSD-2) |
 
-Format d'import des descentes (onglet *Données*) :
+Format d'import des descentes (onglet *Itinéraires*) :
 `{ origin:{lat,lon}, base:{x,y,alt}, runs:[{code,name,top:{x,y,alt},bottom:{x,y,alt},vert,skiMin,path?}], timeMatrix? }`
 (x, y en km depuis la base, x vers l'est, y vers le nord)
 — `timeMatrix` (minutes, nœuds dans l'ordre base, sommets, fonds) remplace le calcul par distance si vous avez vos
