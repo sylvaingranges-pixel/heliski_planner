@@ -39,6 +39,7 @@ export function newDay({ dataset, params, groups, open, sol, cost = null, mode =
     plan0: { seq: sol.seq.map(q => q.slice()), cost },
     events: [],
     forced: new Array(G).fill(-1),           // descente suivante imposée par le pilote
+    forcedRep: new Array(G).fill(0),         // … nombre de fois où le groupe l'avait déjà skiée (> 0 : refaire, sur demande)
     stop: null,                              // passage base demandé pour l'hélico : { by (arrivée au plus tard), dur, req }
     visits: new Array(G).fill(null),         // passage base demandé pour un groupe : { by, dur (pause), req }
     live: null,                              // dernière position GPS { t, x, y, alt, air, acc }
@@ -338,7 +339,9 @@ export function opsSnapshot(day, dataset, geo, now, ref = null) {
   // Descente suivante imposée : seulement pour un groupe encore actif qui ne l'a pas déjà faite.
   groups.forEach((g, i) => {
     const f = day.forced[i];
-    if (f >= 0 && !g.done && !g.noMore && !g.skied.includes(f) && geo.open[f]) g.next = f;
+    // Refaire une descente déjà skiée : seulement sur demande (imposée alors qu'elle avait déjà été faite forcedRep fois).
+    const times = g.skied.filter(r => r === f).length;
+    if (f >= 0 && !g.done && !g.noMore && times <= (day.forcedRep?.[i] ?? 0) && geo.open[f]) g.next = f;
   });
   const targets = day.groups.map((g, i) => (groups[i].noMore ? Math.min(g.target, groups[i].vert) : g.target));
   return {
@@ -612,4 +615,73 @@ export function planAlerts(day, view) {
   const rf = refuelParams(p);
   if (rf && d.fuelOver > 1e-6) out.push(`autonomie dépassée : plus de ${rf.max} min de vol sans plein (${Math.round(d.fuelOver)} min de trop)`);
   return out;
+}
+
+// ---------------------------------------------------------------- coût de la journée : plan du matin vs réel
+/**
+ * Coût d'un planning (buildSchedule) jusqu'à l'instant T : vol, moteur allumé au sol, démarrages, attente client.
+ * Même formule que sch.cost (T = Infinity donne sch.cost).
+ */
+export function scheduleCostUntil(inst, sch, T = Infinity) {
+  const p = inst.params, segs = sch.heliSeg;
+  const ov = (s) => Math.max(0, Math.min(T, s.t1) - s.t0);
+  const off = (s) => s.type === 'parked' || (s.type === 'refuel' && s.engineOff);
+  let c = 0;
+  segs.forEach((s, k) => {
+    if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') c += p.flyRate * ov(s);
+    else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload' || (s.type === 'refuel' && !s.engineOff)) c += p.standbyRate * ov(s);
+    if (!off(s) && (k === 0 || off(segs[k - 1])) && s.t0 < T) c += p.heliStartCost ?? 0;
+  });
+  if (p.clientWaitPenalty > 0) for (const gs of sch.groupSeg) for (const s of gs) if (s.type === 'wait') c += p.clientWaitPenalty * ov(s);
+  return c;
+}
+
+/**
+ * Rotations réellement faites d'après le journal (rotation en cours comprise, avec sa destination actuelle) et arrêts
+ * base (plein, passage demandé), au format des rotations du décodeur — pour le planning « réel + suite ».
+ */
+export function pastLifts(day, geo) {
+  const R = geo.R, loc = day.groups.map(() => BASE), out = [];
+  const node = (run) => (run >= 0 ? 1 + run : BASE);
+  let cur = null, stop = null;
+  for (const e of day.events) {
+    switch (e.type) {
+      case 'pickup': cur = { group: e.group, from: e.node ?? loc[e.group], to: node(e.run), run: e.run, start: e.t }; break;
+      case 'dest': if (cur?.group === e.group) { cur.to = node(e.run); cur.run = e.run; } break;
+      case 'changeRun':
+        if (cur?.group === e.group) { cur.to = node(e.run); cur.run = e.run; } else loc[e.group] = 1 + R + e.run;
+        break;
+      case 'drop': if (cur) out.push({ ...cur, to: 1 + e.run, run: e.run }); cur = null; loc[e.group] = 1 + R + e.run; break;
+      case 'dropBase':
+        if (cur) out.push({ ...cur, to: BASE, run: -1, ...(e.pause ? { visit: true, pause: e.pause } : {}) });
+        cur = null; loc[e.group] = BASE;
+        break;
+      case 'stopStart':
+        stop = { group: -1, from: BASE, to: BASE, start: e.t, end: e.t + e.dur, run: -1, ...(e.refuel || e.hot ? { refuel: true, engineOff: !e.hot } : { stop: true }) };
+        out.push(stop);
+        break;
+      case 'stopEnd': if (stop) stop.end = Math.max(stop.start, Math.min(stop.end, e.t)); break;
+      case 'stopExtend': if (stop) stop.end += e.delta; break;
+      case 'takeoff': if (stop && e.t >= stop.start && e.t < stop.end) stop.end = e.t; break;
+    }
+  }
+  return { done: out, current: cur };
+}
+
+/**
+ * Coût de la journée, même modèle que la planification : un seul planning depuis le début de journée avec les rotations
+ * réellement faites (journal) puis la suite planifiée (vue). Les trajets sont comptés aux temps de vol du modèle.
+ * { planned : coût du plan du matin (null si inconnu), total : solution en cours (réel + reste prévu),
+ *   spent : part déjà écoulée (jusqu'à now), rest : estimation de la suite, delta : total − planned }.
+ */
+export function dayCost(day, view) {
+  const { geo, now } = view, N0 = 1 + 2 * geo.R;
+  const { done, current } = pastLifts(day, geo);
+  const carry = view.d.lifts.find(l => l.carry);
+  if (current && carry) { current.to = carry.to; current.run = carry.run; }   // destination replanifiée en vol
+  const next = view.d.lifts.filter(l => !l.carry && l.from < N0 && l.to < N0);
+  const sch = buildSchedule(geo, [...done, ...(current ? [current] : []), ...next]);
+  const total = scheduleCostUntil(geo, sch), spent = Math.min(total, scheduleCostUntil(geo, sch, now));
+  const planned = day.plan0?.cost ?? null;
+  return { planned, total, spent, rest: total - spent, delta: planned != null ? total - planned : null };
 }

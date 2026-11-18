@@ -9,7 +9,7 @@ import { BASE, planChanges, refuelParams } from './model.js';
 import {
   newDay, addEvent, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
   dropCandidates, nearestRuns, nearNode, heliPosition, heliMotion, terrainAlt, displaySchedule, planAlerts, liveFix,
-  onboardArrival, redirectCarry, nextRefuel, refuelEvent, NEAR_KM, GROUND_ALT_TOL,
+  onboardArrival, redirectCarry, nextRefuel, refuelEvent, dayCost, NEAR_KM, GROUND_ALT_TOL,
 } from './ops.js';
 import { createMapView, renderGantt, runPath, alongPath, HELI_COLOR, HELI_ICON, GROUP_COLORS } from './render.js';
 import { toLatLon, toXY } from './terrain.js';
@@ -55,6 +55,7 @@ export function initOps(h) {
       if (dset?.runs?.length) {
         day = s; ds = dset; geo = dayGeo(day, ds);
         day.visits ??= new Array(day.groups.length).fill(null);   // journée enregistrée avant les passages base des groupes
+        day.forcedRep ??= new Array(day.groups.length).fill(0);   // … avant les descentes refaites sur demande
         if (day.mode === 'sim') day.sim.paused = true;          // reprise d'une simulation : en pause
       }
     }
@@ -512,19 +513,30 @@ function dropSheet({ t = null, pos = null } = {}) {
   bindChips(box, 'dd', (x) => { delta = x; box.querySelectorAll('[data-rep]').forEach(el => { el.textContent = repTxt(+el.dataset.rep); }); });
 }
 
-function runItem(r, { planned = false, onClick, closedOk = true } = {}) {
+function runItem(r, { planned = false, onClick, closedOk = true, again = 0 } = {}) {
   const x = ds.runs[r], open = geo.open[r];
   return {
-    label: `<b>${x.code}</b> ${esc(x.name)}`, sub: `${x.vert} m · ski ${x.skiMin} min · ${'●'.repeat(x.difficulty ?? 1)}${open ? '' : ' · fermé aujourd’hui'}`,
-    cls: planned ? 'expected' : open ? '' : 'far', tag: planned ? 'prévu' : '', disabled: !closedOk && !open, onClick,
+    label: `<b>${x.code}</b> ${esc(x.name)}`, sub: `${x.vert} m · ski ${x.skiMin} min · ${'●'.repeat(x.difficulty ?? 1)}${open ? '' : ' · fermé aujourd’hui'}${again ? ` · ${again > 1 ? `déjà skiée ${again} fois` : 'déjà skiée'} : la refaire` : ''}`,
+    cls: planned ? 'expected' : again ? 'again' : open ? '' : 'far', tag: planned ? 'prévu' : again ? '↺' : '', disabled: !closedOk && !open, onClick,
   };
 }
 
 /** Liste complète des itinéraires, triés par distance à une position (fermés : masqués, ou grisés et inactifs). */
-function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = [], disableClosed = false } = {}) {
+function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = [], disableClosed = false, again = null, sub = '' } = {}) {
+  const times = (r) => (again ? again.filter(x => x === r).length : 0);
   const list = nearestRuns(geo, pos, geo.R, onlyOpen ? geo.open : null).filter(r => !exclude.includes(r))
-    .sort((a, b) => (disableClosed ? (geo.open[b] ? 1 : 0) - (geo.open[a] ? 1 : 0) : 0));
-  openSheet({ title, items: list.map(r => runItem(r, { planned: r === planned, closedOk: !disableClosed, onClick: () => onPick(r) })), cols: 3, wide: true });
+    .sort((a, b) => (disableClosed ? (geo.open[b] ? 1 : 0) - (geo.open[a] ? 1 : 0) : 0) || (times(a) > 0) - (times(b) > 0));
+  openSheet({ title, sub, items: list.map(r => runItem(r, { planned: r === planned, closedOk: !disableClosed, again: times(r), onClick: () => onPick(r) })), cols: 3, wide: true });
+}
+
+/** Descentes déjà faites (ou engagée : groupe à bord) par un groupe aujourd'hui, avec répétitions. */
+function doneRuns(s) { return [...s.skied, ...(s.status === 'onboard' && s.dest >= 0 ? [s.dest] : [])]; }
+
+/** Descente suivante imposée ; déjà skiée aujourd'hui : elle est refaite (sur demande, le plan l'évite sinon). */
+function setForced(g, r) {
+  day.forced[g] = r;
+  day.forcedRep[g] = doneRuns(view.state.groups[g]).filter(x => x === r).length;
+  afterEvent();
 }
 
 /** Groupe ramené à la base : fin de journée, pause (passage base demandé, client fatigué…), ou reste à bord. */
@@ -593,7 +605,7 @@ function groupSheet(g) {
   }
   if (s.status !== 'done' && !s.ended) {
     const f = day.forced[g];
-    items.push({ label: f >= 0 ? `Descente suivante imposée : ${runLabel(f)}` : 'Imposer la descente suivante', sub: f >= 0 ? 'toucher pour changer' : 'le plan est recalculé autour', onClick: () => forceSheet(g) });
+    items.push({ label: f >= 0 ? `Descente suivante imposée : ${runLabel(f)}${day.forcedRep[g] ? ' (la refaire)' : ''}` : 'Imposer la descente suivante', sub: f >= 0 ? 'toucher pour changer' : 'le plan est recalculé autour · on peut refaire une descente déjà skiée', onClick: () => forceSheet(g) });
     if (f >= 0) items.push({ label: 'Libérer la descente suivante', sub: 'laisser le plan choisir', cls: 'muted-btn', onClick: () => { day.forced[g] = -1; afterEvent(); } });
   }
   items.push({ label: 'Objectif de dénivelé', sub: `${day.groups[g].target.toLocaleString('fr-CH')} m aujourd’hui · fait ${s.vert.toLocaleString('fr-CH')} m`, onClick: () => targetSheet(g) });
@@ -605,8 +617,9 @@ function forceSheet(g) {
   const v = view, s = v.state.groups[g];
   const from = s.status === 'onboard' && s.dest >= 0 ? geo.pts[1 + geo.R + s.dest] : geo.pts[s.loc];
   const planned = v.plan.seq[g]?.[0] ?? -1;
-  runPicker(`${esc(gname(g))} : descente suivante`, from, planned, (r) => { day.forced[g] = r; afterEvent(); },
-    { onlyOpen: true, exclude: [...s.skied, ...(s.status === 'onboard' && s.dest >= 0 ? [s.dest] : [])] });
+  const done = doneRuns(s);
+  runPicker(`${esc(gname(g))} : descente suivante`, from, planned, (r) => setForced(g, r),
+    { onlyOpen: true, again: done, sub: done.length ? 'Les descentes déjà skiées aujourd’hui sont en fin de liste (↺ refaire) : le plan les évite, mais on peut en refaire une sur demande.' : '' });
 }
 
 /** Nouvelle destination du groupe à bord : le vol repart de la position actuelle de l'hélico (pas de saut). */
@@ -618,7 +631,7 @@ function destSheet() {
   const set = (run) => { addEvent(day, { type: 'dest', group: g, run, t, ...(pos ? { pos } : {}) }); afterEvent(); };
   const list = nearestRuns(geo, here, 8, geo.open).filter(r => !v.state.groups[g].skied.includes(r));
   const items = list.map(r => runItem(r, { planned: r === s.dest, onClick: () => set(r) }));
-  items.push({ label: 'Autre itinéraire…', sub: 'tous les itinéraires ouverts', cls: 'muted-btn', onClick: () => runPicker(`Destination de ${esc(gname(g))}`, here, s.dest, set, { onlyOpen: true, exclude: v.state.groups[g].skied }) });
+  items.push({ label: 'Autre itinéraire…', sub: 'tous les itinéraires ouverts (y compris déjà skiés)', cls: 'muted-btn', onClick: () => runPicker(`Destination de ${esc(gname(g))}`, here, s.dest, set, { onlyOpen: true, again: v.state.groups[g].skied }) });
   items.push({ label: '⌂ Base', sub: 'ramener le groupe (client fatigué…)', cls: s.dest < 0 ? 'expected' : 'muted-btn', onClick: () => set(-1) });
   openSheet({ title: `⇄ Destination de ${esc(gname(g))}`, sub: 'Le vol repart de la position actuelle ; la suite est recalculée.', items });
 }
@@ -636,8 +649,11 @@ function targetSheet(g) {
 
 function runSheet(r) {
   const x = ds.runs[r], open = geo.open[r], v = view;
-  const items = v.state.groups.map((s, g) => ({ s, g })).filter(({ s }) => s.status !== 'done' && !s.ended && !s.skied.includes(r) && open)
-    .map(({ g }) => ({ label: `Imposer à <span class="dot" style="background:${gcolor(g)}"></span>${esc(gname(g))}`, sub: 'comme descente suivante', onClick: () => { day.forced[g] = r; afterEvent(); } }));
+  const items = v.state.groups.map((s, g) => ({ s, g })).filter(({ s }) => s.status !== 'done' && !s.ended && open)
+    .map(({ s, g }) => {
+      const n = doneRuns(s).filter(x => x === r).length;
+      return { label: `${n ? '↺ Refaire' : 'Imposer'} à <span class="dot" style="background:${gcolor(g)}"></span>${esc(gname(g))}`, sub: n ? 'déjà skiée aujourd’hui · comme descente suivante, sur demande' : 'comme descente suivante', cls: n ? 'muted-btn' : '', onClick: () => setForced(g, r) };
+    });
   items.push({ label: open ? 'Fermer l’itinéraire' : 'Ouvrir l’itinéraire', cls: open ? 'danger' : 'primary', onClick: () => { toggleRun(r); afterEvent(); } });
   const users = v.state.groups.map((s, g) => (s.skied.includes(r) ? gname(g) : null)).filter(Boolean);
   openSheet({ title: `${x.code} · ${esc(x.name)}`, sub: `${x.top.alt} → ${x.bottom.alt} m · <b>${x.vert} m</b> · ski ${x.skiMin} min${open ? '' : ' · <span class="bad-text">fermé</span>'}${users.length ? ' · déjà skié par ' + users.map(esc).join(', ') : ''}`, items });
@@ -785,6 +801,7 @@ function renderPanel() {
   $('ops-alerts').querySelector('details')?.addEventListener('toggle', (e) => { ui.alertsOpen = e.target.open; });
   // Hélico
   renderHeliCard();
+  renderCost();
   // Programme
   $('ops-empty').classList.toggle('on', ui.showEmpty);
   $('ops-agenda').innerHTML = agenda().slice(0, ui.showEmpty ? 16 : 9).map((it, k) => `<li class="${k === 0 ? 'first' : ''} ${it.cls ?? ''}">
@@ -812,6 +829,20 @@ function renderPanel() {
   });
   $('ops-fuel').classList.toggle('on', !!day.stop);
   $('ops-runs').classList.toggle('on', ui.edit);
+}
+
+/**
+ * Coût de la journée : plan du matin vs solution en cours (réel de la partie écoulée + reste prévu) — pour voir ce
+ * qu'ont coûté les imprévus et les changements.
+ */
+function renderCost() {
+  const c = dayCost(day, view), el = $('ops-cost');
+  const d = c.delta, cls = d == null || Math.abs(d) < 0.5 ? '' : d > 0 ? 'up' : 'down';
+  el.innerHTML = `<div class="oc-row"><span class="oc-l">Coût du jour</span>
+      ${c.planned != null ? `<span title="Plan du matin">prévu <b>${chf(c.planned)}</b></span><span class="oc-arrow">→</span>` : ''}
+      <span title="Réel jusqu’ici + reste du plan en cours">actuel <b>${chf(c.total)}</b></span>
+      ${d != null ? `<span class="oc-d ${cls}">${Math.abs(d) < 0.5 ? '=' : (d > 0 ? '+' : '−') + Math.round(Math.abs(d)).toLocaleString('fr-CH').replace(/\s/g, '’')}</span>` : ''}</div>
+    <div class="oc-sub">réel jusqu’ici ${chf(c.spent)} · reste prévu ${chf(c.rest)}</div>`;
 }
 
 /** Étapes à venir de l'hélico : en cours, rotations, passages base, retour. */

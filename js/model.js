@@ -264,7 +264,8 @@ export function decode(inst, sol, record = false) {
     else {
       const r = d - 1;
       if (!inst.open[r]) closed++;
-      if ((k > 0 && seq.lastIndexOf(r, k - 1) >= 0) || (st && st.groups[g].skied[r])) repeats++;   // un groupe ne refait pas la même descente
+      // Un groupe ne refait pas la même descente, sauf la descente suivante imposée par le pilote (sur demande).
+      if ((k > 0 && seq.lastIndexOf(r, k - 1) >= 0) || (st && st.groups[g].skied[r] && !(k === 0 && st.groups[g].next === r))) repeats++;
       gVert[g] += inst.vert[r];
       gReady[g] = end + inst.ski[r];
       gLoc[g] = 1 + R + r;
