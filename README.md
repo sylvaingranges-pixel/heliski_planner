@@ -14,6 +14,14 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
   (bouton *Optimiser* pendant le calcul) : la meilleure solution déjà trouvée est conservée.
   Le décodeur fait servir par l'hélico, à chaque étape, le groupe le plus intéressant (début du chargement, priorité,
   coût marginal, urgence de l'attente client) ; le recuit choisit les descentes de chaque groupe et ces poids.
+- **Variantes** : chaque chaîne garde une archive d'élite (10 plannings faisables de coût ≤ meilleur + tolérance, deux à
+  deux différents) ; à la fin, une sélection max-min parmi toutes les archives propose jusqu'à 8 plannings de coût proche
+  mais réellement différents — descentes choisies (Jaccard sur les couples groupe × descente) et forme du planning
+  (attente au départ du matin, attente au fond, ordre de service, heures de fin ; `planDistance` dans `js/model.js`).
+  On les fait défiler dans le panneau *Variantes* de la barre latérale, à côté de la carte et du planning qui suivent
+  (◀ ▶, flèches du clavier, liste, ou onglet *Comparaison*) ; *Démarrer la
+  journée* part de la variante affichée. Écart de coût toléré (max(3 %, CHF 100)), nombre de variantes et poids
+  descentes / planning se règlent dans l'onglet *Paramètres* (carte *Variantes*).
 - **Jeu de base fixe** : `data/base-dataset.json` (base de Le Châble, 50 descentes tracées sur le relief réel, graine 42).
   Il est chargé au premier lancement, toujours identique, disponible hors ligne. Dans l'onglet *Itinéraires* → *Jeu de données* :
   générer de nouvelles descentes, placer la base sur la carte, importer un JSON… puis **Revenir au jeu de base** d'un clic.
@@ -152,7 +160,7 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 | `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
 | `js/data.js` | générateur synthétique, paramètres par défaut |
 | `js/model.js` | instance, matrice des temps de vol, décodeur à un hélico (séquences → planning, y compris depuis un état de mi-journée : position GPS, passage base, descente imposée, stabilité), coût |
-| `js/solver.js` | recuit simulé multi-départs (pénalités adaptatives) + descente locale |
+| `js/solver.js` | recuit simulé multi-départs (pénalités adaptatives) + descente locale, archive d'élite et sélection des variantes |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/ops.js` | exploitation : journal des événements → état réel → instance « reste de la journée », adaptation du plan, déductions GPS, simulation (l'hélico suit le plan) |
 | `js/ops-ui.js` | onglet *Exploitation* (tablette du pilote) : horloge, GPS, recalcul en arrière-plan, carte, programme, fenêtres tactiles |

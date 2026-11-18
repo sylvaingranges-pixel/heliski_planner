@@ -79,7 +79,7 @@ function renderStart() {
   $('ops-start').hidden = false; $('ops-main').hidden = true;
   const plan = host.getPlan(), params = host.getParams();
   $('ops-plan-summary').innerHTML = plan
-    ? `<b>Plan du matin :</b> ${chf(plan.cost)} · ${host.getGroups().length} groupes · ${host.getOpen().length} itinéraires ouverts`
+    ? `<b>Plan du matin${plan.label ? ` (${esc(plan.label)})` : ''} :</b> ${chf(plan.cost)} · ${host.getGroups().length} groupes · ${host.getOpen().length} itinéraires ouverts`
       + (plan.feasible ? '' : ' · <span class="bad-text">contraintes violées</span>')
     : '<span class="bad-text">Pas encore de plan : lancez d’abord une optimisation dans l’onglet Planification.</span>';
   $('ops-start-mode').querySelectorAll('[data-mode]').forEach(b => {

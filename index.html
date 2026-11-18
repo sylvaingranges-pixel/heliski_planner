@@ -46,6 +46,24 @@
           </div>
         </details>
 
+        <details open id="variants-box">
+          <summary>Variantes</summary>
+          <div id="variant-bar" class="variant-bar" hidden>
+            <div class="vbar-nav">
+              <button id="var-prev" class="btn vbar-btn" title="Variante précédente (flèche gauche)" aria-label="Variante précédente">◀</button>
+              <div class="vbar-title"><b id="var-title">Variante 1 / 1</b>
+                <select id="var-select" aria-label="Choisir une variante"></select></div>
+              <button id="var-next" class="btn vbar-btn" title="Variante suivante (flèche droite)" aria-label="Variante suivante">▶</button>
+            </div>
+            <div id="var-stats" class="vbar-stats"></div>
+            <div id="var-note" class="small"></div>
+            <div id="var-groups" class="vbar-groups small"></div>
+            <div id="var-general" class="vbar-line small"></div>
+          </div>
+          <p id="variant-empty" class="muted small" style="margin:0">Après un calcul, plusieurs plannings de coût proche mais réellement différents
+            (descentes, attentes, ordre de service) : faites-les défiler ici, la carte et le planning suivent.</p>
+          <p class="muted small" style="margin:8px 0 0">Écart de coût toléré, nombre de variantes, diversité : onglet <i>Paramètres</i>.</p>
+        </details>
         <details open>
           <summary>Descentes du jour</summary>
           <p class="muted small" style="margin:0 0 6px">Descentes réalisables aujourd’hui (neige, météo, avalanches…) :
@@ -162,6 +180,19 @@
         <label class="check"><input type="checkbox" id="p-allowBaseShutdown"> Autoriser l’arrêt moteur à la base en journée&nbsp;<i class="help" tabindex="0" data-tip="L’hélico peut couper le moteur à la base entre deux rotations (0.-/min), le redémarrage est payant.">?</i></label>
         <label class="check"><input type="checkbox" id="p-refuelEngineOff"> Moteur coupé pendant le plein&nbsp;<i class="help" tabindex="0" data-tip="Coché : moteur coupé, redémarrage payant. Décoché : plein moteur allumé, au tarif standby.">?</i></label>
         <label class="check"><input type="checkbox" id="p-allowFieldShutdown"> Autoriser l’arrêt moteur à chaque dépose / reprise&nbsp;<i class="help" tabindex="0" data-tip="Moteur coupé pendant l’attente au point de reprise (fond de descente) ou de dépose, puis redémarrage payant : remplace le vol d’attente et le standby long.">?</i></label>
+      </div>
+      <div class="card params-card" style="margin-top:14px">
+        <div class="card-head"><h3>Variantes</h3></div>
+        <p class="muted small" style="margin:0 0 10px">Après un calcul, plusieurs plannings de coût proche mais réellement différents sont proposés
+          (panneau <i>Variantes</i> de l’onglet <i>Planification</i>). Un changement ici refait aussitôt la sélection parmi les plannings du dernier calcul.</p>
+        <div class="grid2">
+          <label><span>Écart toléré (%)&nbsp;<i class="help" tabindex="0" data-tip="Écart de coût toléré par rapport au meilleur planning : le plus grand entre ce pourcentage et le montant minimum. Un écart plus grand que celui du calcul ne s’applique qu’au calcul suivant.">?</i></span> <input type="number" id="v-tolPct" step="0.5" min="0" max="50"></label>
+          <label><span>Écart min. (CHF)&nbsp;<i class="help" tabindex="0" data-tip="Montant minimum de l’écart de coût toléré (CHF 100 par défaut).">?</i></span> <input type="number" id="v-tolChf" step="10" min="0"></label>
+          <label><span>Nombre de variantes&nbsp;<i class="help" tabindex="0" data-tip="Nombre maximum de plannings proposés ; en effort Rapide, il y en a souvent moins.">?</i></span> <input type="number" id="v-count" step="1" min="1" max="20"></label>
+          <label><span>Diversité&nbsp;<i class="help" tabindex="0" data-tip="Privilégier des variantes qui changent les descentes (à droite) ou la forme du planning : départs du matin, attentes, ordre de service, heures de fin (à gauche).">?</i></span>
+            <input type="range" id="v-mix" min="0" max="100" step="10">
+            <span class="vmix-legend small muted"><span>planning</span><b id="v-mix-label"></b><span>descentes</span></span></label>
+        </div>
       </div>
     </section>
 
