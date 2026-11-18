@@ -242,7 +242,7 @@ export function solveSA(inst, opts = {}) {
     if (arch) arch.offer(pol, pf, bestF);              // résultat de la descente locale de chaque départ
   }
   const res = { sol: best, f: bestF, history, elapsedMs: now() - t0, evals };
-  if (arch) res.archive = arch.list(bestF);
+  if (arch) { res.archive = arch.list(bestF); res.archiveStats = arch.stats; }
   return res;
 }
 
@@ -255,19 +255,24 @@ export function eliteArchive(inst, cfg = {}) {
   const size = cfg.size ?? 10, minDist = cfg.minDist ?? 0.05, tol = cfg.tol ?? 100, tolRel = cfg.tolRel ?? 0;
   const weights = cfg.weights ?? PLAN_DIST_WEIGHTS;
   let items = [], lastBest = Infinity;
+  const stats = { offered: 0, decoded: 0, kept: 0 };   // propositions, décodages avec rotations, entrées
   const limit = (best) => best + Math.max(tol, tolRel * best);
-  const worst = () => { let w = -Infinity; for (const x of items) if (x.f > w) w = x.f; return w; };
+  let wf = -Infinity;                               // coût du plus cher gardé (recalculé quand l'archive change)
+  const update = () => { wf = -Infinity; for (const x of items) if (x.f > wf) wf = x.f; };
+  const worst = () => wf;
   const prune = (best) => {
     if (best >= lastBest) return;
     lastBest = best;
     const lim = limit(best);
     items = items.filter(x => x.f <= lim + 1e-9);
+    update();
   };
   return {
     /** Seuil d'entrée pour un candidat (coût) : meilleur + tolérance, ou le plus cher gardé si l'archive est pleine. */
     limit: (best) => (items.length >= size ? Math.min(limit(best), worst()) : limit(best)),
     /** Propose un planning (sol, valeur f, meilleur coût connu) ; renvoie true s'il entre dans l'archive. */
     offer(sol, f, best) {
+      stats.offered++;
       prune(best);
       if (f > limit(best) + 1e-9) return false;
       // Archive pleine : un candidat au moins aussi cher que le plus cher gardé n'y resterait pas (il serait le
@@ -275,6 +280,7 @@ export function eliteArchive(inst, cfg = {}) {
       if (items.length >= size && f >= worst() - 1e-9) return false;
       // Rejet rapide : même coût et mêmes séquences qu'un planning gardé.
       for (const x of items) if (Math.abs(x.f - f) < 1e-6 && sameSeq(x.sol.seq, sol.seq)) return false;
+      stats.decoded++;
       const d = decode(inst, sol, true);
       if (!d.feasible) return false;
       const prof = planProfile(inst, d.lifts);
@@ -284,15 +290,17 @@ export function eliteArchive(inst, cfg = {}) {
         close.push(x);
       }
       if (close.length) items = items.filter(x => !close.includes(x));
-      items.push({ sol: cloneSol(sol), f, cost: d.cost, lifts: d.lifts, prof });
+      items.push({ sol: cloneSol(sol), f, cost: d.cost, lifts: d.lifts, prof }); stats.kept++;
       if (items.length > size) {
         let w = 0; for (let k = 1; k < items.length; k++) if (items[k].f > items[w].f) w = k;
         items.splice(w, 1);
       }
+      update();
       return true;
     },
     list(best) { prune(best); return items.map(({ sol, f, cost, lifts }) => ({ sol, f, cost, lifts })).sort((a, b) => a.f - b.f); },
     get size() { return items.length; },
+    stats,
   };
 }
 

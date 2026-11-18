@@ -1,5 +1,7 @@
-// Débit du recuit (évaluations / s) sur le jeu de base, avec et sans archive d'élite.
-// Usage : node tools/bench_evals.mjs [nb chaînes] [ms par chaîne]
+// Coût de l'archive d'élite (variantes) dans le recuit, sur le jeu de base.
+// Même graine et même nombre d'itérations avec et sans archive : la trajectoire est identique (l'archive ne tire aucun
+// nombre aléatoire), l'écart de temps est donc le coût propre de l'archive, sans le bruit d'un budget en temps.
+// Usage : node tools/bench_evals.mjs [itérations par départ] [répétitions]
 import { readFileSync } from 'node:fs';
 import { DEFAULT_GROUPS, DEFAULT_PARAMS } from '../js/data.js';
 import { buildInstance } from '../js/model.js';
@@ -7,21 +9,19 @@ import { solveSA } from '../js/solver.js';
 
 const base = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
 const groups = DEFAULT_GROUPS.map(g => ({ ...g, target: Math.round(g.packageM / g.days) }));
-const inst = buildInstance(base, DEFAULT_PARAMS, groups);
-const n = Number(process.argv[2] ?? 6), ms = Number(process.argv[3] ?? 900);
+const iterations = Number(process.argv[2] ?? 15000), reps = Number(process.argv[3] ?? 3);
 const ARCHIVE = { size: 10, minDist: 0.05, tol: 100, tolRel: 0.03 };
 
-function run(archive) {
-  let evals = 0, time = 0, best = Infinity, kept = 0;
-  for (let k = 0; k < n; k++) {
-    const res = solveSA(inst, { timeMs: ms, restarts: 4, seed: 1 + 1000 * k, ...(archive ? { archive } : {}) });
-    evals += res.evals; time += res.elapsedMs; best = Math.min(best, res.f); kept += res.archive?.length ?? 0;
+for (const [label, params] of [['paramètres par défaut', DEFAULT_PARAMS], ['sans ravitaillement', { ...DEFAULT_PARAMS, autonomyMin: 0 }]]) {
+  const inst = buildInstance(base, params, groups);
+  let t0 = 0, t1 = 0, evals = 0, offered = 0, decoded = 0;
+  for (let r = 0; r < reps; r++) for (const seed of [1, 1001, 2001, 3001]) {
+    const o = { seed, iterations, restarts: 4 };
+    const a = solveSA(inst, o), b = solveSA(inst, { ...o, archive: ARCHIVE });   // alternés : même charge machine
+    if (a.f !== b.f || a.evals !== b.evals) throw new Error('trajectoires différentes avec et sans archive');
+    t0 += a.elapsedMs; t1 += b.elapsedMs; evals += a.evals;
+    offered += b.archiveStats.offered; decoded += b.archiveStats.decoded;
   }
-  return { evalsPerSec: Math.round(evals / time * 1000), best: Math.round(best), archived: kept };
+  console.log(`${label} : ${Math.round(evals / t0 * 1000)} → ${Math.round(evals / t1 * 1000)} éval./s (${(100 * (t0 / t1 - 1)).toFixed(1)} %) · `
+    + `candidats proposés à l'archive ${(100 * offered / evals).toFixed(1)} %, décodés avec rotations ${(100 * decoded / evals).toFixed(2)} %`);
 }
-// Alterné pour lisser les variations de charge de la machine.
-const a = [], b = [];
-for (let rep = 0; rep < 2; rep++) { a.push(run(null)); b.push(run(ARCHIVE)); }
-const mean = (xs) => Math.round(xs.reduce((s, x) => s + x.evalsPerSec, 0) / xs.length);
-console.log('sans archive', a, '\navec archive', b);
-console.log(`débit moyen : ${mean(a)} → ${mean(b)} éval./s (${(100 * (mean(b) / mean(a) - 1)).toFixed(1)} %)`);
