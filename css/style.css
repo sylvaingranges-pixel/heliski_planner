@@ -126,6 +126,35 @@ label.check .help::after { width: 100%; }
 .timebar input { flex: 1; padding: 0; }
 .run-info { margin-top: 6px; min-height: 1.4em; }
 
+/* ---------- variantes (bandeau au-dessus de la carte et du Gantt) */
+.variant-bar { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: var(--radius); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.variant-bar[hidden] { display: none; }
+.vbar-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.vbar-btn { min-width: 48px; min-height: 44px; font-size: 18px; padding: 4px 10px; touch-action: manipulation; }
+.vbar-title { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
+.vbar-title b { font-size: 15px; }
+.vbar-title select { min-height: 32px; }
+.vbar-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-left: 6px; }
+.vchip { display: inline-flex; flex-direction: column; padding: 3px 9px; border: 1px solid var(--line); border-radius: 8px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vchip small { font-size: 11px; font-weight: 400; color: var(--muted); }
+.vchip.main { background: var(--navy); border-color: var(--navy); color: #fff; }
+.vchip.main small { color: #b8c8de; }
+.vchip.ok { color: var(--ok); }
+.vbar-line { line-height: 1.6; }
+.vdiff { padding-left: 2px; }
+.vdiff .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+.vdiff b { margin-right: 4px; }
+.vwait { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vwait .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.vmix-legend { display: flex; justify-content: space-between; margin-top: 2px; }
+.vmix-legend b { color: var(--ink); font-weight: 600; }
+input[type=range]#v-mix { padding: 0; border: 0; }
+table.var-table tr[data-var] { cursor: pointer; }
+table.var-table tr[data-var]:hover td { background: #f1f6fd; }
+table.var-table tr.current td { background: #e3eefc; font-weight: 600; }
+table.var-table td { padding: 6px 4px; }
+table.var-table td:nth-child(-n+7) { white-space: nowrap; }
+
 /* ---------- sous-onglets */
 .subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 8px; overflow-x: auto; }
 .subtab { border: 0; background: none; font: inherit; padding: 6px 10px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; white-space: nowrap; }
@@ -212,6 +241,8 @@ table.mini td { border-bottom: 1px solid #eef2f7; padding: 3px 4px; }
   .timebar { flex-wrap: wrap; row-gap: 6px; }
   .timebar input[type=range] { flex: 1 1 100%; order: 1; height: 28px; }   /* curseur sur sa propre ligne */
   #time-label { margin-left: auto; }
+  .vbar-stats { flex-basis: 100%; margin-left: 0; }
+  .vbar-title { flex: 1; }
 }
 
 

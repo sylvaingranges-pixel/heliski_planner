@@ -1,5 +1,6 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
-import { buildInstance, decode, buildSchedule, nodeLabel, BASE } from './model.js';
+import { buildInstance, decode, buildSchedule, nodeLabel, BASE, planProfile } from './model.js';
+import { selectVariants } from './solver.js';
 import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLOR, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
@@ -15,6 +16,13 @@ const EFFORT = { fast: { label: 'Rapide', seconds: 2 }, medium: { label: 'Moyen'
 // Jeu de base : figé dans data/base-dataset.json (relief réel, Le Châble, graine 42, 50 descentes, rayon 15 km).
 const BASE_OPTS = { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } };
 let BASE_DS = null;
+// Variantes : après un calcul, plusieurs plannings de coût proche mais réellement différents (voir planDistance).
+// tolPct / tolChf : écart de coût toléré = max(tolPct % du meilleur, tolChf) ; count : nombre de variantes proposées ;
+// mix : poids (%) de la diversité des descentes, le reste pour la forme du planning (attentes, ordre, heures de fin).
+const VARIANT_DEFAULTS = { tolPct: 3, tolChf: 100, count: 8, mix: 50 };
+const ARCHIVE = { size: 10, minDist: 0.05 };      // archive d'élite de chaque chaîne de recuit (js/solver.js)
+const VARIANT_MIN_DIST = 0.02;                     // en dessous : plannings quasi identiques, pas proposés comme variantes
+const variantWeights = (v) => ({ runs: v.mix / 100, shape: 1 - v.mix / 100 });
 const baseDataset = () => ({ ...structuredClone(BASE_DS), isBase: true });
 
 const state = {
@@ -25,6 +33,8 @@ const state = {
   sel: { on: false, tool: 'click', action: 'add', start: null },   // mode « sélection d'itinéraires » sur la carte
   inst: null, cur: null, results: [], time: null, selectedRun: null, focus: 'all',
   saWorkers: null, stopSolve: null,
+  vopts: { ...VARIANT_DEFAULTS },
+  variants: null,                                  // { label, seconds, info, pool, list, idx } : variantes du dernier calcul
 };
 
 // ------------------------------------------------------------------ persistance
@@ -39,7 +49,7 @@ function keptParams(s) {
 function save() {
   // Le jeu de base n'est jamais recopié : seule la référence « base » est mémorisée, il est relu depuis le fichier.
   const dataset = state.ds?.isBase ? 'base' : state.ds;
-  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort, speed: state.playSpeed })); } catch { /* stockage indisponible */ }
+  try { localStorage.setItem(STORE, JSON.stringify({ dsOpts: state.dsOpts, params: state.params, defaults: DEFAULT_PARAMS, groups: state.groups, dataset, dayRuns: state.dayRuns, dayFilter: state.dayFilter, effort: state.effort, speed: state.playSpeed, variants: state.vopts })); } catch { /* stockage indisponible */ }
 }
 function load() {
   try {
@@ -52,6 +62,7 @@ function load() {
     if (state.ds && Array.isArray(s.dayRuns)) state.dayRuns = s.dayRuns;
     if (s.dayFilter) Object.assign(state.dayFilter, s.dayFilter);
     if (EFFORT[s.effort]) state.effort = s.effort;
+    for (const k of Object.keys(VARIANT_DEFAULTS)) if (Number.isFinite(s.variants?.[k])) state.vopts[k] = s.variants[k];
     if (PLAY_SPEEDS.includes(s.speed)) state.playSpeed = s.speed;   // clé `speed` : l'ancien ×1 enregistré par défaut est ignoré
   } catch { /* ignore */ }
 }
@@ -78,8 +89,30 @@ function bindParams() {
     const e = $('p-' + k); e.checked = !!state.params[k];
     e.onchange = () => { state.params[k] = e.checked; paramsChanged(); };
   }
+  bindVariantOpts();
   fillDatasetForm();
   bindDayFilter();
+}
+/** Réglages des variantes : mémorisés ; un changement refait la sélection parmi les plannings du dernier calcul. */
+function bindVariantOpts() {
+  const lim = { tolPct: [0, 50], tolChf: [0, 5000], count: [1, 20], mix: [0, 100] };
+  for (const k of Object.keys(VARIANT_DEFAULTS)) {
+    const e = $('v-' + k); e.value = state.vopts[k];
+    const apply = () => {
+      const v = parseFloat(e.value);
+      if (Number.isNaN(v)) return;
+      state.vopts[k] = Math.max(lim[k][0], Math.min(lim[k][1], k === 'count' ? Math.round(v) : v));
+      save(); renderMixLabel();
+      if (state.variants?.pool) { setVariants({ ...state.variants }); }
+    };
+    e.onchange = apply;
+    if (k === 'mix') e.oninput = renderMixLabel;
+  }
+  renderMixLabel();
+}
+function renderMixLabel() {
+  const m = +$('v-mix').value;
+  $('v-mix-label').textContent = m >= 65 ? 'surtout les descentes' : m <= 35 ? 'surtout le planning' : 'équilibré';
 }
 function fillDatasetForm() {
   $('ds-seed').value = state.dsOpts.seed; $('ds-n').value = state.dsOpts.nRuns;
@@ -108,7 +141,7 @@ function renderGroupsTable() {
 function paramsChanged() { save(); rebuild(); reevaluate(); }
 function groupsChanged(structural = false) {
   save(); renderGroupsTable(); rebuild(); renderDayInfo();
-  if (structural) { state.cur = null; state.results = []; renderAll(); } else reevaluate();
+  if (structural) { state.cur = null; state.results = []; state.variants = null; renderAll(); } else reevaluate();
   renderFocusSelect();
 }
 
@@ -194,6 +227,7 @@ function setSelAction(a) {
 
 /** Après un changement de paramètres : on re-décode la solution courante (sans ré-optimiser). */
 function reevaluate() {
+  state.variants = null;                          // les variantes du dernier calcul ne valent plus pour ces paramètres
   if (state.cur?.sol && state.cur.sol.seq.length === state.inst.groups.length) {
     const sol = { ...state.cur.sol, seq: state.cur.sol.seq.map(q => q.filter(r => r < state.inst.R && state.inst.open[r])) };
     setSolution({ ...state.cur, sol, lifts: decode(state.inst, sol, true).lifts, stale: true, label: state.cur.label.replace(/ \(réévaluée\)$/, '') + ' (réévaluée)' }, false);
@@ -202,9 +236,11 @@ function reevaluate() {
 
 // ------------------------------------------------------------------ solutions
 function setSolution(res, addToResults = true) {
-  const sch = buildSchedule(state.inst, res.lifts);
-  const checks = validateSchedule(state.inst, sch);
-  state.cur = { ...res, sch, checks, feasible: checks.every(c => c.ok) };
+  // pre : planning et contrôles déjà calculés (variantes : changement instantané).
+  const { pre, ...rest } = res;
+  const sch = pre?.sch ?? buildSchedule(state.inst, res.lifts);
+  const checks = pre?.checks ?? validateSchedule(state.inst, sch);
+  state.cur = { ...rest, sch, checks, feasible: checks.every(c => c.ok) };
   if (addToResults) state.results.push({ label: res.label, cost: sch.cost, seconds: res.seconds, feasible: state.cur.feasible, info: res.info ?? '' });
   if (state.time == null || state.time < state.inst.params.dayStart) state.time = state.inst.params.dayStart;
   renderAll();
@@ -228,6 +264,8 @@ function solveHeuristic() {
   const timeMs = Math.max(150, 0.92 * 1000 * effort.seconds / waves - 60);   // marge : démarrage des workers, descente locale
   const restarts = timeMs >= 600 ? 4 : 2, seed0 = 1;
   const jobs = Array.from({ length: nJobs }, (_, w) => ({ seed: seed0 + 1000 * w }));
+  const vo = state.vopts;
+  const archive = { ...ARCHIVE, tol: vo.tolChf, tolRel: vo.tolPct / 100, weights: variantWeights(vo) };
   const prog = new Array(jobs.length).fill(0), done = [];
   let bestSeen = Infinity, next = 0;
   const t0 = performance.now();
@@ -240,8 +278,18 @@ function solveHeuristic() {
     const best = done.reduce((a, b) => (b.f < a.f - 1e-9 ? b : a));
     const evals = done.reduce((a, b) => a + b.evals, 0);
     const partial = done.length < jobs.length ? ` (arrêtée, ${done.length} / ${jobs.length} chaînes)` : '';
-    setSolution({ label: `Optimisation ${effort.label}${partial}`, sol: best.sol, lifts: best.lifts, seconds: (performance.now() - t0) / 1000,
-      history: best.history, info: `${done.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations` });
+    const label = `Optimisation ${effort.label}${partial}`, seconds = (performance.now() - t0) / 1000;
+    const info = `${done.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations`;
+    // Variantes : archives de toutes les chaînes (+ leur meilleure solution), plannings faisables seulement.
+    const pool = variantPool(state.inst, done.flatMap(m => [{ sol: m.sol, f: m.f, lifts: m.lifts }, ...(m.archive ?? [])]));
+    if (!pool.length) {                            // aucune solution faisable : la meilleure, comme avant
+      state.variants = null;
+      setSolution({ label, sol: best.sol, lifts: best.lifts, seconds, history: best.history, info });
+      return;
+    }
+    const v = setVariants({ label, seconds, info, pool, history: best.history }, false);
+    state.results.push({ label, cost: v.list[0].sch.cost, seconds, feasible: true, info: `${info}, ${pool.length} plannings faisables, ${v.list.length} variantes` });
+    showVariant(0);
   };
   // Arrêt par le bouton : on garde la meilleure des chaînes déjà terminées ; remplacé par un nouveau calcul : on jette tout.
   state.stopSolve = (keep = true) => {
@@ -266,11 +314,133 @@ function solveHeuristic() {
       }
     };
     w.onerror = (e) => { state.stopSolve?.(false); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { timeMs, restarts, seed: job.seed } });
+    w.postMessage({ ...snapshot(), opts: { timeMs, restarts, seed: job.seed, archive } });
     state.saWorkers.add(w);
   };
   state.saWorkers = new Set();
   for (let i = 0; i < Math.min(nW, jobs.length); i++) launch();
+}
+
+// ------------------------------------------------------------------ variantes
+/**
+ * Candidats des variantes : doublons retirés (mêmes rotations), planning et contrôles calculés une seule fois,
+ * plannings faisables seulement (validateSchedule), triés par coût.
+ */
+function variantPool(inst, cands) {
+  const seen = new Set(), pool = [];
+  for (const c of cands) {
+    if (!c?.lifts?.length) continue;
+    const key = [...c.lifts].sort((a, b) => a.start - b.start).map(l => `${l.group}:${l.from}>${l.to}@${l.start.toFixed(1)}`).join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const sch = buildSchedule(inst, c.lifts), checks = validateSchedule(inst, sch);
+    if (!checks.every(x => x.ok)) continue;
+    pool.push({ sol: c.sol, lifts: c.lifts, sch, checks, cost: sch.cost, prof: planProfile(inst, c.lifts) });
+  }
+  return pool.sort((a, b) => a.cost - b.cost);
+}
+
+/** Variantes du dernier calcul (sélection refaite à partir du même ensemble de plannings si les réglages changent). */
+function setVariants(v, show = true) {
+  const vo = state.vopts;
+  const list = selectVariants(v.pool, { tol: vo.tolChf, tolRel: vo.tolPct / 100, count: vo.count, weights: variantWeights(vo), minDist: VARIANT_MIN_DIST });
+  const best = list[0];
+  for (const x of list) { x.stats = variantStats(state.inst, x); x.diff = x === best ? null : variantDiff(state.inst, x, best); }
+  state.variants = { ...v, list, idx: 0 };
+  fillVariantSelect();
+  if (show) showVariant(0);
+  return state.variants;
+}
+
+/** Affiche la variante i : planning et contrôles précalculés, sans ligne ajoutée dans la comparaison. */
+function showVariant(i) {
+  const V = state.variants;
+  if (!V?.list.length) return;
+  V.idx = Math.max(0, Math.min(V.list.length - 1, i));
+  const x = V.list[V.idx], n = V.list.length;
+  setSolution({ label: n > 1 ? `${V.label} · variante ${V.idx + 1} / ${n}` : V.label, sol: x.sol, lifts: x.lifts, seconds: V.seconds,
+    history: V.history, info: V.info, variant: V.idx, pre: { sch: x.sch, checks: x.checks } }, false);
+}
+function stepVariant(d) {
+  const V = state.variants;
+  if (!V || V.list.length < 2) return;
+  showVariant((V.idx + d + V.list.length) % V.list.length);
+}
+
+const fmtDur = (m) => { m = Math.round(m); return m >= 60 ? `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}` : `${m} min`; };
+function variantStats(inst, x) {
+  const s = x.sch, p = x.prof;
+  return {
+    cost: s.cost, rotations: s.lifts.filter(l => l.group >= 0).length, starts: s.totals.starts,
+    heliBack: Math.max(inst.params.dayStart, ...s.heliSeg.map(h => h.t1)),
+    startWait: p.startWait, clientWait: p.clientWait.reduce((a, b) => a + b, 0),
+  };
+}
+
+/**
+ * Différences lisibles avec la meilleure variante : par groupe (descentes changées, départ, fin), puis ordre du matin
+ * et attente au fond. Renvoie { groups: [{ g, items }], general: [] }.
+ */
+function variantDiff(inst, x, best) {
+  const runs = inst.dataset.runs, G = inst.groups.length, groups = [], general = [];
+  const dup = new Set(runs.map(r => r.name).filter((n, i, a) => a.indexOf(n) !== i));
+  const rn = (r) => (dup.has(runs[r].name) ? `${runs[r].name} (${runs[r].code})` : runs[r].name);
+  const seqOf = (sch, g) => sch.groupSeg[g].filter(s => s.type === 'ski').map(s => s.run);
+  const more = (d, verb) => `${verb} ${fmtDur(Math.abs(d))} plus ${d > 0 ? 'tard' : 'tôt'}`;
+  for (let g = 0; g < G; g++) {
+    const a = seqOf(x.sch, g), b = seqOf(best.sch, g), items = [];
+    const add = a.filter(r => !b.includes(r)), rem = b.filter(r => !a.includes(r));
+    if (add.length && rem.length) items.push(`${add.map(rn).join(', ')} au lieu de ${rem.map(rn).join(', ')}`);
+    else if (add.length) items.push(`+ ${add.map(rn).join(', ')}`);
+    else if (rem.length) items.push(`sans ${rem.map(rn).join(', ')}`);
+    else if (a.join() !== b.join()) items.push('mêmes descentes, autre ordre');
+    const ds = Math.round(x.prof.startWait[g] - best.prof.startWait[g]);
+    if (Math.abs(ds) >= 10) items.push(more(ds, 'part'));
+    const de = Math.round(x.prof.end[g] - best.prof.end[g]);
+    if (Math.abs(de) >= 15) items.push(more(de, 'finit'));
+    if (items.length) groups.push({ g, items });
+  }
+  if (x.prof.order.join() !== best.prof.order.join()) general.push(`ordre du matin : ${x.prof.order.map(g => inst.groups[g].name).join(', ')}`);
+  const dw = Math.round(x.stats.clientWait - best.stats.clientWait);
+  if (Math.abs(dw) >= 10) general.push(`attente au fond ${dw > 0 ? '+' : '−'}${fmtDur(Math.abs(dw))}`);
+  return { groups, general };
+}
+const diffText = (inst, d) => [...d.groups.map(({ g, items }) => `${inst.groups[g].name} : ${items.join(', ')}`), ...d.general].join(' ; ');
+
+function fillVariantSelect() {
+  const V = state.variants, sel = $('var-select');
+  if (!V) { sel.innerHTML = ''; return; }
+  const b = V.list[0].stats.cost;
+  sel.innerHTML = V.list.map((x, i) => `<option value="${i}">${i + 1} · ${chf(x.stats.cost)}${i ? ` (+${Math.round(x.stats.cost - b)})` : ' (meilleure)'}</option>`).join('');
+}
+
+/** Bandeau des variantes (au-dessus de la carte et du Gantt). */
+function renderVariantBar() {
+  const bar = $('variant-bar'), V = state.variants;
+  const on = !!V && state.cur?.variant != null;
+  bar.hidden = !on;
+  if (!on) return;
+  const n = V.list.length, x = V.list[V.idx], st = x.stats, b = V.list[0].stats, inst = state.inst;
+  $('var-title').textContent = `Variante ${V.idx + 1} / ${n}`;
+  $('var-select').value = String(V.idx);
+  $('var-prev').disabled = $('var-next').disabled = n < 2;
+  const dc = st.cost - b.cost;
+  const chip = (l, v, cls = '') => `<span class="vchip ${cls}"><small>${l}</small>${v}</span>`;
+  $('var-stats').innerHTML = [
+    chip('Coût', chf(st.cost), 'main'),
+    chip('Écart', V.idx === 0 ? 'meilleure' : `+${chf(dc)} · +${(100 * dc / b.cost).toFixed(1)} %`, V.idx === 0 ? 'ok' : ''),
+    chip('Rotations', st.rotations), chip('Démarrages', st.starts), chip('Retour hélico', fmt(st.heliBack)),
+    chip('Attente client au fond', fmtDur(st.clientWait)),
+  ].join('');
+  $('var-waits').innerHTML = '<span class="muted">Départ (attente le matin) :</span> ' + inst.groups.map((g, i) =>
+    `<span class="vwait"><span class="dot" style="background:${GROUP_COLORS[i % GROUP_COLORS.length]}"></span>${esc(g.name)} ${fmtDur(st.startWait[i] ?? 0)}</span>`).join('');
+  const d = x.diff;
+  $('var-diff').innerHTML = V.idx === 0
+    ? (n > 1 ? `<span class="muted">Meilleur planning trouvé. ◀ ▶ (ou flèches du clavier) : ${n - 1} autre${n > 2 ? 's' : ''} planning${n > 2 ? 's' : ''} de coût proche.</span>`
+      : `<span class="muted">Une seule variante distincte dans l’écart de coût toléré${state.effort === 'fast' ? ' — un effort Moyen en trouve en général davantage' : ''}.</span>`)
+    : `<div class="muted">Par rapport à la meilleure${d.groups.length || d.general.length ? '' : ' : écarts de quelques minutes seulement'}</div>` +
+      d.groups.map(({ g, items }) => `<div class="vdiff"><span class="dot" style="background:${GROUP_COLORS[g % GROUP_COLORS.length]}"></span><b>${esc(inst.groups[g].name)}</b> ${items.map(esc).join(' · ')}</div>`).join('') +
+      (d.general.length ? `<div class="vdiff">${d.general.map(esc).join(' · ')}</div>` : '');
 }
 
 // ------------------------------------------------------------------ rendu
@@ -330,7 +500,7 @@ function syncPlayButtons() {
 
 function renderAll() {
   if (!state.cur && playTimer) stopPlay();
-  renderKpis(); renderMapView(); renderGanttView(); renderChecks(); renderGroupsSub(); renderOps(); renderCompare(); updateTime();
+  renderVariantBar(); renderKpis(); renderMapView(); renderGanttView(); renderChecks(); renderGroupsSub(); renderOps(); renderCompare(); updateTime();
 }
 
 function renderKpis() {
@@ -424,12 +594,23 @@ function renderOps() {
 }
 
 function renderCompare() {
-  const el = $('sub-compare');
-  if (!state.results.length) { el.innerHTML = '<p class="muted">Les solutions calculées s’affichent ici.</p>'; return; }
-  el.innerHTML = `<table class="mini"><thead><tr><th>Méthode</th><th>Coût</th><th>Temps</th><th>OK</th></tr></thead><tbody>` +
+  const el = $('sub-compare'), V = state.variants;
+  if (!state.results.length && !V) { el.innerHTML = '<p class="muted">Les solutions calculées s’affichent ici.</p>'; return; }
+  let html = '';
+  if (V) {
+    const b = V.list[0].stats.cost;
+    html += `<h4>Variantes du dernier calcul</h4><table class="mini var-table"><thead><tr><th>#</th><th>Coût</th><th>Écart</th><th>Rot.</th><th>Dém.</th><th>Retour</th><th>Attente</th><th>Différences avec la meilleure</th></tr></thead><tbody>` +
+      V.list.map((x, i) => `<tr data-var="${i}" class="${i === V.idx && state.cur?.variant != null ? 'current' : ''}"><td>${i + 1}</td><td>${chf(x.stats.cost)}</td>
+        <td>${i ? `+${Math.round(x.stats.cost - b)} (${(100 * (x.stats.cost - b) / b).toFixed(1)} %)` : '—'}</td><td>${x.stats.rotations}</td><td>${x.stats.starts}</td>
+        <td>${fmt(x.stats.heliBack)}</td><td>${fmtDur(x.stats.clientWait)}</td><td class="small">${i ? esc(diffText(state.inst, x.diff) || 'quelques minutes') : 'meilleure'}</td></tr>`).join('') +
+      '</tbody></table><div class="note">Touchez une ligne pour afficher la variante (aussi ◀ ▶ au-dessus de la carte). « Démarrer la journée » (onglet Exploitation) part de la variante affichée.</div>';
+  }
+  if (state.results.length) html += `<h4>Calculs</h4><table class="mini"><thead><tr><th>Méthode</th><th>Coût</th><th>Temps</th><th>OK</th></tr></thead><tbody>` +
     state.results.map(r => `<tr><td title="${esc(r.info)}">${esc(r.label)}</td><td>${chf(r.cost)}</td>
       <td>${r.seconds != null ? r.seconds.toFixed(1) + ' s' : '—'}</td><td>${r.feasible ? '✓' : '✗'}</td></tr>`).join('') + '</tbody></table>' +
     `<div class="note">Chaque optimisation repart de zéro : un effort plus élevé explore davantage de plannings et trouve en général un coût plus bas. Survolez une ligne pour le détail.</div>`;
+  el.innerHTML = html;
+  el.querySelectorAll('tr[data-var]').forEach(tr => { tr.onclick = () => showVariant(+tr.dataset.var); });
 }
 
 function renderFocusSelect() {
@@ -496,7 +677,7 @@ function setPlacingBase(on) {
 function restoreBase() {
   if (!BASE_DS) return;
   state.ds = baseDataset(); state.dsOpts = structuredClone(BASE_OPTS);
-  state.cur = null; state.results = []; state.selectedRun = null; state.dayRuns = null;
+  state.cur = null; state.results = []; state.variants = null; state.selectedRun = null; state.dayRuns = null;
   fillDatasetForm();
   save(); rebuild(); renderData(); renderDayInfo(); renderAll();
   $('run-info').textContent = 'Cliquez sur une descente pour son détail.';
@@ -526,7 +707,7 @@ async function generate({ solve = true } = {}) {
     state.ds = { ...generateDataset({ ...state.dsOpts, nMassifs: 6 }), origin };
     $('ds-source').value = 'synthetic';
   } finally { btn.disabled = false; }
-  state.cur = null; state.results = []; state.selectedRun = null; state.dayRuns = null;
+  state.cur = null; state.results = []; state.variants = null; state.selectedRun = null; state.dayRuns = null;
   save(); rebuild(); renderData(); renderDayInfo(); renderAll();
   $('run-info').textContent = 'Cliquez sur une descente pour son détail.';
   if (solve) solveHeuristic();
@@ -544,7 +725,7 @@ function importDataset(file) {
       });
       d.radiusKm ??= Math.ceil(Math.max(...d.runs.flatMap(r => [Math.hypot(r.top.x, r.top.y), Math.hypot(r.bottom.x, r.bottom.y)])));
       d.custom = true; d.isBase = false; d.name ??= file.name; d.origin ??= { ...state.dsOpts.origin };
-      state.ds = d; state.cur = null; state.results = []; state.dayRuns = null;
+      state.ds = d; state.cur = null; state.results = []; state.variants = null; state.dayRuns = null;
       save(); rebuild(); renderData(); renderDayInfo(); renderAll();
     } catch (e) { alert('Fichier invalide : ' + e.message); }
   };
@@ -594,7 +775,16 @@ async function init() {
   $('sel-all').onclick = () => setDayRuns(null);
   $('sel-none').onclick = () => setDayRuns([]);
   $('sel-invert').onclick = () => setDayRuns(state.ds.runs.map(r => r.id).filter(r => !state.inst.open[r]));
+  // Variantes : ◀ ▶, liste déroulante, flèches gauche / droite du clavier (onglet Planification, hors champs de saisie).
+  $('var-prev').onclick = () => stepVariant(-1);
+  $('var-next').onclick = () => stepVariant(1);
+  $('var-select').onchange = (e) => showVariant(+e.target.value);
   document.addEventListener('keydown', (e) => {
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.altKey && !e.ctrlKey && !e.metaKey && state.variants
+      && $('view-plan').classList.contains('active') && !state.sel.on) {
+      const t = e.target, typing = t.isContentEditable || (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && t.id !== 'var-select');
+      if (!typing) { e.preventDefault(); stepVariant(e.key === 'ArrowLeft' ? -1 : 1); return; }
+    }
     if (e.key !== 'Escape') return;
     if (state.placingBase) setPlacingBase(false); else if (state.sel.on) setSelMode(false);
   });
@@ -627,7 +817,7 @@ async function init() {
   // Exploitation : la journée en cours part du plan affiché ici (copie : la planification reste libre ensuite).
   initOps({
     getPlan: () => (state.cur?.sol && state.cur.sol.seq.length === state.inst.groups.length
-      ? { sol: state.cur.sol, cost: state.cur.sch.cost, feasible: state.cur.feasible } : null),
+      ? { sol: state.cur.sol, cost: state.cur.sch.cost, feasible: state.cur.feasible, label: state.cur.variant != null && state.variants?.list.length > 1 ? `variante ${state.cur.variant + 1} / ${state.variants.list.length}` : '' } : null),
     getDataset: () => state.ds,
     getParams: () => ({ ...state.params }),
     getGroups: () => state.inst.groups.map(g => ({ name: g.name, target: g.target })),
