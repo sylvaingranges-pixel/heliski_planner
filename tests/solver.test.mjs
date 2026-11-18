@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from '../js/data.js';
-import { buildInstance, decode, buildSchedule } from '../js/model.js';
-import { solveSA, initialSolution, mutate, polish } from '../js/solver.js';
+import { buildInstance, decode, buildSchedule, planProfile, planDistance, planShapeDistance } from '../js/model.js';
+import { solveSA, initialSolution, mutate, polish, selectVariants } from '../js/solver.js';
 import { mulberry32 } from '../js/data.js';
 import { validateSchedule } from '../js/validate.js';
 import { buildMilp, candidateRuns, warmStart, runHighs, liftsFromMilp } from '../js/milp.js';
@@ -211,4 +211,89 @@ test('robustesse : instance serrée (fin 13 h), toutes les graines faisables', (
     assert.equal(d.f, res.f);
     for (const c of validateSchedule(inst, buildSchedule(inst, d.lifts))) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
   }
+});
+
+// ------------------------------------------------------------------ variantes : distance, archive d'élite, sélection
+const baseInst = () => {
+  const base = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
+  return buildInstance(base, DEFAULT_PARAMS, DEFAULT_GROUPS.map(g => ({ ...g, target: Math.round(g.packageM / g.days) })));
+};
+
+test('distance entre plannings : identiques → 0, départs décalés → > 0, quelques minutes → quasi identiques', () => {
+  const inst = baseInst();
+  const res = solveSA(inst, { seed: 1, iterations: 8000, restarts: 2 });
+  const lifts = decode(inst, res.sol, true).lifts, a = planProfile(inst, lifts);
+  assert.equal(planDistance(a, planProfile(inst, structuredClone(lifts))), 0);
+  // Mêmes descentes, tout le planning décalé : Jaccard nul, forme différente.
+  const shift = (m) => planProfile(inst, lifts.map(l => ({ ...l, start: l.start + m, end: l.end + m })));
+  const late = shift(40);
+  assert.ok(planDistance(a, late) > 0.1, `décalage 40 min : ${planDistance(a, late)}`);
+  assert.ok(planDistance(a, late, { runs: 1, shape: 0 }) === 0);
+  assert.ok(planShapeDistance(a, late) > 0);
+  // Quelques minutes : quasi identiques (sous le seuil de l'archive).
+  assert.ok(planDistance(a, shift(3)) < 0.03, `décalage 3 min : ${planDistance(a, shift(3))}`);
+  // Une descente changée pour un groupe : clairement distincte du décalage de quelques minutes.
+  const g = lifts.find(l => l.to !== 0).group, r0 = lifts.find(l => l.group === g && l.to !== 0).to - 1;
+  const other = [...inst.dayRuns].find(r => !lifts.some(l => l.group === g && l.to === 1 + r));
+  const swapped = planProfile(inst, lifts.map(l => (l.group === g && l.to === 1 + r0 ? { ...l, to: 1 + other, run: other } : l)));
+  assert.ok(planDistance(a, swapped) > planDistance(a, shift(3)));
+  // Symétrie, bornes.
+  assert.ok(Math.abs(planDistance(a, late) - planDistance(late, a)) < 1e-12);
+  assert.ok(planDistance(a, late) <= 1);
+});
+
+test('archive d’élite : plannings faisables, distincts (≥ minDist), coût ≤ meilleur + tol', () => {
+  const inst = baseInst(), cfg = { size: 10, minDist: 0.05, tol: 100, tolRel: 0.03 };
+  const res = solveSA(inst, { seed: 1, iterations: 20000, restarts: 3, archive: cfg });
+  const A = res.archive;
+  assert.ok(A.length >= 3, `archive : ${A.length} plannings`);
+  assert.ok(A.length <= cfg.size);
+  const best = A[0].f, lim = best + Math.max(cfg.tol, cfg.tolRel * best);
+  assert.ok(best <= res.f + 1e-6);
+  for (const a of A) {
+    const d = decode(inst, a.sol, true);
+    assert.ok(d.feasible);
+    assert.ok(Math.abs(d.f - a.f) < 1e-6 && Math.abs(d.cost - a.cost) < 1e-6);
+    assert.ok(a.f <= lim + 1e-6, `coût ${a.f} > ${lim}`);
+    const sch = buildSchedule(inst, a.lifts);
+    assert.ok(Math.abs(sch.cost - a.cost) < 1e-6);
+    for (const c of validateSchedule(inst, sch)) assert.ok(c.ok, `${c.label} : ${c.errors.join(', ')}`);
+  }
+  const P = A.map(a => planProfile(inst, a.lifts));
+  for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) {
+    assert.ok(planDistance(P[i], P[j]) >= cfg.minDist - 1e-9, `distance ${i}-${j} : ${planDistance(P[i], P[j])}`);
+  }
+  for (let k = 1; k < A.length; k++) assert.ok(A[k].f >= A[k - 1].f);   // triée par coût
+});
+
+test('archive d’élite : sans archive, résultat identique pour une même graine (et inchangé par l’archive)', () => {
+  const inst = baseInst(), o = { seed: 7, iterations: 6000, restarts: 3 };
+  const a = solveSA(inst, o), b = solveSA(inst, o), c = solveSA(inst, { ...o, archive: { size: 10, minDist: 0.05, tol: 100 } });
+  assert.equal(a.archive, undefined);
+  assert.deepEqual(b.sol, a.sol); assert.equal(b.f, a.f); assert.equal(b.evals, a.evals);
+  assert.deepEqual(c.sol, a.sol); assert.equal(c.f, a.f); assert.equal(c.evals, a.evals);
+  assert.deepEqual(c.history.map(h => h.f), a.history.map(h => h.f));
+});
+
+test('variantes : sélection max-min parmi les archives de plusieurs chaînes', () => {
+  const inst = baseInst(), cfg = { size: 10, minDist: 0.05, tol: 100, tolRel: 0.03 };
+  const pool = [];
+  for (const seed of [1, 1001, 2001]) {
+    const res = solveSA(inst, { seed, iterations: 8000, restarts: 2, archive: cfg });
+    for (const a of res.archive) pool.push({ ...a, prof: planProfile(inst, a.lifts) });
+  }
+  const opts = { tol: 100, tolRel: 0.03, count: 5, minDist: 0.02 };
+  const V = selectVariants(pool, opts);
+  const best = Math.min(...pool.map(p => p.cost));
+  assert.ok(V.length >= 2 && V.length <= opts.count, `${V.length} variantes`);
+  assert.equal(V[0].cost, best);
+  for (let k = 1; k < V.length; k++) assert.ok(V[k].cost >= V[k - 1].cost);
+  for (const v of V) assert.ok(v.cost <= best + Math.max(opts.tol, opts.tolRel * best) + 1e-6);
+  for (let i = 0; i < V.length; i++) for (let j = i + 1; j < V.length; j++) assert.ok(planDistance(V[i].prof, V[j].prof) >= opts.minDist);
+  // Glouton max-min : la 2e retenue est la plus éloignée de la meilleure.
+  const lim = best + Math.max(opts.tol, opts.tolRel * best), b0 = pool.find(p => p.cost === best);
+  const far = Math.max(...pool.filter(p => p.cost <= lim + 1e-9).map(p => planDistance(p.prof, b0.prof)));
+  assert.ok(V.some(v => Math.abs(planDistance(v.prof, b0.prof) - far) < 1e-12));
+  assert.equal(selectVariants(pool, { ...opts, count: 1 }).length, 1);
+  assert.deepEqual(selectVariants([], opts), []);
 });

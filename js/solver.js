@@ -1,6 +1,6 @@
 // Métaheuristique : recuit simulé sur les séquences de descentes + paramètres du décodeur,
 // suivi d'une descente locale exhaustive (« polish »). Fonction pure, utilisable en Node et en Worker.
-import { decode, BASE } from './model.js';
+import { decode, BASE, planProfile, planDistance, PLAN_DIST_WEIGHTS } from './model.js';
 import { mulberry32 } from './data.js';
 
 export function cloneSol(s) {
@@ -183,6 +183,9 @@ function penaltyWeight() {
  * timeMs : budget de temps total (ms, réparti entre les départs) à la place d'un nombre d'itérations fixe ;
  * la température suit alors le temps écoulé. Durée prévisible quel que soit l'appareil (résultat non reproductible).
  * init : solution de départ (exploitation : le plan en cours) ; le résultat n'est jamais moins bon qu'elle.
+ * archive : { size, minDist, tol, tolRel, weights } — archive d'élite (variantes) : plannings faisables de coût
+ * ≤ meilleur + max(tol, tolRel × meilleur), deux à deux distants d'au moins minDist (planDistance). Renvoyée dans
+ * res.archive : [{ sol, f, cost, lifts }], triée par coût. Sans archive, le recuit est strictement inchangé.
  */
 export function solveSA(inst, opts = {}) {
   const timed = opts.timeMs > 0, iterations = opts.iterations ?? 60000, restarts = opts.restarts ?? 4;
@@ -190,6 +193,7 @@ export function solveSA(inst, opts = {}) {
   const t0 = now();
   let best = null, bestF = Infinity, evals = 0, lastProg = -Infinity;
   const history = [];
+  const arch = opts.archive ? eliteArchive(inst, opts.archive) : null;
   for (let rs = 0; rs < restarts; rs++) {
     // Départs suivants : autour de la meilleure solution, sauf si elle est infaisable (on repart de zéro).
     // Avec une solution de départ (plan en cours), on reste autour de la meilleure : l'infaisabilité peut être inévitable.
@@ -200,6 +204,7 @@ export function solveSA(inst, opts = {}) {
     let acc = 0; for (let i = 0; i < 30; i++) { acc += Math.abs(decode(inst, mutate(inst, cur, rnd)).f - cd.f); evals++; }
     const T0 = Math.min(400, Math.max(50, acc / 30)), Tend = 1;
     if (cd.f < bestF) { bestF = cd.f; best = cloneSol(cur); }
+    if (arch && cd.feasible) arch.offer(cur, cd.f, bestF);
     // En temps limité, le départ se termine à l'échéance : la descente locale finale est prise sur son budget.
     const tStart = now(), span = timed ? Math.max(1, t0 + (rs + 1) * opts.timeMs / restarts - tStart) : 0;
     const pw = penaltyWeight();
@@ -217,6 +222,8 @@ export function solveSA(inst, opts = {}) {
       }
       const cand = mutate(inst, cur, rnd);
       const d = decode(inst, cand); evals++;
+      // Archive : seuls les candidats faisables sous le seuil de coût sont re-décodés (rotations) et comparés.
+      if (arch && d.feasible && d.f <= arch.limit(Math.min(bestF, d.f))) arch.offer(cand, d.f, Math.min(bestF, d.f));
       const v = pw.val(d), cv = pw.val(cd);
       if (v <= cv || rnd() < Math.exp((cv - v) / T)) {
         cur = cand; cd = d;
@@ -227,9 +234,94 @@ export function solveSA(inst, opts = {}) {
     const pol = polish(inst, best);
     const pf = decode(inst, pol).f;
     if (pf < bestF - 1e-9) { bestF = pf; best = pol; history.push({ t: now() - t0, f: pf, eval: evals }); }
+    if (arch) arch.offer(pol, pf, bestF);              // résultat de la descente locale de chaque départ
   }
-  return { sol: best, f: bestF, history, elapsedMs: now() - t0, evals };
+  const res = { sol: best, f: bestF, history, elapsedMs: now() - t0, evals };
+  if (arch) res.archive = arch.list(bestF);
+  return res;
+}
+
+/**
+ * Archive d'élite : au plus `size` plannings faisables, de coût ≤ meilleur + seuil, deux à deux à distance ≥ minDist.
+ * Un candidat trop proche d'un ou plusieurs plannings gardés ne les remplace que s'il est moins cher que chacun d'eux ;
+ * archive pleine : le plus cher sort. Les plannings sortis du seuil (le meilleur a baissé) sont retirés.
+ */
+export function eliteArchive(inst, cfg = {}) {
+  const size = cfg.size ?? 10, minDist = cfg.minDist ?? 0.05, tol = cfg.tol ?? 100, tolRel = cfg.tolRel ?? 0;
+  const weights = cfg.weights ?? PLAN_DIST_WEIGHTS;
+  let items = [], lastBest = Infinity;
+  const limit = (best) => best + Math.max(tol, tolRel * best);
+  const worst = () => { let w = -Infinity; for (const x of items) if (x.f > w) w = x.f; return w; };
+  const prune = (best) => {
+    if (best >= lastBest) return;
+    lastBest = best;
+    const lim = limit(best);
+    items = items.filter(x => x.f <= lim + 1e-9);
+  };
+  return {
+    /** Seuil d'entrée pour un candidat (coût) : meilleur + tolérance, ou le plus cher gardé si l'archive est pleine. */
+    limit: (best) => (items.length >= size ? Math.min(limit(best), worst()) : limit(best)),
+    /** Propose un planning (sol, valeur f, meilleur coût connu) ; renvoie true s'il entre dans l'archive. */
+    offer(sol, f, best) {
+      prune(best);
+      if (f > limit(best) + 1e-9) return false;
+      // Archive pleine : un candidat au moins aussi cher que le plus cher gardé n'y resterait pas (il serait le
+      // plus cher, ou trop proche d'un planning moins cher) — rejeté sans décodage.
+      if (items.length >= size && f >= worst() - 1e-9) return false;
+      // Rejet rapide : même coût et mêmes séquences qu'un planning gardé.
+      for (const x of items) if (Math.abs(x.f - f) < 1e-6 && sameSeq(x.sol.seq, sol.seq)) return false;
+      const d = decode(inst, sol, true);
+      if (!d.feasible) return false;
+      const prof = planProfile(inst, d.lifts);
+      const close = [];
+      for (const x of items) if (planDistance(prof, x.prof, weights) < minDist) {
+        if (x.f <= f + 1e-9) return false;               // un planning proche et au moins aussi bon est déjà gardé
+        close.push(x);
+      }
+      if (close.length) items = items.filter(x => !close.includes(x));
+      items.push({ sol: cloneSol(sol), f, cost: d.cost, lifts: d.lifts, prof });
+      if (items.length > size) {
+        let w = 0; for (let k = 1; k < items.length; k++) if (items[k].f > items[w].f) w = k;
+        items.splice(w, 1);
+      }
+      return true;
+    },
+    list(best) { prune(best); return items.map(({ sol, f, cost, lifts }) => ({ sol, f, cost, lifts })).sort((a, b) => a.f - b.f); },
+    get size() { return items.length; },
+  };
+}
+
+function sameSeq(a, b) {
+  for (let g = 0; g < a.length; g++) {
+    const x = a[g], y = b[g];
+    if (x.length !== y.length) return false;
+    for (let k = 0; k < x.length; k++) if (x[k] !== y[k]) return false;
+  }
+  return true;
 }
 
 function mutateN(inst, s, rnd, n) { let c = s; for (let i = 0; i < n; i++) c = mutate(inst, c, rnd); return c; }
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+/**
+ * Variantes : sélection gloutonne max-min parmi des plannings { cost, prof } (prof : planProfile).
+ * La moins chère d'abord, puis à chaque étape le candidat dont la distance minimale aux plannings déjà retenus est la
+ * plus grande, parmi ceux de coût ≤ meilleur + max(tol, tolRel × meilleur). Arrêt à `count` plannings, ou quand
+ * les candidats restants sont tous à moins de minDist (quasi identiques). Résultat trié par coût.
+ */
+export function selectVariants(cands, { tol = 100, tolRel = 0.03, count = 8, weights = PLAN_DIST_WEIGHTS, minDist = 0 } = {}) {
+  if (!cands.length) return [];
+  const sorted = [...cands].sort((a, b) => a.cost - b.cost), best = sorted[0].cost;
+  const lim = best + Math.max(tol, tolRel * best);
+  const cand = sorted.filter(c => c.cost <= lim + 1e-9);
+  const chosen = [cand[0]], minD = cand.map(c => planDistance(c.prof, cand[0].prof, weights));
+  minD[0] = -1;
+  while (chosen.length < count) {
+    let k = -1;
+    for (let i = 0; i < cand.length; i++) if (minD[i] >= 0 && (k < 0 || minD[i] > minD[k] + 1e-12)) k = i;
+    if (k < 0 || minD[k] < minDist || minD[k] <= 1e-9) break;
+    chosen.push(cand[k]); minD[k] = -1;
+    for (let i = 0; i < cand.length; i++) if (minD[i] >= 0) minD[i] = Math.min(minD[i], planDistance(cand[i].prof, cand[k].prof, weights));
+  }
+  return chosen.sort((a, b) => a.cost - b.cost);
+}
