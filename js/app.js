@@ -1,5 +1,5 @@
 import { generateDataset, DEFAULT_GROUPS, DEFAULT_PARAMS } from './data.js';
-import { buildInstance, decode, buildSchedule, nodeLabel, BASE } from './model.js';
+import { buildInstance, decode, buildSchedule, nodeLabel, refuelParams, BASE } from './model.js';
 import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLOR, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
@@ -7,7 +7,9 @@ import { initOps, showOps } from './ops-ui.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
-const PARAM_KEYS = ['flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait'];
+// Onglet Paramètres : hélicoptère (tarifs, vitesses, chargement, autonomie, plein) ; Planification : journée.
+const PARAM_KEYS = ['flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait',
+  'autonomyMin', 'refuelMin'];
 const STORE = 'heliski-planner-prod-v1';
 // Niveaux d'effort de l'optimisation : durée totale visée (s). Le temps est réparti en chaînes de recuit d'environ 1 s,
 // en parallèle sur les cœurs disponibles : plus d'effort = plus de chaînes indépendantes, on garde la meilleure.
@@ -74,7 +76,7 @@ function bindParams() {
     const e = $('p-' + k); e.value = fmt(state.params[k]);
     e.onchange = () => { const [h, m] = e.value.split(':').map(Number); if (!Number.isNaN(h)) { state.params[k] = h * 60 + (m || 0); paramsChanged(); } };
   }
-  for (const k of ['exclusiveRuns', 'allowBaseShutdown', 'allowFieldShutdown']) {
+  for (const k of ['exclusiveRuns', 'allowBaseShutdown', 'allowFieldShutdown', 'refuelEngineOff']) {
     const e = $('p-' + k); e.checked = !!state.params[k];
     e.onchange = () => { state.params[k] = e.checked; paramsChanged(); };
   }
@@ -113,7 +115,7 @@ function groupsChanged(structural = false) {
 }
 
 // ------------------------------------------------------------------ descentes du jour
-// Filtres (onglet Données) : altitude du sommet, du fond, dénivelé min., difficultés retenues ; champ vide = pas de limite.
+// Filtres (onglet Itinéraires) : altitude du sommet, du fond, dénivelé min., difficultés retenues ; champ vide = pas de limite.
 const FILTER_KEYS = ['topMin', 'topMax', 'bottomMin', 'bottomMax', 'vertMin'];
 function matchesFilter(r) {
   const f = state.dayFilter, inR = (v, lo, hi) => (lo == null || v >= lo) && (hi == null || v <= hi);
@@ -337,7 +339,7 @@ function renderKpis() {
   const k = $('kpis');
   if (!state.cur) { k.innerHTML = `<div class="kpi"><div class="l">Aucune solution</div><div class="v">—</div></div><div class="kpi" style="grid-column: span 3"><div class="l">Étape suivante</div><div>Choisissez un effort puis cliquez sur <b>Optimiser</b>.</div></div>`; return; }
   const s = state.cur.sch, t = s.totals, inst = state.inst;
-  const vert = s.gVert.reduce((a, b) => a + b, 0);
+  const vert = s.gVert.reduce((a, b) => a + b, 0), nRot = s.lifts.filter(l => l.group >= 0).length;
   const lastEnd = Math.max(...s.gEnd);
   const card = (l, v, cls = '') => `<div class="kpi ${cls}"><div class="l">${l}</div><div class="v">${v}</div></div>`;
   k.innerHTML = [
@@ -348,7 +350,8 @@ function renderKpis() {
     card('dont vol chargé', `${t.flyLoaded.toFixed(0)} min`),
     card('Standby / attente en vol', `${t.standby.toFixed(1)} / ${t.loiter.toFixed(1)} min`),
     card('Démarrages moteur', `${t.starts}`),
-    card('Rotations', `${s.lifts.length} × ${inst.params.loadMin + inst.params.unloadMin} min sol`),
+    card('Rotations', `${nRot} × ${inst.params.loadMin + inst.params.unloadMin} min sol`),
+    ...(refuelParams(inst.params) ? [card('Pleins', `${t.refuels}${t.refuels ? ` · ${s.heliSeg.filter(x => x.type === 'refuel').map(x => fmt(x.t0)).join(', ')}` : ''}`)] : []),
     card('Dénivelé total', `${vert.toLocaleString('fr-CH')} m`),
     card('Dernier retour base', fmt(lastEnd)),
     card('Temps de calcul', state.cur.seconds != null ? `${state.cur.seconds.toFixed(2)} s` : '—'),
@@ -415,6 +418,7 @@ function renderOps() {
   if (!state.cur) { el.innerHTML = ''; return; }
   const inst = state.inst, p = inst.params, N = inst.N;
   const rows = [...state.cur.lifts].sort((a, b) => a.start - b.start).map(l => {
+    if (l.refuel) return `<tr class="refuel"><td>${fmt(l.start)}</td><td>⛽</td><td>Plein à la base (après ${Math.round(l.flown)} min de vol${l.engineOff ? ', moteur coupé' : ''})</td><td></td><td>${fmt(l.end)}</td></tr>`;
     const fl = inst.tau[l.from * N + l.to];
     return `<tr><td>${fmt(l.start)}</td>
       <td>${esc(inst.groups[l.group].name)}</td><td>${nodeLabel(inst, l.from)} → ${nodeLabel(inst, l.to)}</td>
@@ -442,7 +446,7 @@ function renderFocusSelect() {
 
 function renderLegend() {
   const items = [['flight', 'Vol à vide', HELI_COLOR + '73'], ['flightLoaded', 'Vol chargé', HELI_COLOR], ['load', 'Charg./décharg.', '#f6c453'],
-    ['standby', 'Standby', '#f08c2e'], ['loiter', 'Vol d’attente', '#c62f2f'], ['parked', 'Moteur coupé', '#e3e8ef'], ['ski', 'Ski', GROUP_COLORS[0]], ['wait', 'Clients attendent', '#f3c6c6']];
+    ['standby', 'Standby', '#f08c2e'], ['loiter', 'Vol d’attente', '#c62f2f'], ['parked', 'Moteur coupé', '#e3e8ef'], ['refuel', 'Plein', '#1aa39a'], ['ski', 'Ski', GROUP_COLORS[0]], ['wait', 'Clients attendent', '#f3c6c6']];
   $('gantt-legend').innerHTML = items.map(([k, l, c]) => `<span style="--c:${c}" title="${SEG_STYLE[k].label}">${l}</span>`).join('');
 }
 
@@ -479,7 +483,7 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-/** « Placer la base sur la carte » (depuis l'onglet Données) : la carte est dans l'onglet Planification. */
+/** « Placer la base sur la carte » (depuis l'onglet Itinéraires) : la carte est dans l'onglet Planification. */
 function setPlacingBase(on) {
   state.placingBase = on;
   $('map').classList.toggle('placing', on); $('btn-place-base').classList.toggle('active', on);

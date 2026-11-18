@@ -9,7 +9,7 @@
 // Plan = solution du recuit sur la suite : seq[g] = descentes à venir du groupe g (hors descente en cours / imposée).
 // Stabilité : chaque modification du plan précédent coûte params.changePenalty (CHF) dans l'objectif ; un nouveau plan
 // n'est retenu que s'il fait gagner davantage.
-import { buildInstance, decode, buildSchedule, flightTime, BASE } from './model.js';
+import { buildInstance, decode, buildSchedule, flightTime, refuelParams, BASE } from './model.js';
 // Destination fermée en cours de vol (itinéraire retiré, vu depuis l'hélico) : le groupe à bord est replanifié depuis la
 // position actuelle de l'hélico (instantané « carry »), et la nouvelle destination est saisie d'office (redirectCarry).
 
@@ -35,7 +35,7 @@ export function newDay({ dataset, params, groups, open, sol, cost = null, mode =
     params: { ...params, changePenalty: params.changePenalty ?? DEFAULT_CHANGE_PENALTY },
     groups: groups.map(g => ({ name: g.name, target: g.target })),
     open: [...open],
-    plan: { seq: sol.seq.map(q => q.slice()), prio: (sol.prio ?? new Array(G).fill(0)).slice(), lambda: sol.lambda ?? 1, urgency: sol.urgency ?? 1 },
+    plan: { seq: sol.seq.map(q => q.slice()), prio: (sol.prio ?? new Array(G).fill(0)).slice(), lambda: sol.lambda ?? 1, urgency: sol.urgency ?? 1, fuelGain: sol.fuelGain ?? 10 },
     plan0: { seq: sol.seq.map(q => q.slice()), cost },
     events: [],
     forced: new Array(G).fill(-1),           // descente suivante imposée par le pilote
@@ -105,6 +105,9 @@ export const airTime = (p, pos, pt) => flightTime(p, pos, pt, true) + REROUTE_MI
  *   leg : trajet en cours ou prévu { from (nœud, -1 = en vol), fromPt, to, t0, t1, loaded } — vol chargé (groupe à bord)
  *   ou vol à vide (simulation). Un changement de destination en vol repart de la position à l'instant de la demande.
  * groups : { status: 'base'|'onboard'|'skiing'|'done', loc, ready, vert, skied, run, skiStart, adjust, dest, end, ended }
+ * Ravitaillement : heli.flown = minutes de vol depuis le dernier plein (tout arrêt base remet le compteur à zéro) —
+ * temps en l'air entre décollages et atterrissages GPS s'il y en a, sinon durées des trajets du journal ;
+ * heli.legRest = minutes de vol restantes du trajet en cours.
  */
 export function deriveState(day, geo, now) {
   const p = day.params, R = geo.R, N = geo.N, tau = geo.tau, P = geo.pts;
@@ -122,12 +125,18 @@ export function deriveState(day, geo, now) {
     node: BASE, free: p.dayStart, started: false, onboard: -1, dest: -1, loadStart: null, pickNode: BASE,
     stopStart: null, stopUntil: null, air: false, landT: null, takeoffT: null, leg: null,
     destAuto: false, autoFrom: null,      // destination choisie d'office par le plan (itinéraire prévu fermé : autoFrom)
+    stopRefuel: false, stopHot: false,    // arrêt base en cours : plein prévu par le plan, moteur allumé
+    flown: 0, legRest: 0,
   };
+  let legFly = 0, airFly = 0, airSince = null, sawAir = false;
+  const closeLeg = (t) => { const L = h.leg; if (L) legFly += Math.max(0, Math.min(t, L.t1) - L.t0); };
   const groups = day.groups.map(() => ({
     status: 'base', loc: BASE, ready: p.dayStart, vert: 0, skied: [], run: -1, skiStart: null, adjust: 0, dest: -1, end: null, ended: false,
   }));
   for (const e of day.events) {
     const g = groups[e.group];
+    // Trajet en cours terminé ou remplacé (changement de destination en vol : il repart de la position du moment).
+    if (['pickup', 'drop', 'dropBase', 'stopStart', 'fly'].includes(e.type) || ((e.type === 'dest' || e.type === 'changeRun') && g.status === 'onboard')) closeLeg(e.t);
     switch (e.type) {
       case 'pickup':
         g.status = 'onboard'; g.dest = e.run;
@@ -172,8 +181,10 @@ export function deriveState(day, geo, now) {
       case 'groupEnd':
         g.ended = true; if (g.status === 'base') g.status = 'done';
         break;
-      case 'stopStart':
-        h.stopStart = e.t; h.stopUntil = e.t + e.dur; h.node = BASE; h.started = false; h.free = h.stopUntil; h.leg = null;
+      case 'stopStart':                                    // arrêt base (plein) : le compteur de vol repart de zéro
+        h.stopStart = e.t; h.stopUntil = e.t + e.dur; h.node = BASE; h.started = !!e.hot; h.free = h.stopUntil; h.leg = null;
+        h.stopRefuel = !!e.refuel; h.stopHot = !!e.hot;
+        legFly = 0; airFly = 0; if (airSince != null) airSince = e.t;
         break;
       case 'stopEnd':
         if (h.stopUntil != null) { h.stopUntil = Math.min(h.stopUntil, e.t); h.free = h.stopUntil; }
@@ -195,14 +206,21 @@ export function deriveState(day, geo, now) {
           const d = h.leg.t1 - h.leg.t0; h.leg = { ...h.leg, t0: e.t, t1: e.t + d };
         }
         h.air = true; h.takeoffT = e.t; h.started = true;
+        if (airSince == null) airSince = e.t;
+        sawAir = true;
         if (h.stopUntil != null && h.stopUntil > e.t) { h.stopUntil = e.t; h.free = e.t; }
         break;
       case 'land':
+        if (airSince != null) { airFly += Math.max(0, e.t - airSince); airSince = null; }
         h.air = false; h.landT = e.t;
         if (h.onboard < 0 && e.node >= 0) { h.node = e.node; h.free = Math.max(h.free, e.t); }
         break;
     }
   }
+  const L = h.leg;
+  const legNow = legFly + (L ? Math.max(0, Math.min(now, L.t1) - L.t0) : 0);
+  h.flown = day.mode === 'gps' && sawAir ? airFly + (airSince != null ? Math.max(0, now - airSince) : 0) : legNow;
+  h.legRest = L ? Math.max(0, L.t1 - Math.max(now, L.t0)) : 0;
   return { heli: h, groups };
 }
 
@@ -290,6 +308,7 @@ export function opsSnapshot(day, dataset, geo, now, ref = null) {
     }
     if (h.onboard >= 0) {                                 // vol chargé en cours : la descente du groupe est engagée
       const arr = onboardArrival(day, geo, st, now), free = arr + p.unloadMin, gs = groups[h.onboard];
+      const fuel = h.flown + Math.max(0, arr - Math.max(now, h.leg ? h.leg.t0 : now));   // vol chargé restant compris
       if (h.dest >= 0) {
         gs.loc = 1 + R + h.dest; gs.ready = free + geo.ski[h.dest]; gs.vert += geo.vert[h.dest]; gs.skied.push(h.dest);
         occ.push([h.dest, gs.ready]);
@@ -298,9 +317,9 @@ export function opsSnapshot(day, dataset, geo, now, ref = null) {
         if (gs.visit) { gs.ready = free + gs.visit.dur; gs.visit = null; }       // passage base du groupe : pause à l'arrivée
         else if (gs.noMore) gs.done = true;
       }
-      return { loc: h.dest >= 0 ? 1 + h.dest : BASE, t: Math.max(now, free), started: true, stop };
+      return { loc: h.dest >= 0 ? 1 + h.dest : BASE, t: Math.max(now, free), started: true, stop, fuel };
     }
-    if (h.stopUntil != null && h.stopUntil > now) return { loc: BASE, t: h.stopUntil, started: false, stop };
+    if (h.stopUntil != null && h.stopUntil > now) return { loc: BASE, t: h.stopUntil, started: h.started, stop, fuel: 0 };
     if (!live && h.leg && !h.leg.loaded && h.leg.t1 > now && h.leg.t0 <= now) {
       // Vol à vide en cours : la suite part de la position actuelle (temps restant exact jusqu'à la destination du vol,
       // les autres destinations demandent un changement de cap) — passage base, nouveau plan : pas de saut.
@@ -315,6 +334,7 @@ export function opsSnapshot(day, dataset, geo, now, ref = null) {
     }
     return { loc: h.node, t: Math.max(now, h.free), started: h.node === BASE ? h.started : true, stop };
   })();
+  heli.fuel ??= st.heli.flown;                           // minutes de vol depuis le dernier plein
   // Descente suivante imposée : seulement pour un groupe encore actif qui ne l'a pas déjà faite.
   groups.forEach((g, i) => {
     const f = day.forced[i];
@@ -351,7 +371,7 @@ export function adaptPlan(sol, inst) {
     return out;
   });
   const prio = Array.from({ length: G }, (_, g) => sol.prio?.[g] ?? 0);
-  return { seq, prio, lambda: sol.lambda ?? 1, urgency: sol.urgency ?? 1 };
+  return { seq, prio, lambda: sol.lambda ?? 1, urgency: sol.urgency ?? 1, fuelGain: sol.fuelGain ?? 10 };
 }
 
 /**
@@ -482,7 +502,7 @@ export function dueTrigger(day, view) {
   const due = (tr) => (tr.t <= now + 1e-9 ? tr : null);
   if (s.onboard >= 0) return due({ kind: 'arrive', group: s.onboard, dest: s.dest, t: onboardArrival(day, geo, state, now) });
   if (s.stopUntil != null && s.stopUntil > now) return null;
-  const seg = sch.heliSeg.find(x => x.type === 'flight' || x.type === 'load' || (x.type === 'parked' && x.stop));
+  const seg = sch.heliSeg.find(x => x.type === 'flight' || x.type === 'load' || x.type === 'refuel' || (x.type === 'parked' && x.stop));
   if (s.leg && s.leg.t1 > now) {
     // En vol à vide : la suite est planifiée depuis la position actuelle ; si elle part ailleurs (nouveau plan, passage
     // base demandé), l'hélico change de cap là où il est.
@@ -493,6 +513,7 @@ export function dueTrigger(day, view) {
   if (!seg) return null;
   if (seg.type === 'flight') return due({ kind: 'fly', t: seg.t0, from: seg.from, to: seg.to });
   if (seg.type === 'load') return due({ kind: 'pickup', t: seg.t0, group: seg.group, node: seg.from });
+  if (seg.type === 'refuel') return due({ kind: 'stop', t: seg.t0, dur: seg.t1 - seg.t0, refuel: true, hot: !seg.engineOff });
   return due({ kind: 'stop', t: seg.t0, dur: seg.t1 - seg.t0 });
 }
 
@@ -502,7 +523,7 @@ export function applyTrigger(day, view, tr) {
     addEvent(day, tr.from >= 0 ? { type: 'fly', t: tr.t, from: tr.from, to: tr.to }
       : { type: 'fly', t: tr.t, from: -1, x: tr.x, y: tr.y, alt: tr.alt, to: tr.to });
   } else if (tr.kind === 'pickup') addEvent(day, { type: 'pickup', group: tr.group, t: tr.t, node: tr.node, run: plannedDest(day, tr.group, view) });
-  else if (tr.kind === 'stop') addEvent(day, { type: 'stopStart', t: tr.t, dur: tr.dur });
+  else if (tr.kind === 'stop') addEvent(day, refuelEvent(day, tr));
   else if (tr.kind === 'arrive') {
     if (tr.dest >= 0) addEvent(day, { type: 'drop', group: tr.group, t: tr.t, run: tr.dest });
     else {
@@ -510,6 +531,24 @@ export function applyTrigger(day, view, tr) {
       addEvent(day, { type: 'dropBase', group: tr.group, t: tr.t, done: !visit && groupFinished(day, view, tr.group), ...(visit ? { pause: visit.dur } : {}) });
     }
   }
+}
+
+/**
+ * Événement d'arrêt base pour un déclencheur { t, dur, refuel, hot }. Plein prévu par le plan alors qu'un passage base est
+ * demandé : les deux se font ensemble (durée la plus longue, moteur coupé).
+ */
+export function refuelEvent(day, tr) {
+  const dur = day.stop ? Math.max(tr.dur, day.stop.dur) : tr.dur;
+  return { type: 'stopStart', t: tr.t, dur, ...(tr.refuel ? { refuel: true } : {}), ...(tr.hot && !day.stop ? { hot: true } : {}) };
+}
+
+/** Plein prévu par le plan avant la prochaine reprise (segment « refuel » du planning de la suite), ou null. */
+export function nextRefuel(view) {
+  for (const x of view.sch.heliSeg) {
+    if (x.type === 'refuel') return x;
+    if (x.type === 'load' || (x.type === 'parked' && x.stop)) return null;
+  }
+  return null;
 }
 
 /** Un groupe ramené à la base a-t-il fini sa journée (objectif atteint, ou arrêté, ou plus rien de prévu) ? */
@@ -546,7 +585,10 @@ export function displaySchedule(day, view) {
     const g = view.inst.start.groups[s.onboard];
     groupSeg[s.onboard].unshift({ type: 'heli', t0: s.loadStart, t1: arr + p.unloadMin, from: s.pickNode, to: destNode },
       ...(s.dest >= 0 ? [{ type: 'ski', t0: arr + p.unloadMin, t1: g.ready, from: destNode, to: 1 + geo.R + s.dest, run: s.dest }] : []));
-  } else if (s.stopUntil != null && s.stopUntil > now) pre.push({ type: 'parked', stop: true, t0: s.stopStart, t1: s.stopUntil, from: BASE, to: BASE });
+  } else if (s.stopUntil != null && s.stopUntil > now) {
+    pre.push(s.stopRefuel ? { type: 'refuel', engineOff: !s.stopHot, t0: s.stopStart, t1: s.stopUntil, from: BASE, to: BASE }
+      : { type: 'parked', stop: true, t0: s.stopStart, t1: s.stopUntil, from: BASE, to: BASE });
+  }
   // Vol à vide en cours : déjà dans le planning (il part de la position actuelle de l'hélico, nœud virtuel).
   heliSeg.unshift(...pre);
   state.groups.forEach((g, i) => {
@@ -567,5 +609,7 @@ export function planAlerts(day, view) {
   if (d.stopLate > 1e-6) out.push(`passage base en retard de ${Math.round(d.stopLate)} min`);
   if (d.visitLate > 1e-6) out.push(`passage base d’un groupe en retard de ${Math.round(d.visitLate)} min`);
   if (d.closed) out.push('descente fermée dans le plan');
+  const rf = refuelParams(p);
+  if (rf && d.fuelOver > 1e-6) out.push(`autonomie dépassée : plus de ${rf.max} min de vol sans plein (${Math.round(d.fuelOver)} min de trop)`);
   return out;
 }

@@ -4,7 +4,7 @@
 // Graphe des opérations : pour chaque groupe g
 //   S_g  : chargement à la base (matin)         E_g : déchargement à la base (fin)
 //   D_gr : déchargement au sommet de r ∈ C       P_gr : chargement au fond de r ∈ C
-// + dépôt O (départ de l'hélico) et Z (retour). Un seul hélicoptère.
+// + dépôt O (départ de l'hélico) et Z (retour). Un seul hélicoptère. Le ravitaillement (pleins) n'est pas modélisé.
 // Arcs « chargés » (pickup → drop du même groupe) et arcs « à vide » (drop → pickup, ou dépôt).
 import { BASE, waitPlan, canShutdown } from './model.js';
 
@@ -254,6 +254,7 @@ export function warmStart(inst, meta, lifts) {
     if (loc === BASE) return pick ? S[g] : E[g];
     return pick ? P[g][loc - 1 - inst.R] : D[g][loc - 1];
   };
+  if (lifts.some(l => l.refuel || l.stop)) return null;              // pleins / arrêts base : pas modélisés dans le MILP
   const L = [...lifts].sort((a, b) => a.start - b.start);
   let prev = O, prevEnd = p.dayStart, prevLoc = BASE;
   for (const l of L) {

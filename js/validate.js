@@ -1,5 +1,5 @@
 // Vérification indépendante d'un planning : on relit les segments et on contrôle chaque contrainte.
-import { BASE } from './model.js';
+import { BASE, refuelParams } from './model.js';
 
 const EPS = 1e-6;
 
@@ -52,13 +52,37 @@ export function validateSchedule(inst, sch) {
       }
       if (s.type === 'parked' && segs.slice(0, i).some(x => x.type === 'load')) {      // coupure en cours de journée
         const atStop = segs[i - 1]?.type === 'unload' || segs[i + 1]?.type === 'load';     // à une dépose / reprise
-        if (!(p.allowFieldShutdown && atStop) && !(p.allowBaseShutdown && s.from === BASE))
+        const afterRefuel = segs[i - 1]?.type === 'refuel' && segs[i - 1].engineOff;       // moteur déjà coupé pour le plein
+        if (!(p.allowFieldShutdown && atStop) && !(p.allowBaseShutdown && s.from === BASE) && !afterRefuel && !s.stop)
           e.push(`coupure moteur non autorisée (${s.from === BASE ? 'base' : 'hors base'}) à ${fmt(s.t0)}`);
       }
       if (s.type === 'parked' && s.from !== BASE && !segs.slice(0, i).some(x => x.type === 'load'))
         e.push(`moteur coupé hors base à ${fmt(s.t0)}`);
     });
     add(`Chargement ${p.loadMin} min / déchargement ${p.unloadMin} min, 1 groupe à bord`, e);
+  }
+  // 4b. Ravitaillement : plein à la base, hélico vide ; jamais plus que l'autonomie en vol sans plein (retour base compris).
+  const rf = refuelParams(p);
+  if (rf || segs.some(s => s.type === 'refuel')) {
+    const e = [];
+    let flown = 0, onboard = false, n = 0;
+    for (const s of segs) {
+      if (s.type === 'load') onboard = true; else if (s.type === 'unload') onboard = false;
+      if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') {
+        flown += s.t1 - s.t0;
+        if (rf && flown > rf.max + EPS) { e.push(`${flown.toFixed(0)} min de vol sans plein à ${fmt(s.t1)} (max ${rf.max})`); flown = -1e9; }
+      }
+      if (s.type === 'parked' && s.stop) flown = 0;                       // passage base demandé : plein
+      if (s.type !== 'refuel') continue;
+      n++;
+      if (!rf) { e.push(`plein à ${fmt(s.t0)} alors que l’autonomie n’est pas limitée`); continue; }
+      if (s.from !== BASE || s.to !== BASE) e.push(`plein hors de la base à ${fmt(s.t0)}`);
+      if (onboard) e.push(`plein avec un groupe à bord à ${fmt(s.t0)}`);
+      if (Math.abs(s.t1 - s.t0 - rf.dur) > EPS) e.push(`plein ${fmt(s.t0)} : durée ${(s.t1 - s.t0).toFixed(1)} ≠ ${rf.dur} min`);
+      if (!!s.engineOff !== rf.off) e.push(`plein ${fmt(s.t0)} : moteur ${s.engineOff ? 'coupé' : 'allumé'}`);
+      flown = 0;
+    }
+    add(rf ? `Autonomie ${rf.max} min : plein à la base, hélico vide, jamais plus de ${rf.max} min de vol sans plein (${n} plein${n > 1 ? 's' : ''})` : 'Pas de plein (autonomie non limitée)', e);
   }
   // 5. Cohérence groupes : chaque transport du groupe correspond à un vol chargé d'un hélico.
   const loadedFlights = segs.filter(s => s.type === 'flightLoaded');
@@ -144,8 +168,8 @@ export function validateSchedule(inst, sch) {
     for (const s of segs) {
       const d = s.t1 - s.t0;
       if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') c += p.flyRate * d;
-      else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload') c += p.standbyRate * d;
-      if (s.type === 'parked') engineOn = false; else if (!engineOn) { engineOn = true; starts++; }
+      else if (s.type === 'standby' || s.type === 'load' || s.type === 'unload' || (s.type === 'refuel' && !s.engineOff)) c += p.standbyRate * d;
+      if (s.type === 'parked' || (s.type === 'refuel' && s.engineOff)) engineOn = false; else if (!engineOn) { engineOn = true; starts++; }
     }
     c += (p.heliStartCost ?? 0) * starts;
     c += p.clientWaitPenalty * sch.gWait.reduce((a, b) => a + b, 0);

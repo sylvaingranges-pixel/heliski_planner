@@ -54,7 +54,7 @@ test('relais NEOS de bout en bout : Gurobi refusé, COPT (démarrage MIP + zip) 
   const mock = spawn(process.execPath, [fileURLToPath(new URL('./mock_neos.mjs', import.meta.url)), String(PORT)], { stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((ok) => mock.stdout.once('data', ok));
   try {
-    const inst = buildInstance(generateDataset({ seed: 42 }), DEFAULT_PARAMS, DEFAULT_GROUPS);
+    const inst = buildInstance(generateDataset({ seed: 42 }), { ...DEFAULT_PARAMS, autonomyMin: 0 }, DEFAULT_GROUPS);   // MILP sans plein
     const res = solveSA(inst, { seed: 1, iterations: 20000, restarts: 3 });
     const d = decode(inst, res.sol, true);
     const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });

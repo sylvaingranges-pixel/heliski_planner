@@ -1,10 +1,10 @@
 // Métaheuristique : recuit simulé sur les séquences de descentes + paramètres du décodeur,
 // suivi d'une descente locale exhaustive (« polish »). Fonction pure, utilisable en Node et en Worker.
-import { decode, BASE } from './model.js';
+import { decode, refuelParams, BASE } from './model.js';
 import { mulberry32 } from './data.js';
 
 export function cloneSol(s) {
-  return { seq: s.seq.map(a => a.slice()), prio: s.prio.slice(), lambda: s.lambda, urgency: s.urgency };
+  return { seq: s.seq.map(a => a.slice()), prio: s.prio.slice(), lambda: s.lambda, urgency: s.urgency, fuelGain: s.fuelGain ?? 10 };
 }
 
 // Journée en cours (inst.start, voir js/ops.js) : la séquence d'un groupe ne contient que ses descentes à venir.
@@ -38,7 +38,7 @@ export function initialSolution(inst, rnd = Math.random) {
     }
     seq.push(s);
   }
-  return { seq, prio: new Array(G).fill(0), lambda: 1, urgency: 1 };
+  return { seq, prio: new Array(G).fill(0), lambda: 1, urgency: 1, fuelGain: 10 };
 }
 
 function pickRun(inst, rnd, prevNode, exclude, g) {
@@ -92,8 +92,9 @@ export function mutate(inst, sol, rnd) {
     }
   } else if (u < 0.88) {                                // priorité d'un groupe
     s.prio[g] = Math.max(-60, Math.min(60, s.prio[g] + (rnd() - 0.5) * 30));
-  } else if (u < 0.94) {                                // poids du décodeur (coût / urgence)
-    if (inst.params.maxClientWait > 0 && rnd() < 0.5) s.urgency = Math.max(0, Math.min(8, (s.urgency ?? 1) + (rnd() - 0.5) * 2));
+  } else if (u < 0.94) {                                // poids du décodeur (coût / urgence / plein anticipé)
+    if (refuelParams(inst.params) && rnd() < 0.3) s.fuelGain = Math.max(0, Math.min(90, s.fuelGain + (rnd() - 0.5) * 30));
+    else if (inst.params.maxClientWait > 0 && rnd() < 0.5) s.urgency = Math.max(0, Math.min(8, (s.urgency ?? 1) + (rnd() - 0.5) * 2));
     else s.lambda = Math.max(0, Math.min(10, s.lambda + (rnd() - 0.5) * 1.5));
   } else if (q.length > 0) {                            // déplacer une descente vers un autre groupe
     const g2 = (g + 1 + Math.floor(rnd() * Math.max(1, G - 1))) % G, q2 = s.seq[g2];
@@ -148,6 +149,10 @@ export function polish(inst, sol, maxPasses = 6) {
     }
     if (inst.params.maxClientWait > 0) for (const urg of [0, 0.5, 1, 2, 3, 5, 8]) {
       const c = cloneSol(best); c.urgency = urg;
+      const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; }
+    }
+    if (refuelParams(inst.params)) for (const fg of [0, 5, 10, 20, 40, 80]) {
+      const c = cloneSol(best); c.fuelGain = fg;
       const f = decode(inst, c).f; if (f < bf - 1e-6) { best = c; bf = f; improved = true; }
     }
     if (!improved) break;
