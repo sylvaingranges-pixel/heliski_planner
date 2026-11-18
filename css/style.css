@@ -156,7 +156,7 @@ table.var-table tr[data-var] { cursor: pointer; }
 table.var-table tr[data-var]:hover td { background: #f1f6fd; }
 table.var-table tr.current td { background: #e3eefc; font-weight: 600; }
 table.var-table td { padding: 6px 4px; }
-table.var-table td:nth-child(-n+7) { white-space: nowrap; }
+table.var-table td:not(:last-child) { white-space: nowrap; }
 
 /* ---------- sous-onglets */
 .subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 8px; overflow-x: auto; }
@@ -196,6 +196,7 @@ table.mini td { border-bottom: 1px solid #eef2f7; padding: 3px 4px; }
 .gantt .g-loiter { fill: #c62f2f; }
 .gantt .g-parked { fill: #e3e8ef; }
 .gantt .g-stop { fill: #7c8aa0; }
+.gantt .g-refuel { fill: #1aa39a; }
 .gantt .g-wait { fill: #f3c6c6; }
 .gantt .g-pause { fill: #c9d3e0; }
 .gantt .g-inheli { opacity: .55; }
@@ -220,7 +221,11 @@ table.mini td { border-bottom: 1px solid #eef2f7; padding: 3px 4px; }
 .filters input[type=number] { width: 90px; }
 .filters label.check { margin: 0 0 4px; }
 .bad-text { color: var(--bad); }
-#view-data.active { padding: 14px; }
+#view-data.active, #view-params.active { padding: 14px; }
+.params-card { max-width: 760px; }
+.params-card .grid2 { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px 14px; margin-bottom: 10px; }
+.params-card .grid2 > label:nth-child(even) .help::after { left: 0; right: auto; }
+.params-card .help::after { width: 240px; max-width: 70vw; }
 
 /* ---------- résolution : niveau d'effort */
 .effort { display: grid; grid-template-columns: repeat(3, 1fr); }
@@ -311,6 +316,8 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .hs-sub { font-size: 15px; color: var(--ink); margin-top: 4px; }
 .hs-alert { margin-top: 8px; padding: 8px 10px; background: #fff1d6; border: 2px solid #e0a000; border-radius: 10px; font-size: 16px; font-weight: 700; color: #7a4a00; }
 .hs-stop { margin-top: 8px; padding: 6px 10px; background: #eef1f6; border-radius: 10px; font-size: 14.5px; }
+.hs-fuel { margin-top: 6px; font-size: 14px; color: var(--muted, #5b6b80); }
+.hs-fuel.warn { color: var(--bad, #c62f2f); font-weight: 600; }
 .hs-stop button { font: inherit; font-size: 14px; border: 0; background: none; color: var(--accent); text-decoration: underline; cursor: pointer; }
 .hs-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .ops-btn { flex: 1 1 auto; min-height: 56px; font: inherit; font-size: 17px; font-weight: 650; padding: 8px 14px; border-radius: 12px; border: 2px solid var(--line); background: #fff; color: var(--ink); cursor: pointer; }

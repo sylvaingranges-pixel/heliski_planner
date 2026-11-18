@@ -11,6 +11,8 @@ import { buildMilp, candidateRuns, warmStart, runHighs, liftsFromMilp } from '..
 import loadHighs from '../lib/highs/highs.mjs';
 
 const ds = generateDataset({ seed: 42 });
+// Le MILP ne modélise pas le ravitaillement : comparaisons heuristique / MILP sans plein.
+const NO_FUEL = { ...DEFAULT_PARAMS, autonomyMin: 0 };
 
 test('jeu de données : 50 descentes dans un rayon de 15 km', () => {
   assert.equal(ds.runs.length, 50);
@@ -49,7 +51,7 @@ test('variantes : attente client max, arrêt moteur (base, dépose / reprise), d
 
 test('MILP (HiGHS) : ordre et minutage de l’hélico optimaux ≤ heuristique, planning valide', async () => {
   const highs = await loadHighs();
-  const { inst, res, d } = solveAndCheck(DEFAULT_PARAMS);
+  const { inst, res, d } = solveAndCheck(NO_FUEL);
   const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });
   const out = runHighs(highs, lp, { timeLimit: 60, warm: warmStart(inst, meta, d.lifts) });
   assert.ok(out.warmOk);
@@ -93,9 +95,10 @@ test('un seul hélico : jamais deux rotations en même temps, une seule trajecto
   const L = [...d.lifts].sort((a, b) => a.start - b.start);
   for (let k = 1; k < L.length; k++) assert.ok(L[k].start >= L[k - 1].end - 1e-9, `rotations ${k - 1} et ${k} se chevauchent`);
   assert.ok(Array.isArray(sch.heliSeg) && sch.heliSeg.every(s => typeof s.type === 'string'));
-  const loads = sch.heliSeg.filter(s => s.type === 'load').length;
-  assert.equal(loads, d.lifts.length);
-  assert.equal(sch.groupSeg.flat().filter(s => s.type === 'heli').length, d.lifts.length);
+  const loads = sch.heliSeg.filter(s => s.type === 'load').length, rot = d.lifts.filter(l => l.group >= 0).length;
+  assert.equal(loads, rot);
+  assert.equal(sch.groupSeg.flat().filter(s => s.type === 'heli').length, rot);
+  assert.equal(sch.heliSeg.filter(s => s.type === 'refuel').length, d.lifts.length - rot);
   assert.ok(L[0].start >= inst.params.dayStart - 1e-9);
 });
 
@@ -103,7 +106,7 @@ test('démarrage moteur : MILP = planning recalculé, avec et sans arrêt moteur
   const highs = await loadHighs();
   for (const extra of [{ heliStartCost: 50, allowFieldShutdown: false }, { allowBaseShutdown: true, allowFieldShutdown: false, heliStartCost: 150 },
     { heliStartCost: 50 }, { heliStartCost: 0 }, { allowBaseShutdown: true, heliStartCost: 150, maxClientWait: 30 }]) {
-    const { inst, res, d, sch: s0 } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 4);
+    const { inst, res, d, sch: s0 } = solveAndCheck({ ...NO_FUEL, ...extra }, 4);
     assert.ok(s0.totals.starts >= 1);                                  // au moins le démarrage du matin
     if (!extra.allowBaseShutdown && extra.allowFieldShutdown === false) assert.equal(s0.totals.starts, 1);
     const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 0), { fixedSeq: res.sol.seq });
@@ -141,7 +144,7 @@ test('un groupe ne skie pas deux fois la même descente dans la journée', () =>
 
 test('MILP : chaque groupe skie une descente au plus une fois (complet sur candidates)', async () => {
   const highs = await loadHighs();
-  const { inst, res, d } = solveAndCheck(DEFAULT_PARAMS);
+  const { inst, res, d } = solveAndCheck(NO_FUEL);
   const { lp, meta } = buildMilp(inst, candidateRuns(inst, res.sol.seq, 8));
   // Un seul nœud « dépose au sommet » par couple (groupe, descente), et pas d'arc fond r → sommet r.
   const drops = meta.nodes.filter(n => n.kind === 'D').map(n => `${n.g}_${n.r}`);
@@ -180,7 +183,8 @@ test('effort borné en temps (timeMs) : durée respectée, solution faisable', (
 });
 
 test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standby long, jamais plus cher', () => {
-  const off = { ...DEFAULT_PARAMS, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
+  // Sans plein : sinon l'hélico profite de l'attente pour aller faire le plein à la base au lieu de tourner en l'air.
+  const off = { ...NO_FUEL, allowFieldShutdown: false }, on = { ...off, allowFieldShutdown: true };
   const one = DEFAULT_GROUPS.slice(0, 1);                    // 1 groupe : l'hélico attend pendant chaque descente
   const instOff = buildInstance(ds, off, one), instOn = buildInstance(ds, on, one);
   const sol = solveSA(instOff, { seed: 1, iterations: 10000, restarts: 2 }).sol;
@@ -203,7 +207,8 @@ test('arrêt moteur à la dépose / reprise : remplace vol d’attente et standb
 
 test('robustesse : instance serrée (fin 13 h), toutes les graines faisables', () => {
   // Instance où un départ peut finir infaisable : le suivant repart alors de zéro au lieu de chercher autour.
-  const inst = buildInstance(generateDataset({ seed: 123 }), { ...DEFAULT_PARAMS, dayEnd: 13 * 60 }, DEFAULT_GROUPS);
+  // Sans plein : avec un plein obligatoire de 8 min, cette journée serrée finit quelques minutes après 13 h.
+  const inst = buildInstance(generateDataset({ seed: 123 }), { ...NO_FUEL, dayEnd: 13 * 60 }, DEFAULT_GROUPS);
   for (let seed = 1; seed <= 4; seed++) {
     const res = solveSA(inst, { seed, iterations: 30000, restarts: 4 });
     const d = decode(inst, res.sol, true);
@@ -296,4 +301,52 @@ test('variantes : sélection max-min parmi les archives de plusieurs chaînes', 
   assert.ok(V.some(v => Math.abs(planDistance(v.prof, b0.prof) - far) < 1e-12));
   assert.equal(selectVariants(pool, { ...opts, count: 1 }).length, 1);
   assert.deepEqual(selectVariants([], opts), []);
+});
+
+test('ravitaillement : plein à la base, hélico vide, jamais plus que l’autonomie sans plein ; vérifié et compté', () => {
+  const flown = (segs) => {                              // minutes de vol entre deux pleins (retour base compris)
+    const out = []; let f = 0;
+    for (const s of segs) {
+      if (s.type === 'flight' || s.type === 'flightLoaded' || s.type === 'loiter') f += s.t1 - s.t0;
+      if (s.type === 'refuel') { out.push({ f, refuel: true }); f = 0; }
+    }
+    out.push({ f, refuel: false });
+    return out;
+  };
+  for (const extra of [{ autonomyMin: 60 }, { autonomyMin: 35, refuelEngineOff: false }, { autonomyMin: 30, refuelMin: 12, maxClientWait: 30 }]) {
+    const { inst, d, sch, checks } = solveAndCheck({ ...DEFAULT_PARAMS, ...extra }, 3);
+    for (const c of checks) assert.ok(c.ok, `${JSON.stringify(extra)} ${c.label} : ${c.errors.join(', ')}`);
+    assert.ok(d.feasible, JSON.stringify(extra));
+    assert.ok(Math.abs(d.cost - sch.cost) < 1e-6);
+    assert.ok(sch.totals.refuels >= 1 && sch.totals.refuels === d.refuels, `${JSON.stringify(extra)} : ${sch.totals.refuels} plein(s)`);
+    for (const x of flown(sch.heliSeg)) assert.ok(x.f <= extra.autonomyMin + 1e-6, `${JSON.stringify(extra)} : ${x.f} min sans plein`);
+    sch.heliSeg.forEach((s, k) => {
+      if (s.type !== 'refuel') return;
+      assert.equal(s.from, 0); assert.equal(s.engineOff, extra.refuelEngineOff !== false);
+      assert.equal(s.t1 - s.t0, inst.params.refuelMin);
+      // Hélico vide : le plein suit un déchargement (ou un vol à vide) et précède le vol vers le groupe suivant.
+      const prev = sch.heliSeg.slice(0, k).reverse().find(x => x.type === 'load' || x.type === 'unload');
+      assert.ok(!prev || prev.type === 'unload');
+    });
+  }
+  // Sans ravitaillement : aucun plein ; un plan qui vole trop longtemps sans plein est signalé.
+  const off = solveAndCheck(NO_FUEL);
+  assert.equal(off.sch.totals.refuels, 0);
+  const tight = buildInstance(ds, { ...DEFAULT_PARAMS, autonomyMin: 60 }, DEFAULT_GROUPS);
+  assert.ok(validateSchedule(tight, off.sch).some(c => !c.ok && /sans plein/.test(c.errors.join(' '))));
+});
+
+test('ravitaillement : plein obligatoire avant une rotation hors d’autonomie, pénalité si impossible', () => {
+  const inst = buildInstance(ds, { ...DEFAULT_PARAMS, autonomyMin: 40 }, DEFAULT_GROUPS);
+  // Même sans bonus de plein anticipé (fuelGain = 0), le décodeur insère les pleins nécessaires.
+  for (const fuelGain of [0, 10, 80]) {
+    const sol = { ...solveSA(inst, { seed: 1, iterations: 4000, restarts: 1 }).sol, fuelGain };
+    const d = decode(inst, sol, true);
+    assert.ok(d.refuels >= 1 && d.fuelOver === 0, `fuelGain ${fuelGain} : ${d.refuels} plein(s), ${d.fuelOver} min de trop`);
+  }
+  // Autonomie plus courte qu'une rotation (aller-retour base compris) : dépassement pénalisé, solution infaisable.
+  const tiny = buildInstance(ds, { ...DEFAULT_PARAMS, autonomyMin: 3 }, DEFAULT_GROUPS);
+  const d2 = decode(tiny, solveSA(tiny, { seed: 1, iterations: 500, restarts: 1 }).sol, true);
+  assert.ok(!d2.feasible && d2.fuelOver > 0 && d2.penalty > 0);
+  assert.ok(validateSchedule(tiny, buildSchedule(tiny, d2.lifts)).some(c => !c.ok && /sans plein/.test(c.errors.join(' '))));
 });
