@@ -9,7 +9,7 @@ import { BASE, planChanges } from './model.js';
 import {
   newDay, addEvent, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
   dropCandidates, nearestRuns, nearNode, heliPosition, heliMotion, terrainAlt, displaySchedule, planAlerts, liveFix,
-  onboardArrival, NEAR_KM, GROUND_ALT_TOL,
+  onboardArrival, redirectCarry, NEAR_KM, GROUND_ALT_TOL,
 } from './ops.js';
 import { createMapView, renderGantt, runPath, alongPath, HELI_COLOR, HELI_ICON, GROUP_COLORS } from './render.js';
 import { toLatLon, toXY } from './terrain.js';
@@ -17,6 +17,7 @@ import { fmt } from './validate.js';
 
 const L = globalThis.L;
 const STORE = 'heliski-planner-day-v2';     // v2 : un seul hélico (les journées v1 à plusieurs hélicos sont ignorées)
+const PREF_EMPTY = 'heliski-ops-empty-flights';   // préférence de la tablette : vols à vide affichés dans le programme
 const SPEEDS = [1, 5, 10, 30, 60];
 const TICK_MS = 250;            // boucle logique (événements simulés, panneau) ; l'affichage est animé à chaque image
 const OPT_EVERY = 5;          // min d'horloge : ré-optimisation périodique (les horaires dérivent avec le temps réel)
@@ -40,6 +41,7 @@ const ui = {
   sheetKind: null,              // 'stop' : question posée à l'arrêt (refermée si l'hélico redécolle)
   noPickup: null,               // GPS : « ne rien faire » choisi à cet atterrissage → pas d'embarquement déduit au décollage
   snooze: -1e9,                 // simulation : question écartée, reposée à cette heure d'horloge
+  showEmpty: (() => { try { return localStorage.getItem(PREF_EMPTY) === '1'; } catch { return false; } })(),
 };
 
 // ------------------------------------------------------------------ démarrage, persistance
@@ -115,6 +117,7 @@ function startRun() {
   startAnim();
   if (day.mode === 'gps') startGps();
   view = opsView(day, ds, clock(), { geo });
+  redirect();
   refresh(true);
   setTimeout(() => { ui.mv.map.invalidateSize(); fitPlan(); }, 60);
   scheduleOpt(50);
@@ -186,10 +189,25 @@ function stopAnim() { cancelAnimationFrame(ui.raf); ui.raf = 0; }
 
 /** Après un événement ou un réglage : sauvegarde, vue immédiate (plan en cours adapté), ré-optimisation en arrière-plan. */
 function afterEvent() {
-  saveDay();
   view = opsView(day, ds, clock(), { geo });
+  redirect();
+  saveDay();
   refresh(true);
   scheduleOpt(250);
+}
+
+/**
+ * Destination du groupe à bord fermée (itinéraire retiré pendant le vol) ou changée par un nouveau plan : la nouvelle
+ * destination, calculée depuis la position actuelle de l'hélico, est saisie d'office et annoncée au pilote.
+ */
+function redirect() {
+  const ev = redirectCarry(day, view);
+  if (!ev) return false;
+  view = opsView(day, ds, clock(), { geo });
+  const g = ev.group, closed = ev.prev >= 0 && !geo.open[ev.prev];
+  toast(`⚠ ${closed ? `${runLabel(ev.prev)} fermé · ` : 'Nouveau plan · '}${esc(gname(g))} → nouvelle destination <b>${ev.run >= 0 ? runLabel(ev.run, true) : 'base'}</b>`,
+    { kind: 'warn', ms: 20000, action: '⇄ Autre', fn: destSheet });
+  return true;
 }
 
 // ------------------------------------------------------------------ ré-optimisation (workers)
@@ -225,10 +243,11 @@ function optimized(v0, res) {
     const n = planChanges(best.sol.seq, v0.plan.seq), gain = v0.d.cost - best.cost;
     const fixed = v0.d.penalty - (best.f - best.cost - best.change) > 1;
     day.plan = best.sol;
-    saveDay();
     view = opsView(day, ds, clock(), { geo });
+    const redirected = redirect();
+    saveDay();
     refresh(true);
-    if (n > 0) toast(`Nouveau plan : ${n} changement${n > 1 ? 's' : ''}` + (fixed ? ' · contraintes mieux respectées' : '')
+    if (n > 0 && !redirected) toast(`Nouveau plan : ${n} changement${n > 1 ? 's' : ''}` + (fixed ? ' · contraintes mieux respectées' : '')
       + (gain > 1 ? ` · ${chf(gain)} gagnés` : gain < -1 ? ` · ${chf(-gain)} de plus` : ''), { kind: 'info' });
   } else renderHead();
 }
@@ -651,7 +670,7 @@ function menuSheet() {
 
 const EV_LABEL = {
   pickup: (e) => `Embarque ${esc(gname(e.group))} au ${nodeName(e.node)} → ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
-  dest: (e) => `${esc(gname(e.group))} : destination ${e.run >= 0 ? runLabel(e.run) : 'base'}`,
+  dest: (e) => `${esc(gname(e.group))} : destination ${e.run >= 0 ? runLabel(e.run) : 'base'}${e.auto ? ` (plan recalculé en vol${e.prev >= 0 && !geo.open[e.prev] ? `, ${runLabel(e.prev)} fermé` : ''})` : ''}`,
   drop: (e) => `Dépose ${esc(gname(e.group))} · ${runLabel(e.run, true)} · reprise au fond${e.ski != null ? ` (descente ${e.ski} min)` : ''}`,
   dropBase: (e) => `Ramène ${esc(gname(e.group))} à la base${e.done ? ' (fin de journée)' : e.pause ? ` (pause ${e.pause} min)` : ' (pause)'}`,
   adjust: (e) => `${esc(gname(e.group))} : ${e.delta > 0 ? 'retard +' : 'avance '}${e.delta} min`,
@@ -677,7 +696,7 @@ function exportDay() {
 }
 
 function undo() {
-  const k = [...day.events].reverse().find(e => !['land', 'takeoff'].includes(e.type));
+  const k = [...day.events].reverse().find(e => !['land', 'takeoff'].includes(e.type) && !e.auto);
   if (!k) { toast('Rien à annuler', { kind: 'info' }); return; }
   openSheet({
     title: 'Annuler le dernier événement ?', sub: `${fmt(k.t)} · ${EV_LABEL[k.type]?.(k) ?? k.type}`,
@@ -767,7 +786,8 @@ function renderPanel() {
   // Hélico
   renderHeliCard();
   // Programme
-  $('ops-agenda').innerHTML = agenda().slice(0, 9).map((it, k) => `<li class="${k === 0 ? 'first' : ''} ${it.cls ?? ''}">
+  $('ops-empty').classList.toggle('on', ui.showEmpty);
+  $('ops-agenda').innerHTML = agenda().slice(0, ui.showEmpty ? 16 : 9).map((it, k) => `<li class="${k === 0 ? 'first' : ''} ${it.cls ?? ''}">
       <span class="ag-t mono">${fmt(it.t)}</span>
       <span class="ag-i">${it.icon}</span><span class="ag-x">${it.text}${it.sub ? `<small>${it.sub}</small>` : ''}</span></li>`).join('')
     || '<li class="muted">Plus rien de prévu.</li>';
@@ -782,7 +802,7 @@ function renderPanel() {
       <div class="og-bar"><div style="width:${pct}%"></div><div class="og-plan" style="width:${Math.min(100, 100 * planned / Math.max(1, target))}%"></div><span>${s.vert.toLocaleString('fr-CH')} / ${target.toLocaleString('fr-CH')} m${planned > s.vert ? ` · prévu ${planned.toLocaleString('fr-CH')}` : ''}</span></div>
       ${day.visits[g] ? `<div class="og-visit">⌂ base avant ${fmt(day.visits[g].by)} · pause ${day.visits[g].dur} min</div>` : ''}
       <div class="og-next">${fut.length || forced >= 0 ? 'Ensuite : ' + fut.map((r, k) => `<b>${runLabel(r)}</b>${k === 0 && r === forced ? ' 📌' : ''}`).join(' → ') : s.status === 'done' ? '' : 'retour base'}</div>
-      ${s.status === 'skiing' ? `<div class="og-btns"><button data-adj="-5">−5 min</button><button data-adj="5">+5 min</button><button data-more>⋯</button></div>` : '<div class="og-btns"><button data-more>⋯ Actions</button></div>'}
+      ${s.status === 'skiing' ? `<div class="og-btns"><button data-adj="-5">−5</button><button data-adj="5">+5 min</button><button data-more>⋯</button></div>` : '<div class="og-btns"><button data-more>⋯ Actions</button></div>'}
     </div>`;
   }).join('');
   $('ops-groups').querySelectorAll('.ops-group').forEach(el => {
@@ -796,19 +816,38 @@ function renderPanel() {
 
 /** Étapes à venir de l'hélico : en cours, rotations, passages base, retour. */
 function agenda() {
-  const v = view, s = v.state.heli, p = day.params, out = [];
+  const v = view, s = v.state.heli, p = day.params, out = [], now = [];
   if (s.onboard >= 0) {
     const arr = onboardArrival(day, geo, v.state, v.now);
-    out.push({ t: arr, icon: '▼', cls: 'now', text: s.dest >= 0 ? `Dépose ${gchip(s.onboard)} · ${runLabel(s.dest, true)}` : `${gchip(s.onboard)} à la base`, sub: s.dest >= 0 ? `sommet ${ds.runs[s.dest].top.alt} m · ${inMin(arr)}` : inMin(arr) });
-  } else if (s.stopUntil != null && s.stopUntil > v.now) out.push({ t: s.stopUntil, icon: '⛽', cls: 'now', text: 'Fin de l’arrêt base', sub: inMin(s.stopUntil) });
+    now.push({ t: arr, icon: '▼', cls: 'now', text: s.dest >= 0 ? `Dépose ${gchip(s.onboard)} · ${runLabel(s.dest, true)}` : `${gchip(s.onboard)} à la base`, sub: s.dest >= 0 ? `sommet ${ds.runs[s.dest].top.alt} m · ${inMin(arr)}` : inMin(arr) });
+  } else if (s.stopUntil != null && s.stopUntil > v.now) now.push({ t: s.stopUntil, icon: '⛽', cls: 'now', text: 'Fin de l’arrêt base', sub: inMin(s.stopUntil) });
   for (const l of [...v.d.lifts].sort((a, b) => a.start - b.start)) {
+    if (l.carry) continue;                               // groupe à bord : déjà en tête (dépose)
     if (l.stop) { out.push({ t: l.start, icon: '⛽', text: `Base · arrêt ${Math.round(l.end - l.start)} min`, sub: `jusqu’à ${fmt(l.end)} · ${inMin(l.start)}`, cls: 'stop' }); continue; }
     const drop = l.end - p.unloadMin;
     out.push({ t: l.start, icon: '▲', text: `${gchip(l.group)} ${nodeName(l.from)} → ${l.run >= 0 ? `<b>${runLabel(l.run, true)}</b>` : `<b>base</b>${l.visit ? ` · pause ${l.pause} min` : ''}`}`, sub: `${l.run >= 0 ? 'dépose' : 'arrivée'} ${fmt(drop)} · ${inMin(l.start)}` });
   }
   const segs = v.sch.heliSeg, last = segs[segs.length - 1];
-  if (last && (last.to === BASE) && out.length) out.push({ t: last.t1, icon: '⌂', text: 'Retour base', sub: '', cls: 'end' });
-  return out;
+  if (ui.showEmpty) {
+    // Vols à vide (et vols d'attente) : vers la prochaine reprise, vers la base…
+    segs.forEach((x, k) => {
+      if (x.t1 <= v.now + 1e-9) return;
+      const cur = x.t0 <= v.now;
+      if (x.type === 'flight' && x.from !== x.to) {
+        const nx = segs.slice(k + 1).find(y => y.type === 'load' || y.type === 'flight' || (y.type === 'parked' && y.stop));
+        const why = nx?.type === 'load' && nx.from === x.to ? ` · reprise ${gchip(nx.group)}` : nx?.stop ? ' · arrêt base' : '';
+        const end = x === last && x.to === BASE;
+        out.push({
+          t: x.t0, icon: end ? '⌂' : '✈', cls: 'empty' + (cur ? ' now' : ''),
+          text: `${end ? 'Retour base' : cur ? 'En vol à vide' : 'Vol à vide'} → ${nodeName(x.to)}${why}`,
+          sub: `${cur ? 'en cours' : `depuis ${nodeName(x.from)}`} · ${Math.round(x.t1 - x.t0)} min · arrivée ${fmt(x.t1)}`,
+        });
+      } else if (x.type === 'loiter' && x.t1 - x.t0 >= 0.5) {
+        out.push({ t: x.t0, icon: '↻', cls: 'empty' + (cur ? ' now' : ''), text: `Vol d’attente · ${nodeName(x.from)}`, sub: `${Math.round(x.t1 - x.t0)} min · jusqu’à ${fmt(x.t1)}` });
+      }
+    });
+  } else if (last && (last.to === BASE) && out.length) out.push({ t: last.t1, icon: '⌂', text: 'Retour base', sub: '', cls: 'end' });
+  return [...now, ...out.sort((a, b) => a.t - b.t)];
 }
 const gchip = (g) => `<span class="gchip" style="background:${gcolor(g)}">${esc(gname(g))}</span>`;
 
@@ -823,9 +862,11 @@ function renderHeliCard() {
   const where = m.node >= 0 ? nodeName(m.node) : 'hors point connu';
   const nxt = v.d.lifts.filter(x => x.group >= 0).sort((a, b) => a.start - b.start)[0];
   const nextTxt = nxt ? `<div class="hs-sub">Prochaine reprise : ${gchip(nxt.group)} au ${nodeName(nxt.from)} à <b>${fmt(nxt.start)}</b> (${inMin(nxt.start)})</div>` : '<div class="hs-sub">Plus de rotation prévue</div>';
-  let status, btns = '';
+  let status, btns = '', auto = '';
   if (s.onboard >= 0) {
     const g = s.onboard, arr = onboardArrival(day, geo, v.state, t), dest = s.dest >= 0 ? runLabel(s.dest, true) : 'base';
+    // Destination changée d'office (itinéraire prévu fermé en vol, nouveau plan) : bien visible pour le pilote.
+    if (s.destAuto) auto = `<div class="hs-alert">⚠ Nouvelle destination : ${dest}${s.autoFrom >= 0 ? ` · ${runLabel(s.autoFrom)} fermé` : ''}</div>`;
     if (m.arrived) {
       status = `<div class="hs-main">⏸ Posé · ${where} · ${gchip(g)} à bord</div><div class="hs-sub">destination prévue : ${dest}</div>`;
       btns = `<button class="ops-btn primary big" data-a="drop">▼ Débarquer ${esc(gname(g))}</button><button class="ops-btn" data-a="dest">⇄ Destination</button>`;
@@ -853,7 +894,7 @@ function renderHeliCard() {
   }
   const stopTxt = stop ? `<div class="hs-stop">⛽ Passage base demandé : avant <b>${fmt(stop.by)}</b>, ${stop.dur} min <button data-a="fuel">modifier</button></div>` : '';
   // Redessinée à chaque tic (heures « dans x min ») mais seulement si elle change : un bouton n'est pas recréé sous le doigt.
-  const html = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${stopTxt}${btns ? `<div class="hs-btns">${btns}</div>` : ''}`;
+  const html = `<div class="hs-head"><b>Hélico</b><span>${modeTxt}</span></div>${status}${auto}${stopTxt}${btns ? `<div class="hs-btns">${btns}</div>` : ''}`;
   if (html === ui.heliHtml) return;
   ui.heliHtml = html;
   $('ops-heli').style.setProperty('--c', HELI_COLOR);
@@ -1025,6 +1066,11 @@ function bindStatic() {
   $('ops-trace').onclick = () => { ui.trace = !ui.trace; $('ops-trace').classList.toggle('on', ui.trace); drawTrace(); };
   $('ops-follow').onclick = () => { ui.follow = !ui.follow; $('ops-follow').classList.toggle('on', ui.follow); if (ui.follow && view) ui.mv.map.setView(llOf(heliPosition(day, view)), Math.max(ui.mv.map.getZoom(), 13)); };
   $('ops-fit').onclick = fitPlan;
+  $('ops-empty').onclick = () => {
+    ui.showEmpty = !ui.showEmpty;
+    try { localStorage.setItem(PREF_EMPTY, ui.showEmpty ? '1' : '0'); } catch { /* préférence non mémorisée */ }
+    if (day && view) renderPanel();
+  };
   $('ops-sheet').onclick = (e) => { if (e.target === $('ops-sheet') && $('ops-sheet').querySelector('.sheet-cancel')) { $('ops-sheet').querySelector('.sheet-cancel').click(); } };
   window.addEventListener('resize', () => { if (day && !$('ops-main').hidden) { ui.mv?.map.invalidateSize(); renderTimeline(); } });
 }

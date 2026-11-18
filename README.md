@@ -47,6 +47,12 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
 - **Sans saut de l'hélico** : un changement de destination en vol repart de la position de l'hélico au moment de la
   demande (temps de vol recalculé depuis ce point, sans décollage) ; en vol à vide, un passage base demandé ou un nouveau
   plan fait changer de cap là où il est (la suite est planifiée depuis cette position, pas depuis le prochain arrêt).
+- **Itinéraire fermé en vol** (vu depuis l'hélico) : si c'est la destination du groupe à bord, le groupe est replanifié
+  depuis la position actuelle de l'hélico (sans nouveau chargement) ; chaque itinéraire ouvert est essayé comme nouvelle
+  destination avec la suite du plan, la meilleure est **saisie d'office** (le vol repart de la position actuelle) et
+  annoncée au pilote (bandeau orange, encadré « Nouvelle destination » sur la carte de l'hélico, ⇄ pour en choisir une
+  autre). Jusqu'à la dépose, la ré-optimisation peut encore la changer (seuil de stabilité) ; une destination choisie
+  par le pilote reste fixe.
 - **Saisie manuelle** (gros boutons sur la carte de l'hélico) : *Embarquer* / *Débarquer* (posé), *Destination*,
   ⛽ *Passer par la base*, et ↶ *Annuler*.
 - **Réglages en cours de journée** (toucher un groupe) : retard / avance d'un groupe qui skie (±5 min sur sa carte,
@@ -62,7 +68,9 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
   réglable) ; un nouveau plan n'est adopté que s'il fait gagner davantage. Ré-optimisation aussi toutes les 5 min d'horloge.
 - **Affichage** : seule la suite est affichée — carte (descentes à venir par groupe, numérotées ; trajets de l'heure qui
   vient, étapes de reprise numérotées ; positions des groupes et de l'hélico), planning de la suite, programme de l'hélico,
-  cartes des groupes (dénivelé fait / prévu, état, suite). Bouton 〰 : trace passée de l'hélico (GPS, ou déduite du journal).
+  cartes des groupes (dénivelé fait / prévu, état, suite), **toujours visibles en bandeau sous la carte**. Bouton
+  ✈ *Vols à vide* (programme) : affiche aussi les vols à vide (vers la prochaine reprise, vers la base) et les vols
+  d'attente, avec leur durée (préférence mémorisée sur la tablette). Bouton 〰 : trace passée de l'hélico (GPS, ou déduite du journal).
 - Une journée en cours enregistrée par une version précédente à plusieurs hélicos n'est pas reprise (format différent).
 - La journée (journal des événements, réglages, trace) est mémorisée sur la tablette : elle reprend après une fermeture
   de l'app. Menu ⋯ : journal, export JSON, fin de journée.

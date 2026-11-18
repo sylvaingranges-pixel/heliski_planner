@@ -47,7 +47,7 @@ export function buildInstance(dataset, params, groups, available = null, extraPt
 
   // Pour chaque nœud de départ (base ou fond), descentes du jour triées par temps de vol vers leur sommet.
   const nearTop = new Array(N);
-  for (const i of [0, ...runs.map((_, r) => 1 + R + r)]) {
+  for (const i of [0, ...runs.map((_, r) => 1 + R + r), ...extraPts.map((_, k) => N0 + k)]) {
     nearTop[i] = Int32Array.from([...dayRuns].sort((a, b) => tau[i * N + 1 + a] - tau[i * N + 1 + b]));
   }
   return { dataset, params, groups, R, N, pts, tau, vert, ski, targets, nearTop, open, dayRuns };
@@ -140,8 +140,11 @@ export function decode(inst, sol, record = false) {
   const lifts = record ? [] : null;
   // Journée en cours : état de départ (hélico, groupes, descentes occupées), descente imposée en tête de séquence,
   // passage base demandé (stop.by : arrivée à la base au plus tard, stop.dur : durée moteur coupé).
-  let seqs = sol.seq, stop = null;
+  // carry : groupe déjà à bord dont la destination est à choisir (itinéraire fermé en vol…) : servi en premier, depuis la
+  // position de l'hélico (nœud st.heli.loc), sans chargement.
+  let seqs = sol.seq, stop = null, carry = -1;
   if (st) {
+    carry = st.heli.carry ?? -1;
     hT = st.heli.t; hL = st.heli.loc; hStarted = !!st.heli.started; stop = st.heli.stop ?? null;
     seqs = new Array(G);
     for (let g = 0; g < G; g++) {
@@ -166,20 +169,20 @@ export function decode(inst, sol, record = false) {
   while (pending > 0) {
     let bS = Infinity, bg = -1, bStart = 0, bW = null, bC = 0, bStop = -1, bD = BASE, bVisit = false;
     for (let g = 0; g < G; g++) {
-      if (gDone[g]) continue;
-      const o = gLoc[g], seq = seqs[g], k = gK[g];
+      if (gDone[g] || (carry >= 0 && g !== carry)) continue;
+      const o = gLoc[g], seq = seqs[g], k = gK[g], lm = g === carry ? 0 : p.loadMin;
       let d = k < seq.length ? 1 + seq[k] : BASE;
       let fl = tau[o * N + d];
       let ready = gReady[g], visit = false;
-      if (d !== BASE && p.exclusiveRuns) ready = Math.max(ready, occEnd[d - 1] - p.loadMin - fl);
+      if (d !== BASE && p.exclusiveRuns) ready = Math.max(ready, occEnd[d - 1] - lm - fl);
       if (gVisit[g] && d !== BASE) {
         // Passage base du groupe : fait maintenant si, après la descente suivante, le groupe arriverait trop tard à la base.
         const r = d - 1, a0 = Math.max(ready, hT + tau[hL * N + o]);
-        const atBase = a0 + p.loadMin + fl + p.unloadMin + inst.ski[r] + VISIT_MARGIN + p.loadMin + tau[(1 + R + r) * N];
+        const atBase = a0 + lm + fl + p.unloadMin + inst.ski[r] + VISIT_MARGIN + p.loadMin + tau[(1 + R + r) * N];
         if (atBase > gVisit[g].by + 1e-9) { d = BASE; fl = tau[o * N]; ready = gReady[g]; visit = true; }
       }
       let hl = hL, ht = hT, hs = hStarted, pre = 0, stopAt = -1;
-      if (stop) {
+      if (stop && g !== carry) {
         // Passage base demandé : repoussé tant que la rotation et le retour à la base tiennent avant l'échéance,
         // sinon fait d'abord (vol vers la base, arrêt moteur coupé, redémarrage).
         const a0 = ht + tau[hl * N + o], end0 = (a0 > ready ? a0 : ready) + p.loadMin + fl + p.unloadMin;
@@ -199,19 +202,20 @@ export function decode(inst, sol, record = false) {
       if (gVisit[g] && d === BASE) s -= VISIT_BOOST;           // passage base du groupe : le ramener dès qu'il est prêt
       if (s < bS) { bS = s; bg = g; bStart = start; bW = w; bC = c; bStop = stopAt; bD = d; bVisit = visit; }
     }
-    const g = bg, o = gLoc[g], seq = seqs[g], k = gK[g], d = bD;
+    const g = bg, o = gLoc[g], seq = seqs[g], k = gK[g], d = bD, carried = g === carry, lm = carried ? 0 : p.loadMin;
+    carry = -1;
     const fl = tau[o * N + d];
-    const end = bStart + p.loadMin + fl + p.unloadMin;
+    const end = bStart + lm + fl + p.unloadMin;
     if (bStop >= 0) doStop(bStop);
     cost += bC - p.clientWaitPenalty * (bStart - gReady[g])
-      + p.standbyRate * (p.loadMin + p.unloadMin) + p.flyRate * fl;
+      + p.standbyRate * (lm + p.unloadMin) + p.flyRate * fl;
     clientWait += bStart - gReady[g];
     if (p.maxClientWait > 0 && o !== BASE && bStart - gReady[g] > p.maxClientWait + 1e-9) {   // départs du matin échelonnés
       const ex = bStart - gReady[g] - p.maxClientWait;
       waitExcess += ex; waitPen += WAIT_PENALTY.fixed + WAIT_PENALTY.perUnit * ex;
     }
     const pause = bVisit ? gVisit[g].dur : 0;
-    if (record) lifts.push({ group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: bW, readyAt: gReady[g], ...(bVisit ? { visit: true, pause } : {}) });
+    if (record) lifts.push({ group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: bW, readyAt: gReady[g], ...(bVisit ? { visit: true, pause } : {}), ...(carried ? { carry: true } : {}) });
     hT = end; hL = d; hStarted = true;
     if (d === BASE && stop) doStop(end);                     // l'hélico est à la base : l'arrêt demandé se fait maintenant
     if (d === BASE && gVisit[g]) { visitLate += Math.max(0, end - p.unloadMin - gVisit[g].by); gVisit[g] = null; }
@@ -297,12 +301,12 @@ export function buildSchedule(inst, lifts) {
       if (w.standby > 0) { push('standby', tt, tt + w.standby, l.from, l.from); tt += w.standby; }
       totals.fly += dh; totals.loiter += w.loiter; totals.standby += w.standby;
     }
-    const fl = tau[l.from * N + l.to];
-    const tl = l.start + p.loadMin, tf = tl + fl, te = tf + p.unloadMin;
+    const fl = tau[l.from * N + l.to], lm = l.carry ? 0 : p.loadMin;   // carry : groupe déjà à bord, pas de chargement
+    const tl = l.start + lm, tf = tl + fl, te = tf + p.unloadMin;
     push('load', l.start, tl, l.from, l.from, { group: l.group });
     push('flightLoaded', tl, tf, l.from, l.to, { group: l.group });
     push('unload', tf, te, l.to, l.to, { group: l.group });
-    totals.flyLoaded += fl; totals.service += p.loadMin + p.unloadMin;
+    totals.flyLoaded += fl; totals.service += lm + p.unloadMin;
     t = te; loc = l.to; started = true;
   }
   if (loc !== BASE) { push('flight', t, t + tau[loc * N], loc, BASE); totals.fly += tau[loc * N]; }
@@ -320,7 +324,7 @@ export function buildSchedule(inst, lifts) {
     if (sg) { gVert[g] = sg.vert; gEnd[g] = sg.end ?? sg.ready; }
     for (const l of L) {
       if (l.start > t + 1e-9) { groupSeg[g].push({ type: 'wait', t0: t, t1: l.start, from: loc, to: loc }); gWait[g] += l.start - t; }
-      const te = l.start + p.loadMin + tau[l.from * N + l.to] + p.unloadMin;
+      const te = l.start + (l.carry ? 0 : p.loadMin) + tau[l.from * N + l.to] + p.unloadMin;
       groupSeg[g].push({ type: 'heli', t0: l.start, t1: te, from: l.from, to: l.to });
       t = te; loc = l.to;
       if (l.visit) {                                   // passage base du groupe : pause, puis il repart

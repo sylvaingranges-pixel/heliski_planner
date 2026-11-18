@@ -7,7 +7,7 @@ import { buildInstance, decode, buildSchedule, planChanges, BASE } from '../js/m
 import { solveSA } from '../js/solver.js';
 import {
   newDay, addEvent, undoLast, opsView, dueTrigger, applyTrigger, deriveState, dropCandidates, pickupCandidates, nearNode, dayGeo,
-  heliPosition, heliMotion, onboardArrival, terrainAlt,
+  heliPosition, heliMotion, onboardArrival, terrainAlt, redirectCarry, displaySchedule,
 } from '../js/ops.js';
 
 const ds = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
@@ -227,6 +227,52 @@ test('exploitation : changement de destination en vol — le vol repart de la po
   // La suite part de la nouvelle dépose
   assert.equal(v2.inst.start.heli.loc, 1 + alt);
   assert.equal(v2.inst.start.groups[g].loc, 1 + geo.R + alt);
+});
+
+test('exploitation : destination fermée en vol — nouvelle destination depuis la position actuelle, sans saut', () => {
+  const { day } = startDay();
+  let closed = -1, at = null, before = null, g = -1;
+  const w = jumpWatcher(0.25);
+  runDay(day, {
+    step: 0.25, optIters: 600,
+    onStep: (now, d) => {
+      w.onStep(now, d);
+      let v = opsView(d, ds, now);
+      if (closed < 0) {
+        const s = v.state.heli;
+        // Vol chargé en cours vers un sommet : l'itinéraire est fermé (vu depuis l'hélico)
+        if (now > 10 * 60 && s.onboard >= 0 && s.dest >= 0 && heliMotion(d, v).air && s.leg.t1 > now + 2) {
+          closed = s.dest; at = now; g = s.onboard; before = heliPosition(d, v);
+          d.open = d.open.filter(r => r !== closed);
+          v = opsView(d, ds, now);
+          assert.equal(v.inst.start.heli.carry, g, 'le groupe à bord est replanifié');
+          assert.ok(v.inst.start.heli.loc > 2 * v.inst.R, 'depuis la position actuelle de l’hélico');
+          const ev = redirectCarry(d, v);
+          assert.ok(ev && ev.auto && ev.run !== closed, 'nouvelle destination saisie');
+          const v2 = opsView(d, ds, now), after = heliPosition(d, v2);
+          assert.ok(Math.hypot(after.x - before.x, after.y - before.y) < 1e-6, 'saut à la redirection');
+          assert.equal(v2.state.heli.dest, ev.run);
+          assert.ok(v2.state.heli.destAuto && v2.state.heli.autoFrom === closed);
+          assert.ok(heliMotion(d, v2).air);
+          // Planning affiché : le vol chargé part de la position actuelle vers la nouvelle destination
+          const fl = displaySchedule(d, v2).heliSeg.find(x => x.type === 'flightLoaded');
+          assert.equal(fl.to, ev.run >= 0 ? 1 + ev.run : BASE);
+          assert.ok(Math.abs(v2.sch.cost - v2.d.cost) < 1e-6);
+          // Arrivée cohérente entre le journal (simulation) et le planning
+          const arr = onboardArrival(d, dayGeo(d, ds), v2.state, now);
+          assert.ok(Math.abs(arr - fl.t1) < 0.05, `arrivée ${arr} ≠ planning ${fl.t1}`);
+          assert.equal(redirectCarry(d, v2), null, 'pas de nouvelle redirection sans changement');
+        }
+      } else redirectCarry(d, v);                       // comme l'app : après chaque recalcul
+    },
+  });
+  assert.ok(closed >= 0, 'pas de vol chargé trouvé');
+  assert.ok(!day.events.some(e => e.type === 'drop' && e.run === closed && e.t >= at), 'déposé sur l’itinéraire fermé');
+  const next = day.events.find(e => (e.type === 'drop' || e.type === 'dropBase') && e.group === g && e.t >= at);
+  assert.ok(next, 'le groupe a été déposé ailleurs');
+  assert.ok(w.maxJump < 0.05, `saut de ${w.maxJump.toFixed(2)} km`);
+  // Annuler la dépose suivante n'est pas bloqué par la redirection automatique
+  assert.ok(!undoLast(day)?.auto);
 });
 
 test('exploitation : passage base demandé en vol à vide — demi-tour depuis la position, sans saut', () => {

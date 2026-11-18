@@ -10,6 +10,8 @@
 // Stabilité : chaque modification du plan précédent coûte params.changePenalty (CHF) dans l'objectif ; un nouveau plan
 // n'est retenu que s'il fait gagner davantage.
 import { buildInstance, decode, buildSchedule, flightTime, BASE } from './model.js';
+// Destination fermée en cours de vol (itinéraire retiré, vu depuis l'hélico) : le groupe à bord est replanifié depuis la
+// position actuelle de l'hélico (instantané « carry »), et la nouvelle destination est saisie d'office (redirectCarry).
 
 export const NEAR_KM = 0.35;               // rayon d'association d'une position (atterrissage, décollage) à un point connu
 export const LIVE_MAX_AGE = 2;             // min : au-delà, la position GPS n'est plus considérée comme actuelle
@@ -49,22 +51,31 @@ export function newDay({ dataset, params, groups, open, sol, cost = null, mode =
 /** Ajoute un événement (horodaté en minutes depuis minuit) ; effets de bord sur les réglages, mémorisés pour l'annulation. */
 export function addEvent(day, e) {
   const ev = { id: day.nextId++, ...e };
-  if (ev.type === 'pickup' && ev.run >= 0 && day.forced[ev.group] === ev.run) { ev.prevForced = ev.run; day.forced[ev.group] = -1; }
+  if ((ev.type === 'pickup' || ev.type === 'dest') && ev.run >= 0 && day.forced[ev.group] === ev.run) { ev.prevForced = ev.run; day.forced[ev.group] = -1; }
   if (ev.type === 'stopStart') { ev.prevStop = day.stop; day.stop = null; }
   if (ev.type === 'dropBase' && day.visits?.[ev.group]) { ev.prevVisit = day.visits[ev.group]; day.visits[ev.group] = null; }
   day.events.push(ev);
   return ev;
 }
 
-/** Annule le dernier événement significatif (les décollages / atterrissages enregistrés restent). */
-export function undoLast(day) {
-  let k = day.events.length - 1;
-  while (k >= 0 && !MAIN_EVENTS.has(day.events[k].type)) k--;
-  if (k < 0) return null;
-  const [ev] = day.events.splice(k, 1);
+/** Annule l'événement significatif e (effets de bord sur les réglages). */
+function revert(day, ev) {
   if (ev.prevForced != null) day.forced[ev.group] = ev.prevForced;
   if (ev.type === 'stopStart' && ev.prevStop) day.stop = ev.prevStop;
   if (ev.prevVisit) day.visits[ev.group] = ev.prevVisit;
+}
+
+/**
+ * Annule le dernier événement significatif (les décollages / atterrissages enregistrés restent). Les changements de
+ * destination automatiques (itinéraire fermé) ne sont pas annulables seuls : ils suivent l'événement annulé.
+ */
+export function undoLast(day) {
+  let k = day.events.length - 1;
+  while (k >= 0 && (!MAIN_EVENTS.has(day.events[k].type) || day.events[k].auto)) k--;
+  if (k < 0) return null;
+  const [ev] = day.events.splice(k, 1);
+  for (let j = day.events.length - 1; j >= k; j--) if (day.events[j].auto) revert(day, day.events.splice(j, 1)[0]);
+  revert(day, ev);
   return ev;
 }
 
@@ -110,6 +121,7 @@ export function deriveState(day, geo, now) {
   const h = {
     node: BASE, free: p.dayStart, started: false, onboard: -1, dest: -1, loadStart: null, pickNode: BASE,
     stopStart: null, stopUntil: null, air: false, landT: null, takeoffT: null, leg: null,
+    destAuto: false, autoFrom: null,      // destination choisie d'office par le plan (itinéraire prévu fermé : autoFrom)
   };
   const groups = day.groups.map(() => ({
     status: 'base', loc: BASE, ready: p.dayStart, vert: 0, skied: [], run: -1, skiStart: null, adjust: 0, dest: -1, end: null, ended: false,
@@ -120,6 +132,7 @@ export function deriveState(day, geo, now) {
       case 'pickup':
         g.status = 'onboard'; g.dest = e.run;
         h.onboard = e.group; h.dest = e.run; h.loadStart = e.t; h.pickNode = e.node ?? g.loc; h.node = h.pickNode;
+        h.destAuto = false; h.autoFrom = null;
         // Embarquement saisi au décollage (GPS) : l'hélico est déjà en l'air.
         h.started = true; h.air = e.takeoff != null; h.landT = null; h.takeoffT = e.takeoff ?? null;
         {
@@ -129,19 +142,22 @@ export function deriveState(day, geo, now) {
         break;
       case 'dest':
         g.dest = e.run;
-        if (g.status === 'onboard') { h.dest = e.run; reroute(h, node(e.run), e.t, e.pos ?? null); }
+        if (g.status === 'onboard') {
+          h.dest = e.run; reroute(h, node(e.run), e.t, e.pos ?? null);
+          h.destAuto = !!e.auto; h.autoFrom = e.auto ? (h.autoFrom ?? e.prev ?? null) : null;
+        }
         break;
       case 'drop': {
         const r = e.run;
         g.status = 'skiing'; g.run = r; g.skiStart = e.t + p.unloadMin; g.adjust = 0; g.ready = g.skiStart + geo.ski[r];
         g.vert += geo.vert[r]; g.skied.push(r); g.loc = 1 + R + r; g.dest = -1;
         if (e.ski != null) { g.adjust = e.ski - geo.ski[r]; g.ready += g.adjust; }   // temps de descente annoncé à la dépose
-        h.onboard = -1; h.dest = -1; h.node = 1 + r; h.free = e.t + p.unloadMin; h.leg = null;
+        h.onboard = -1; h.dest = -1; h.node = 1 + r; h.free = e.t + p.unloadMin; h.leg = null; h.destAuto = false; h.autoFrom = null;
         break;
       }
       case 'dropBase':
         g.status = e.done || g.ended ? 'done' : 'base'; g.loc = BASE; g.end = e.t + p.unloadMin; g.ready = g.end + (e.pause ?? 0); g.dest = -1;
-        h.onboard = -1; h.dest = -1; h.node = BASE; h.free = e.t + p.unloadMin; h.leg = null;
+        h.onboard = -1; h.dest = -1; h.node = BASE; h.free = e.t + p.unloadMin; h.leg = null; h.destAuto = false; h.autoFrom = null;
         break;
       case 'adjust':
         if (g.status === 'skiing') { g.adjust += e.delta; g.ready += e.delta; }
@@ -151,7 +167,7 @@ export function deriveState(day, geo, now) {
           const old = g.run, r = e.run;
           g.vert += geo.vert[r] - geo.vert[old]; g.skied[g.skied.lastIndexOf(old)] = r; g.run = r; g.loc = 1 + R + r;
           g.ready = g.skiStart + geo.ski[r] + g.adjust;
-        } else if (g.status === 'onboard') { g.dest = e.run; h.dest = e.run; reroute(h, node(e.run), e.t, null); }
+        } else if (g.status === 'onboard') { g.dest = e.run; h.dest = e.run; reroute(h, node(e.run), e.t, null); h.destAuto = false; h.autoFrom = null; }
         break;
       case 'groupEnd':
         g.ended = true; if (g.status === 'base') g.status = 'done';
@@ -253,6 +269,25 @@ export function opsSnapshot(day, dataset, geo, now, ref = null) {
   st.groups.forEach((g, i) => { if (g.status === 'skiing' && g.ready > now) occ.push([g.run, g.ready]); });
   const heli = (() => {
     const h = st.heli, stop = day.stop ? { by: day.stop.by, dur: day.stop.dur } : null, live = liveFix(day, now);
+    if (h.onboard >= 0 && h.leg && (h.destAuto || (h.dest >= 0 && !geo.open[h.dest]))) {
+      // Destination à choisir (itinéraire prévu fermé, ou destination choisie d'office par le plan) : le groupe à bord est
+      // replanifié depuis la position actuelle de l'hélico, sans nouveau chargement (carry).
+      const L = h.leg, gs = groups[h.onboard];
+      let loc, t = now;
+      if (live?.air) loc = virt({ x: live.x, y: live.y, alt: live.alt ?? AIR_ALT, airborne: true });
+      else if (live) {
+        const n = nearNode(geo, live);
+        loc = n >= 0 ? n : virt({ x: live.x, y: live.y, alt: live.alt ?? AIR_ALT });
+        if (h.takeoffT == null) t = Math.max(now, L.t0);                  // pas encore parti : fin du chargement
+      } else if (now < L.t0) { loc = L.from >= 0 ? L.from : virt({ ...L.fromPt, airborne: true }); t = L.t0; }
+      else if (now >= L.t1) loc = L.to;
+      else {
+        const at = legPos(geo, L, now);
+        loc = virt({ ...at, airborne: true, extraMin: REROUTE_MIN, tauTo: { [L.to]: L.t1 - now } });
+      }
+      gs.loc = loc; gs.ready = t;
+      return { loc, t, started: true, stop, carry: h.onboard };
+    }
     if (h.onboard >= 0) {                                 // vol chargé en cours : la descente du groupe est engagée
       const arr = onboardArrival(day, geo, st, now), free = arr + p.unloadMin, gs = groups[h.onboard];
       if (h.dest >= 0) {
@@ -283,7 +318,7 @@ export function opsSnapshot(day, dataset, geo, now, ref = null) {
   // Descente suivante imposée : seulement pour un groupe encore actif qui ne l'a pas déjà faite.
   groups.forEach((g, i) => {
     const f = day.forced[i];
-    if (f >= 0 && !g.done && !g.noMore && !g.skied.includes(f)) g.next = f;
+    if (f >= 0 && !g.done && !g.noMore && !g.skied.includes(f) && geo.open[f]) g.next = f;
   });
   const targets = day.groups.map((g, i) => (groups[i].noMore ? Math.min(g.target, groups[i].vert) : g.target));
   return {
@@ -335,6 +370,37 @@ export function opsView(day, dataset, now, { geo = null, sol = null } = {}) {
   const sch = buildSchedule(inst, d.lifts);
   const state = deriveState(day, geo, now);
   return { now, geo, snap, inst, plan, d, sch, state };
+}
+
+/**
+ * Groupe à bord dont la destination est à choisir (itinéraire prévu fermé pendant le vol) : nouvelle solution depuis la
+ * position actuelle de l'hélico — si la destination vient d'être fermée, on essaie chaque itinéraire ouvert comme
+ * nouvelle destination (le reste du plan adapté) et on garde le meilleur — puis la destination de cette solution est
+ * saisie d'office (événement « dest » automatique : le vol repart de la position actuelle, le pilote la voit).
+ * Renvoie l'événement ajouté, ou null si rien à faire. Modifie day.plan.
+ */
+export function redirectCarry(day, view) {
+  const { inst, state } = view, g = inst.start.heli.carry ?? -1, s = state.heli;
+  if (g < 0) return null;
+  const sg = inst.start.groups[g];
+  let sol = view.plan;
+  if (s.dest >= 0 && !inst.open[s.dest] && sg.next < 0 && !sg.noMore) {
+    const rest = sol.seq[g];
+    let best = { f: decode(inst, sol).f, sol };
+    for (const r of inst.dayRuns) {
+      if (sg.skied[r] || r === rest[0]) continue;
+      const seq = sol.seq.slice(); seq[g] = [r, ...rest.filter(x => x !== r)];
+      const cand = { ...sol, seq }, f = decode(inst, cand).f;
+      if (f < best.f - 1e-9) best = { f, sol: cand };
+    }
+    sol = best.sol;
+    day.plan = { ...sol, seq: sol.seq.map(q => q.slice()) };
+  }
+  const lift = decode(inst, sol, true).lifts.find(l => l.carry);
+  const run = lift ? lift.run : -1;
+  if (run === s.dest && s.destAuto) return null;
+  const live = liveFix(day, view.now);
+  return addEvent(day, { type: 'dest', group: g, run, t: view.now, auto: true, prev: s.dest, ...(live?.air ? { pos: { x: live.x, y: live.y, alt: live.alt ?? AIR_ALT } } : {}) });
 }
 
 // ---------------------------------------------------------------- positions et inférence (GPS)
@@ -461,8 +527,15 @@ export function groupFinished(day, view, g) {
 export function displaySchedule(day, view) {
   const { geo, state, sch, now } = view, p = day.params, N = geo.N, s = state.heli;
   const heliSeg = sch.heliSeg.slice(), groupSeg = sch.groupSeg.map(x => x.slice());
-  const pre = [];
-  if (s.onboard >= 0) {
+  const pre = [], carry = view.inst.start.heli.carry ?? -1;
+  if (carry >= 0) {
+    // Destination replanifiée depuis la position actuelle : le vol chargé est dans le planning ; chargement encore en cours.
+    const t0 = view.inst.start.heli.t;
+    if (t0 > s.loadStart && s.takeoffT == null && now < s.leg.t0) {
+      pre.push({ type: 'load', t0: s.loadStart, t1: t0, from: s.pickNode, to: s.pickNode, group: carry });
+      groupSeg[carry].unshift({ type: 'heli', t0: s.loadStart, t1: t0, from: s.pickNode, to: s.pickNode });
+    }
+  } else if (s.onboard >= 0) {
     const destNode = s.dest >= 0 ? 1 + s.dest : BASE, arr = onboardArrival(day, geo, state, now);
     const L = s.leg, hp = heliPosition(day, view), live = liveFix(day, now);
     const dep = Math.min(arr, live && !live.air && s.takeoffT == null ? Math.max(now, L.t0) : L.t0);   // départ du vol chargé
