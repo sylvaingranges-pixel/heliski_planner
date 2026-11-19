@@ -79,7 +79,8 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
 - **Réglages en cours de journée** (toucher un groupe) : retard / avance d'un groupe qui skie (±5 min sur sa carte,
   ±10/15 dans ses actions), itinéraire en cours corrigé, **passage du groupe à la base** dans x min pour y min (repas,
   client à déposer… : le plan le ramène à temps puis le reprend après la pause), **descente suivante imposée** (aussi
-  en touchant un itinéraire sur la carte), objectif de dénivelé, fin de journée d'un groupe ; **itinéraires ouverts /
+  en touchant un itinéraire sur la carte ; une descente déjà skiée dans la journée peut être imposée à nouveau, ↺ en fin
+  de liste : sur demande seulement, le plan ne la propose jamais de lui-même), objectif de dénivelé, fin de journée d'un groupe ; **itinéraires ouverts /
   fermés** (mode ✎ sur la carte) ; **passer par la base** (hélico) dans un délai donné pour une durée donnée.
 - **Pleins** : les pleins planifiés sont dans le programme (⛽ *Plein à la base*) ; la carte de l'hélico affiche les
   minutes de vol depuis le dernier plein (temps en l'air entre décollages / atterrissages GPS, sinon durées des trajets du
@@ -97,6 +98,10 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
   cartes des groupes (dénivelé fait / prévu, état, suite), **toujours visibles en bandeau sous la carte**. Bouton
   ✈ *Vols à vide* (programme) : affiche aussi les vols à vide (vers la prochaine reprise, vers la base) et les vols
   d'attente, avec leur durée (préférence mémorisée sur la tablette). Bouton 〰 : trace passée de l'hélico (GPS, ou déduite du journal).
+- **Coût du jour** (sous la carte de l'hélico) : coût du plan du matin → coût de la solution en cours (réel de la partie
+  écoulée + estimation de la suite selon le plan en cours) et l'écart, pour voir ce qu'ont coûté les imprévus et les
+  changements. Même modèle de coût que la planification (vol, moteur allumé au sol, démarrages) : rotations réellement
+  faites d'après le journal, aux temps de vol du modèle, puis la suite planifiée.
 - Une journée en cours enregistrée par une version précédente à plusieurs hélicos n'est pas reprise (format différent).
 - La journée (journal des événements, réglages, trace) est mémorisée sur la tablette : elle reprend après une fermeture
   de l'app. Menu ⋯ : journal, export JSON, fin de journée.

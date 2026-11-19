@@ -7,7 +7,7 @@ import { buildInstance, decode, buildSchedule, planChanges, BASE } from '../js/m
 import { solveSA } from '../js/solver.js';
 import {
   newDay, addEvent, undoLast, opsView, dueTrigger, applyTrigger, deriveState, dropCandidates, pickupCandidates, nearNode, dayGeo,
-  heliPosition, heliMotion, onboardArrival, terrainAlt, redirectCarry, displaySchedule,
+  heliPosition, heliMotion, onboardArrival, terrainAlt, redirectCarry, displaySchedule, dayCost, scheduleCostUntil,
 } from '../js/ops.js';
 
 const ds = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
@@ -384,4 +384,53 @@ test('exploitation : ravitaillement — l’hélico fait le plein prévu, le com
     assert.equal(deriveState({ ...day, events: day.events.slice(0, k + 1) }, dayGeo(day, ds), e.t + 1).heli.flown, 0);
   }
   st.groups.forEach((g, i) => assert.ok(g.vert >= groups[i].target, `${groups[i].name} : ${g.vert}`));
+});
+
+test('exploitation : coût de la journée — plan du matin, réel écoulé + reste prévu', () => {
+  const { day, d } = startDay();
+  const v0 = opsView(day, ds, P.dayStart);
+  assert.ok(Math.abs(scheduleCostUntil(v0.inst, v0.sch) - v0.sch.cost) < 1e-6, 'coût du planning ≠ somme des segments');
+  const c0 = dayCost(day, v0);
+  assert.ok(Math.abs(c0.total - d.cost) < 1e-6, `au départ : ${c0.total} ≠ plan ${d.cost}`);
+  assert.equal(c0.spent, 0);
+  // L'hélico suit le plan (à 30 s près à chaque étape) : le coût en cours reste proche du matin, le réel avance.
+  let last = 0;
+  runDay(day, {
+    onStep: (now, dd) => {
+      if (Math.round(now * 2) % 20) return;
+      const c = dayCost(dd, opsView(dd, ds, now));
+      assert.ok(Math.abs(c.total - d.cost) < 0.03 * d.cost, `${now} : ${c.total} ≠ ${d.cost}`);
+      assert.ok(c.spent >= last - 1e-6 && c.spent <= c.total + 1e-6, `${now} : réel ${c.spent}`);
+      assert.ok(Math.abs(c.delta - (c.total - d.cost)) < 1e-9 && Math.abs(c.spent + c.rest - c.total) < 1e-9);
+      last = c.spent;
+    },
+  });
+  assert.ok(last > 0.9 * d.cost);
+  const cEnd = dayCost(day, opsView(day, ds, 17 * 60));
+  assert.ok(Math.abs(cEnd.spent - cEnd.total) < 1e-6 && cEnd.rest < 1e-6, 'fin de journée : tout est réel');
+});
+
+test('exploitation : refaire une descente déjà skiée, imposée sur demande', () => {
+  const { day } = startDay();
+  let rep = -1, grp = -1;
+  const st = runDay(day, {
+    hooks: (now, dd) => {
+      if (rep >= 0) return;
+      const s = deriveState(dd, dayGeo(dd, ds), now), g = s.groups.findIndex(x => x.status === 'skiing' && !x.ended);
+      if (g < 0 || now < 10 * 60) return;
+      grp = g; rep = s.groups[g].run;
+      dd.forced[g] = rep; dd.forcedRep[g] = 1;                // la même, encore une fois
+      const v = opsView(dd, ds, now);
+      assert.equal(v.inst.start.groups[g].next, rep, 'descente imposée retenue malgré la répétition');
+      assert.equal(v.d.repeats, 0, 'pas de pénalité de répétition pour la descente imposée');
+      assert.equal(v.d.lifts.find(l => l.group === g)?.run, rep);
+    },
+  });
+  assert.ok(rep >= 0);
+  assert.equal(st.groups[grp].skied.filter(r => r === rep).length, 2, 'descente refaite une fois');
+  assert.equal(day.forced[grp], -1);
+  // Une fois refaite, la demande ne s'applique plus (pas de 3e fois).
+  day.forced[grp] = rep;
+  const v = opsView(day, ds, 12 * 60);
+  assert.equal(v.inst.start.groups[grp].next, -1);
 });

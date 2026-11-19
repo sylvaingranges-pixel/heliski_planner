@@ -325,6 +325,15 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .ops-btn.big { min-height: 72px; font-size: 21px; }
 .gchip { display: inline-block; padding: 1px 8px; border-radius: 9px; color: #fff; font-weight: 700; font-size: .92em; text-shadow: 0 1px 1px rgba(0,0,0,.25); }
 
+.ops-cost { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 6px 10px; font-size: 14.5px; }
+.ops-cost:empty { display: none; }
+.oc-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.oc-l { font-weight: 700; margin-right: auto; }
+.oc-arrow { color: var(--muted); }
+.oc-d { font: 700 14px var(--mono); padding: 0 6px; border-radius: 8px; background: #eef1f6; }
+.oc-d.up { background: #fbe1e1; color: #8f1d1d; }
+.oc-d.down { background: #dff3e7; color: #0f5c39; }
+.oc-sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
 .ops-sec { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
 .ops-sec h4 { margin: 4px 0 0; }
 .ops-agenda { list-style: none; margin: 0; padding: 0; background: #fff; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
@@ -359,7 +368,9 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .og-btns { display: flex; gap: 6px; margin-top: auto; padding-top: 4px; }
 .og-btns button { flex: 1; min-height: 42px; white-space: nowrap; padding: 0 4px; font: inherit; font-size: 14.5px; font-weight: 650; border-radius: 10px; border: 1px solid var(--line); background: #f7f9fc; cursor: pointer; }
 
-.ops-actions { position: sticky; bottom: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 0 10px; margin-top: auto; background: linear-gradient(rgba(238,242,247,0), #eef2f7 30%); }
+/* Boutons du bas toujours visibles : c'est le programme qui défile (plus de contenu qui passe derrière les boutons). */
+.ops-right > .ops-agenda { flex: 0 1 auto; min-height: 150px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.ops-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 4px 0 10px; margin-top: auto; background: #eef2f7; }
 .ops-act { min-height: 60px; border-radius: 14px; border: 2px solid var(--line); background: #fff; font: inherit; font-size: 22px; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; }
 .ops-act span { font-size: 13px; font-weight: 650; }
 .ops-act.on { border-color: var(--navy); background: var(--navy); color: #fff; }
@@ -380,6 +391,8 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .sheet-btn.danger { border-color: #f1b9b9; color: var(--bad); }
 .sheet-btn.far { opacity: .7; }
 .sheet-btn.muted-btn { background: #f5f7fa; }
+.sheet-btn.again { background: #f5f7fa; border-style: dashed; }
+.sheet-btn.again .tag { color: var(--muted); }
 .sheet-btn:disabled { opacity: .4; background: #eef0f3; cursor: default; }
 .sheet-btn.half { min-height: 56px; }
 .sheet-cancel { display: block; width: 100%; margin-top: 12px; min-height: 52px; font: inherit; font-size: 17px; border-radius: 12px; border: 0; background: #eef1f6; color: var(--ink); cursor: pointer; }
