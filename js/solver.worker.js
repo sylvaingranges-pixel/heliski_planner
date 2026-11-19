@@ -24,6 +24,6 @@ self.onmessage = (ev) => {
   });
   const d = decode(inst, res.sol, true);
   // Archive d'élite (opts.archive) : plannings proches en coût mais différents, pour les variantes.
-  self.postMessage({ type: 'done', sol: res.sol, f: res.f, history: res.history, elapsedMs: res.elapsedMs, evals: res.evals, lifts: d.lifts,
+  self.postMessage({ type: 'done', sol: res.sol, f: res.f, feasible: d.feasible, history: res.history, elapsedMs: res.elapsedMs, evals: res.evals, lifts: d.lifts,
     archive: res.archive ?? [] });
 };

@@ -12,9 +12,23 @@ const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\
 const PARAM_KEYS = ['flyRate', 'standbyRate', 'maxStandby', 'heliStartCost', 'loadMin', 'unloadMin', 'heliSpeedKmh', 'climbRate', 'flightOverhead', 'clientWaitPenalty', 'maxClientWait',
   'autonomyMin', 'refuelMin'];
 const STORE = 'heliski-planner-prod-v1';
-// Niveaux d'effort de l'optimisation : durée totale visée (s). Le temps est réparti en chaînes de recuit d'environ 1 s,
-// en parallèle sur les cœurs disponibles : plus d'effort = plus de chaînes indépendantes, on garde la meilleure.
-const EFFORT = { fast: { label: 'Rapide', seconds: 2 }, medium: { label: 'Moyen', seconds: 10 }, max: { label: 'Max', seconds: 30 } };
+// Recherche en phases, une chaîne de recuit par cœur dans chaque phase (un seul refroidissement par chaîne). La 1re explore
+// toutes les descentes du jour ; chaque suivante ne cherche que parmi les descentes des poolTop meilleurs plannings
+// faisables (distincts) déjà trouvés, chaque chaîne partant de l'un d'eux : l'espace est bien plus petit, la meilleure
+// combinaison est trouvée de façon bien plus régulière. Rien de faisable après une phase : la suivante cherche partout.
+// frac : part de la durée totale. Avec plus de temps (Max), une 3e phase resserrée sur les 8 meilleurs paie.
+const TWO_PHASES = [{ frac: 0.6 }, { frac: 0.4, poolTop: 20 }];
+const THREE_PHASES = [{ frac: 0.5 }, { frac: 0.3, poolTop: 20 }, { frac: 0.2, poolTop: 8 }];
+// Au moins 3 chaînes par phase, enchaînées sur le même cœur s'il y en a moins : avec une seule chaîne, la phase suivante
+// s'enfermerait dans la région de ce seul planning.
+const MIN_CHAINS = 3;
+// Niveaux d'effort : durée totale visée (s), de 2 à 8 s y compris sur tablette. Le calcul suit l'horloge : un appareil
+// plus lent fait moins d'évaluations dans le même temps, la durée ne change pas.
+const EFFORT = {
+  fast: { label: 'Rapide', seconds: 2, phases: TWO_PHASES },
+  medium: { label: 'Moyen', seconds: 4, phases: TWO_PHASES },
+  max: { label: 'Max', seconds: 8, phases: THREE_PHASES },
+};
 // Jeu de base : figé dans data/base-dataset.json (relief réel, Le Châble, graine 42, 50 descentes, rayon 15 km).
 const BASE_OPTS = { seed: 42, nRuns: 50, radiusKm: 15, source: 'terrain', origin: { ...DEFAULT_ORIGIN } };
 let BASE_DS = null;
@@ -257,20 +271,16 @@ function solveHeuristic() {
   if (!state.inst) return;
   if (!state.inst.dayRuns.length) { alert('Aucune descente ouverte aujourd’hui : sélectionnez des descentes du jour.'); return; }
   state.stopSolve?.(false);
-  // Chaînes de recuit indépendantes (au plus une par cœur en même temps), on garde la meilleure.
+  // Chaînes de recuit (au plus une par cœur en même temps), au moins MIN_CHAINS par phase, on garde la meilleure.
   const nW = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
   const effort = EFFORT[state.effort], btn = $('btn-solve'), bar = $('sa-progress');
-  // Budget : chaînes d'environ 1 s, autant que les cœurs en font tenir dans la durée visée.
-  const nJobs = Math.max(1, Math.floor(effort.seconds * nW));
-  const waves = Math.ceil(nJobs / nW);
-  const timeMs = Math.max(150, 0.92 * 1000 * effort.seconds / waves - 60);   // marge : démarrage des workers, descente locale
-  const restarts = timeMs >= 600 ? 4 : 2, seed0 = 1;
-  const jobs = Array.from({ length: nJobs }, (_, w) => ({ seed: seed0 + 1000 * w }));
+  const PHASES = effort.phases, nC = Math.max(nW, MIN_CHAINS), nJobs = PHASES.length * nC, seed0 = 1;
   const vo = state.vopts;
   const archive = { ...ARCHIVE, tol: vo.tolChf, tolRel: vo.tolPct / 100, weights: variantWeights(vo) };
-  const prog = new Array(jobs.length).fill(0), done = [];
-  let bestSeen = Infinity, next = 0;
-  const t0 = performance.now();
+  const prog = new Array(nJobs).fill(0), done = [];
+  let bestSeen = Infinity, phase = 0, phaseLeft = 0, phaseNext = 0, phaseJobs = [];
+  let overhead = 60;                               // ms par chaîne au-delà de timeMs (démarrage du worker, descente locale) : mesuré
+  const t0 = performance.now(), deadline = t0 + 0.95 * 1000 * effort.seconds;
   btn.classList.add('running'); btn.textContent = 'Optimisation… (arrêter)'; bar.hidden = false;
   bar.firstElementChild.style.width = '0%';
   const reset = () => { btn.classList.remove('running'); btn.textContent = 'Optimiser'; bar.hidden = true; state.stopSolve = null; };
@@ -279,7 +289,7 @@ function solveHeuristic() {
     if (!done.length) return;
     const best = done.reduce((a, b) => (b.f < a.f - 1e-9 ? b : a));
     const evals = done.reduce((a, b) => a + b.evals, 0);
-    const partial = done.length < jobs.length ? ` (arrêtée, ${done.length} / ${jobs.length} chaînes)` : '';
+    const partial = done.length < nJobs ? ` (arrêtée, ${done.length} / ${nJobs} chaînes)` : '';
     const label = `Optimisation ${effort.label}${partial}`, seconds = (performance.now() - t0) / 1000;
     const info = `${done.length} chaînes, ${evals.toLocaleString('fr-CH')} évaluations`;
     // Variantes : archives de toutes les chaînes (+ leur meilleure solution), plannings faisables seulement.
@@ -299,8 +309,9 @@ function solveHeuristic() {
     state.saWorkers?.forEach(x => x.terminate()); state.saWorkers = null;
     if (keep) finish(); else reset();
   };
-  const launch = () => {
-    const k = next++, job = jobs[k];
+  /** Chaîne k : job = { timeMs, init (planning de départ), available (descentes autorisées ; null : descentes du jour) }. */
+  const launch = (k, { timeMs, init, available }) => {
+    const tLaunch = performance.now();
     const w = new Worker(new URL('./solver.worker.js', import.meta.url), { type: 'module' });
     w.onmessage = (ev) => {
       const m = ev.data;
@@ -308,20 +319,38 @@ function solveHeuristic() {
       if (m.type === 'progress') {
         prog[k] = m.info.frac;
         bestSeen = Math.min(bestSeen, m.info.bestF);
-        bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / jobs.length).toFixed(1) + '%';
+        bar.firstElementChild.style.width = (100 * prog.reduce((a, b) => a + b, 0) / nJobs).toFixed(1) + '%';
         btn.textContent = `Optimisation… ${chf(bestSeen)} (arrêter)`;
       } else if (m.type === 'done') {
         w.terminate(); state.saWorkers?.delete(w); done.push(m); prog[k] = 1;
-        if (next < jobs.length) launch();
-        else if (done.length === jobs.length) { state.saWorkers = null; finish(); }
+        overhead = Math.min(1500, Math.max(overhead, performance.now() - tLaunch - timeMs));
+        if (phaseNext < nC) { const j = phaseNext++; launch(phase * nC + j, phaseJobs[j]); }   // chaîne suivante de la phase
+        if (--phaseLeft > 0) return;
+        if (++phase < PHASES.length) runPhase(); else { state.saWorkers = null; finish(); }
       }
     };
     w.onerror = (e) => { state.stopSolve?.(false); alert('Erreur du solveur : ' + e.message); };
-    w.postMessage({ ...snapshot(), opts: { timeMs, restarts, seed: job.seed, archive } });
+    const snap = snapshot();
+    w.postMessage({ ...snap, ...(available ? { available } : {}), opts: { timeMs, restarts: 1, seed: seed0 + 1000 * k, archive, ...(init ? { init } : {}) } });
     state.saWorkers.add(w);
   };
+  const runPhase = () => {
+    // Durée de la phase : sa part du temps qui reste jusqu'à l'échéance (une phase qui a débordé raccourcit les suivantes),
+    // moins, par chaîne, la marge mesurée sur les chaînes déjà finies (démarrage du worker, descente locale finale) : la
+    // durée totale est tenue même sur un appareil lent.
+    const P = PHASES[phase], perWorker = Math.ceil(nC / nW);
+    const left = PHASES.slice(phase).reduce((a, x) => a + x.frac, 0), phaseMs = Math.max(0, deadline - performance.now()) * P.frac / left;
+    const timeMs = Math.max(150, phaseMs / perWorker - overhead);
+    // Plannings faisables distincts déjà trouvés (meilleures solutions et archives des chaînes), du moins cher au plus cher.
+    const seen = new Set(), elite = done.flatMap(m => [...(m.feasible ? [{ sol: m.sol, f: m.f }] : []), ...(m.archive ?? [])])
+      .sort((a, b) => a.f - b.f).filter(e => { const key = JSON.stringify(e.sol.seq); return !seen.has(key) && seen.add(key); });
+    const pool = phase > 0 && elite.length ? [...new Set(elite.slice(0, P.poolTop).flatMap(e => e.sol.seq.flat()))] : null;
+    phaseJobs = Array.from({ length: nC }, (_, i) => ({ timeMs, init: pool ? elite[Math.min(i, elite.length - 1)].sol : null, available: pool }));
+    phaseLeft = nC; phaseNext = 0;
+    while (phaseNext < Math.min(nW, nC)) { const j = phaseNext++; launch(phase * nC + j, phaseJobs[j]); }
+  };
   state.saWorkers = new Set();
-  for (let i = 0; i < Math.min(nW, jobs.length); i++) launch();
+  runPhase();
 }
 
 // ------------------------------------------------------------------ variantes
