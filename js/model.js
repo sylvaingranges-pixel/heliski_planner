@@ -219,18 +219,24 @@ export function decode(inst, sol, record = false) {
         const c = cost0 + p.flyRate * dh + w.cost + startCost(inst, hs) + p.clientWaitPenalty * (start - gReady[g]);
         let s = start + (prio ? prio[g] : 0) + lam * c / p.flyRate;
         // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
-        if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
+        const u = p.maxClientWait > 0 && o !== BASE ? urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait) : 0;
+        s -= u;
         if (gVisit[g] && d === BASE) s -= VISIT_BOOST;           // passage base du groupe : le ramener dès qu'il est prêt
         const fu = fuel0 + dh + w.loiter + w.extraFly + fl;      // minutes de vol après la rotation (sans le retour)
-        return { s, start, w, c, fuel: fu, over: rf ? Math.max(0, fu + back - rf.max) : 0, refuelAt };
+        return { s, u, start, w, c, fuel: fu, over: rf ? Math.max(0, fu + back - rf.max) : 0, refuelAt };
       };
       let best = option(hl, ht, hs, pre, f0, -1);
-      if (rf && g !== carry && stopAt < 0 && f0 > 1e-9) {
+      // Pas de plein d'abord tant que le vol depuis le dernier plein ne dépasse pas le retour à la base (l'hélico vient
+      // d'en partir : il n'y regagnerait presque rien) — sinon, à peine reparti, il ferait demi-tour pour un autre plein.
+      if (rf && g !== carry && stopAt < 0 && f0 > tau[hl * N] + 1e-9) {
         // Plein d'abord : vol vers la base (s'il n'y est pas), plein, puis vers le groupe. Obligatoire si la rotation ne
         // tient pas dans l'autonomie ; sinon retenu s'il est assez intéressant (bonus d'autant plus fort que le réservoir
         // est entamé).
         const dB = tau[hl * N], at = ht + dB;
+        // Le plein retarde la reprise : il ne doit pas rendre le groupe plus urgent (avec urgency > 1, le bonus d'urgence
+        // croît plus vite que l'heure de reprise, et un plein inutile serait préféré, puis refait juste après — boucle).
         const r = option(BASE, at + rf.dur, !rf.off, pre + p.flyRate * dB + (rf.off ? 0 : p.standbyRate * rf.dur), 0, at);
+        r.s += r.u - best.u;
         if (best.over > 1e-9 ? r.over < best.over - 1e-9 : r.s - fuelGain * f0 / rf.max < best.s) best = r;
       }
       if (best.s < bS) { bS = best.s; bg = g; bStart = best.start; bW = best.w; bC = best.c; bStop = stopAt; bD = d; bVisit = visit; bRef = best.refuelAt; bFuel = best.fuel; }
