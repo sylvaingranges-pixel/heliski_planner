@@ -130,6 +130,44 @@ export function refuelParams(p) {
   return { max: p.autonomyMin, dur: Math.max(0, p.refuelMin ?? 0), off: p.refuelEngineOff !== false };
 }
 
+// Décodeur : la boucle interne (chaque groupe à chaque étape) n'alloue aucun objet — c'est ~85 % du temps du recuit, et
+// les petits objets { s, start, w… } et { kind, cost… } occupaient le ramasse-miettes. waitCost / option renvoient leurs
+// résultats secondaires dans des variables du module (décodage synchrone, jamais réentrant).
+let wLoiter = 0, wExtra = 0;
+/** waitPlan(inst, loc, started, o, gap).cost sans allocation ; vol d'attente et détour dans wLoiter / wExtra. */
+function waitCost(p, N, tau, restart, loc, started, o, gap) {
+  wLoiter = 0; wExtra = 0;
+  if (gap <= 1e-9 || (loc === BASE && !started)) return 0;
+  const sb = Math.min(gap, p.maxStandby), lo = gap - sb;
+  const runLo = lo > 1e-9 ? lo : 0, runCost = lo > 1e-9 ? p.standbyRate * sb + p.flyRate * lo : p.standbyRate * gap;
+  if (restart >= runCost) { wLoiter = runLo; return runCost; }
+  if ((p.allowBaseShutdown && loc === BASE) || p.allowFieldShutdown) return restart;
+  if (lo > 1e-9 && p.allowBaseShutdown && o !== BASE) {
+    const extra = tau[loc * N] + tau[o] - tau[loc * N + o], c = p.flyRate * extra + restart;
+    if (extra < gap - 1e-9 && c < runCost) { wExtra = extra; return c; }
+  }
+  wLoiter = runLo; return runCost;
+}
+let oStart = 0, oCost = 0, oFuel = 0, oOver = 0, oGap = 0;
+/**
+ * Rotation du groupe (au nœud o, prêt à `ready`) depuis l'hélico en (hl, ht, hs) : renvoie le score du décodeur ;
+ * début du chargement, coût marginal, vol depuis le dernier plein, dépassement d'autonomie et temps mort dans o*.
+ */
+function option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back, hl, ht, hs, cost0, fuel0) {
+  const dh = tau[hl * N + o];
+  const a = ht + dh;
+  const start = a > ready ? a : ready;
+  const wc = waitCost(p, N, tau, restart, hl, hs, o, start - a);
+  const c = cost0 + p.flyRate * dh + wc + (hs ? 0 : restart) + p.clientWaitPenalty * (start - gr);
+  let s = start + prioG + lam * c / p.flyRate;
+  // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
+  if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gr - 0.5 * p.maxClientWait);
+  if (visitBase) s -= VISIT_BOOST;                        // passage base du groupe : le ramener dès qu'il est prêt
+  oFuel = fuel0 + dh + wLoiter + wExtra + fl;             // minutes de vol après la rotation (sans le retour)
+  oStart = start; oCost = c; oOver = rf ? Math.max(0, oFuel + back - rf.max) : 0; oGap = start - a;
+  return s;
+}
+
 /**
  * Décodeur glouton événementiel (un seul hélicoptère).
  * sol = { seq: number[][] (descentes par groupe), prio: number[] (min), lambda: number, urgency: number, fuelGain: number }
@@ -144,9 +182,14 @@ export function decode(inst, sol, record = false) {
   const p = inst.params, N = inst.N, tau = inst.tau, R = inst.R, st = inst.start;
   const G = sol.seq.length;
   let hT = p.dayStart, hL = BASE, hStarted = false;      // hélico : libre à hT, au nœud hL, moteur déjà démarré ?
-  const gK = new Int32Array(G), gReady = new Float64Array(G).fill(p.dayStart), gLoc = new Int32Array(G);
-  const gDone = new Uint8Array(G), gVert = new Float64Array(G), gEnd = new Float64Array(G).fill(p.dayStart);
-  const occEnd = new Float64Array(R).fill(-1e9);
+  // Tableaux de travail réutilisés d'un décodage à l'autre (gardés sur l'instance).
+  let B = inst._decodeBuf;
+  if (!B || B.G !== G) B = inst._decodeBuf = { G, gK: new Int32Array(G), gReady: new Float64Array(G), gLoc: new Int32Array(G),
+    gDone: new Uint8Array(G), gVert: new Float64Array(G), gEnd: new Float64Array(G), occEnd: new Float64Array(R) };
+  const gK = B.gK.fill(0), gReady = B.gReady.fill(p.dayStart), gLoc = B.gLoc.fill(0);
+  const gDone = B.gDone.fill(0), gVert = B.gVert.fill(0), gEnd = B.gEnd.fill(p.dayStart);
+  const occEnd = B.occEnd.fill(-1e9);
+  const restart = p.heliStartCost ?? 0;
   const lam = sol.lambda ?? 1, prio = sol.prio, urg = sol.urgency ?? 1;
   let cost = 0, clientWait = 0, pending = 0, waitPen = 0, waitExcess = 0, closed = 0, repeats = 0, stopLate = 0, visitLate = 0;
   // Ravitaillement : fuel = minutes de vol depuis le dernier plein ; fuelOver : vol au-delà de l'autonomie.
@@ -185,7 +228,8 @@ export function decode(inst, sol, record = false) {
   };
 
   while (pending > 0) {
-    let bS = Infinity, bg = -1, bStart = 0, bW = null, bC = 0, bStop = -1, bD = BASE, bVisit = false, bRef = -1, bFuel = 0;
+    let bS = Infinity, bg = -1, bStart = 0, bC = 0, bStop = -1, bD = BASE, bVisit = false, bRef = -1, bFuel = 0;
+    let bHl = BASE, bHs = false, bGap = 0;                // d'où part l'hélico pour la rotation retenue (attente : record)
     for (let g = 0; g < G; g++) {
       if (gDone[g] || (carry >= 0 && g !== carry)) continue;
       const o = gLoc[g], seq = seqs[g], k = gK[g], lm = g === carry ? 0 : p.loadMin;
@@ -210,30 +254,21 @@ export function decode(inst, sol, record = false) {
         }
       }
       const back = tau[d * N], f0 = stopAt >= 0 ? 0 : fuel;   // vol depuis le dernier plein (passage base = plein)
-      /** Rotation depuis (hl, ht, hs) ; refuelAt ≥ 0 : plein à la base d'abord (arrivée à refuelAt). */
-      const option = (hl, ht, hs, cost0, fuel0, refuelAt) => {
-        const dh = tau[hl * N + o];
-        const a = ht + dh;
-        const start = a > ready ? a : ready;
-        const w = waitPlan(inst, hl, hs, o, start - a);
-        const c = cost0 + p.flyRate * dh + w.cost + startCost(inst, hs) + p.clientWaitPenalty * (start - gReady[g]);
-        let s = start + (prio ? prio[g] : 0) + lam * c / p.flyRate;
-        // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
-        if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gReady[g] - 0.5 * p.maxClientWait);
-        if (gVisit[g] && d === BASE) s -= VISIT_BOOST;           // passage base du groupe : le ramener dès qu'il est prêt
-        const fu = fuel0 + dh + w.loiter + w.extraFly + fl;      // minutes de vol après la rotation (sans le retour)
-        return { s, start, w, c, fuel: fu, over: rf ? Math.max(0, fu + back - rf.max) : 0, refuelAt };
-      };
-      let best = option(hl, ht, hs, pre, f0, -1);
+      const gr = gReady[g], prioG = prio ? prio[g] : 0, visitBase = !!gVisit[g] && d === BASE;
+      let s1 = option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back, hl, ht, hs, pre, f0);
+      let st1 = oStart, c1 = oCost, fu1 = oFuel, ov1 = oOver, gap1 = oGap, hl1 = hl, hs1 = hs, ref1 = -1;
       if (rf && g !== carry && stopAt < 0 && f0 > 1e-9) {
         // Plein d'abord : vol vers la base (s'il n'y est pas), plein, puis vers le groupe. Obligatoire si la rotation ne
         // tient pas dans l'autonomie ; sinon retenu s'il est assez intéressant (bonus d'autant plus fort que le réservoir
         // est entamé).
         const dB = tau[hl * N], at = ht + dB;
-        const r = option(BASE, at + rf.dur, !rf.off, pre + p.flyRate * dB + (rf.off ? 0 : p.standbyRate * rf.dur), 0, at);
-        if (best.over > 1e-9 ? r.over < best.over - 1e-9 : r.s - fuelGain * f0 / rf.max < best.s) best = r;
+        const s2 = option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back,
+          BASE, at + rf.dur, !rf.off, pre + p.flyRate * dB + (rf.off ? 0 : p.standbyRate * rf.dur), 0);
+        if (ov1 > 1e-9 ? oOver < ov1 - 1e-9 : s2 - fuelGain * f0 / rf.max < s1) {
+          s1 = s2; st1 = oStart; c1 = oCost; fu1 = oFuel; ov1 = oOver; gap1 = oGap; hl1 = BASE; hs1 = !rf.off; ref1 = at;
+        }
       }
-      if (best.s < bS) { bS = best.s; bg = g; bStart = best.start; bW = best.w; bC = best.c; bStop = stopAt; bD = d; bVisit = visit; bRef = best.refuelAt; bFuel = best.fuel; }
+      if (s1 < bS) { bS = s1; bg = g; bStart = st1; bC = c1; bStop = stopAt; bD = d; bVisit = visit; bRef = ref1; bFuel = fu1; bHl = hl1; bHs = hs1; bGap = gap1; }
     }
     const g = bg, o = gLoc[g], seq = seqs[g], k = gK[g], d = bD, carried = g === carry, lm = carried ? 0 : p.loadMin;
     carry = -1;
@@ -255,7 +290,7 @@ export function decode(inst, sol, record = false) {
       waitExcess += ex; waitPen += WAIT_PENALTY.fixed + WAIT_PENALTY.perUnit * ex;
     }
     const pause = bVisit ? gVisit[g].dur : 0;
-    if (record) lifts.push({ group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: bW, readyAt: gReady[g], ...(bVisit ? { visit: true, pause } : {}), ...(carried ? { carry: true } : {}) });
+    if (record) lifts.push({ group: g, from: o, to: d, start: bStart, end, run: d === BASE ? -1 : d - 1, wait: waitPlan(inst, bHl, bHs, o, bGap), readyAt: gReady[g], ...(bVisit ? { visit: true, pause } : {}), ...(carried ? { carry: true } : {}) });
     hT = end; hL = d; hStarted = true;
     if (d === BASE && stop) doStop(end);                     // l'hélico est à la base : l'arrêt demandé se fait maintenant
     if (d === BASE && gVisit[g]) { visitLate += Math.max(0, end - p.unloadMin - gVisit[g].by); gVisit[g] = null; }
