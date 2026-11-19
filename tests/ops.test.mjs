@@ -386,6 +386,37 @@ test('exploitation : ravitaillement — l’hélico fait le plein prévu, le com
   st.groups.forEach((g, i) => assert.ok(g.vert >= groups[i].target, `${groups[i].name} : ${g.vert}`));
 });
 
+test('exploitation : ravitaillement sans recalcul du plan — pas de pleins en boucle, tous les groupes repris', () => {
+  // Plan suivi tel quel entre les événements (pas de recuit) : juste après un plein, le décodeur ne doit pas renvoyer
+  // l'hélico à la base pour un autre plein (urgence > 1 : le retard dû au plein ne doit pas rendre le groupe plus urgent).
+  for (const [autonomyMin, refuelEngineOff, urgency] of [[60, true, null], [60, true, 8], [30, false, null], [45, true, 8]]) {
+    const params = { ...P, autonomyMin, refuelEngineOff };
+    const { sol } = morningPlan(params, 1);
+    const plan = urgency ? { ...sol, urgency } : sol;
+    const inst = buildInstance(ds, params, groups);
+    const day = newDay({ dataset: ds, params, groups, open: [...inst.dayRuns], sol: plan, cost: decode(inst, plan).cost, mode: 'sim' });
+    let now = params.dayStart;
+    while (now < 17 * 60) {
+      now += 0.5;
+      for (let k = 0; k < 50; k++) {
+        const v = opsView(day, ds, now), tr = dueTrigger(day, v);
+        if (!tr) break;
+        applyTrigger(day, v, tr);
+      }
+    }
+    let last = null;
+    for (const e of day.events) {
+      if (e.type === 'stopStart') assert.notEqual(last, 'stopStart', `${autonomyMin} min : deux pleins de suite à ${e.t}`);
+      if (e.type === 'stopStart' || e.type === 'pickup') last = e.type;
+    }
+    const st = deriveState(day, dayGeo(day, ds), now);
+    st.groups.forEach((g, i) => {
+      assert.equal(g.status, 'done', `${autonomyMin} min : ${groups[i].name} pas ramené`);
+      assert.ok(g.vert >= groups[i].target, `${autonomyMin} min : ${groups[i].name} : ${g.vert}`);
+    });
+  }
+});
+
 test('exploitation : coût de la journée — plan du matin, réel écoulé + reste prévu', () => {
   const { day, d } = startDay();
   const v0 = opsView(day, ds, P.dayStart);
