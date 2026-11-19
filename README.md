@@ -9,9 +9,12 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
 (MILP HiGHS dans le navigateur, NEOS / COPT, onglet *Formulation*).
 
 - **Résolution** : un seul solveur, l'heuristique (recuit simulé + décodeur événementiel, en parallèle sur plusieurs cœurs),
-  avec trois niveaux d'effort : **Rapide (~2 s)**, **Moyen (~10 s)**, **Max (~30 s)**. Le temps est réparti en chaînes
-  d'environ 1 s ; plus d'effort = plus de chaînes indépendantes, on garde la meilleure. Le calcul peut être arrêté
-  (bouton *Optimiser* pendant le calcul) : la meilleure solution déjà trouvée est conservée.
+  avec trois niveaux d'effort : **Rapide (~2 s)**, **Moyen (~4 s)**, **Max (~8 s)**, durées tenues aussi sur une tablette
+  lente (le calcul suit l'horloge : un appareil plus lent fait moins d'évaluations, pas plus long). Recherche en phases,
+  une chaîne de recuit par cœur (au moins 3 par phase) : la 1re phase explore toutes les descentes du jour ; la suivante
+  ne cherche que parmi les descentes des 20 meilleurs plannings trouvés, chaque chaîne partant de l'un d'eux (Max :
+  3 phases, la dernière sur les 8 meilleurs). Le calcul peut être arrêté (bouton *Optimiser* pendant le calcul) : la
+  meilleure solution déjà trouvée est conservée.
   Le décodeur fait servir par l'hélico, à chaque étape, le groupe le plus intéressant (début du chargement, priorité,
   coût marginal, urgence de l'attente client) ; le recuit choisit les descentes de chaque groupe et ces poids.
 - **Variantes** : chaque chaîne garde une archive d'élite (10 plannings faisables de coût ≤ meilleur + tolérance, deux à
@@ -141,13 +144,15 @@ Temps de vol = 1 min + max(distance / 180 km/h, montée / 400 m/min).
 standby ≤ 5 min, attente des clients au fond ≤ 20 min, 9 h – 15 h, autonomie 60 min de vol (plein de 8 min, moteur coupé).
 L'hélico peut couper le moteur à chaque dépose / reprise (attente gratuite, redémarrage 100.–) : plus de vol d'attente ni de standby long.
 
-| Résultat sur le jeu de base (Node, chaînes de ~0,9 s comme dans le navigateur à 3 workers) | Coût hélico |
+| Résultat sur le jeu de base (Node, même orchestration que le navigateur, 3 workers, moyenne de 10 calculs [min–max]) | Coût hélico |
 |---|---|
-| Rapide (6 chaînes), autonomie 60 min | ~CHF 3 500 (15 rotations, 1 plein vers 11 h 30, 2 démarrages, retour vers 13 h 50) |
-| Moyen (30 chaînes), autonomie 60 min | ~CHF 3 480 (15 rotations, 1 plein vers 11 h 40, 2 démarrages) |
-| Sans ravitaillement (autonomie 0) : Rapide | ~CHF 3 340 (15 rotations, 2 démarrages, retour vers 13 h 50) |
-| Sans ravitaillement : Moyen | ~CHF 3 260 (14 rotations, 2 démarrages, 0 min de vol d'attente) |
-| Sans ravitaillement ni arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 340 (1 démarrage, ~12 min de standby) |
+| Rapide, autonomie 60 min | ~CHF 3 400 [3 378–3 435] (14 rotations, 1 plein, 4 démarrages, retour vers 14 h 15) |
+| Moyen, autonomie 60 min | ~CHF 3 400 [3 378–3 435] |
+| Max, autonomie 60 min | CHF 3 378 à chaque calcul |
+| Sans ravitaillement (autonomie 0) : Rapide | ~CHF 3 250 [3 226–3 305] (14 rotations, 2 démarrages, retour vers 13 h 50) |
+| Sans ravitaillement : Moyen | ~CHF 3 245 [3 226–3 274] |
+| Sans ravitaillement : Max | CHF 3 226 à chaque calcul |
+| Sans ravitaillement ni arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 300 [3 270–3 320] (1 démarrage, ~7 min de standby) |
 
 La journée du jeu de base compte ~85 min de vol : avec une autonomie de 60 min, un plein est nécessaire (~CHF 150–200 :
 détour par la base, 8 min de plein, redémarrage).
@@ -165,7 +170,7 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 | `js/terrain.js` | téléchargement du relief (MNT) et génération des descentes sur le terrain réel |
 | `js/data.js` | générateur synthétique, paramètres par défaut |
 | `js/model.js` | instance, matrice des temps de vol, décodeur à un hélico (séquences → planning, y compris depuis un état de mi-journée : position GPS, passage base, descente imposée, stabilité), coût |
-| `js/solver.js` | recuit simulé multi-départs (pénalités adaptatives) + descente locale, archive d'élite et sélection des variantes |
+| `js/solver.js` | recuit simulé (pénalités adaptatives, mouvements qui gardent l'objectif de dénivelé, départ de secours) + descente locale, archive d'élite et sélection des variantes |
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/ops.js` | exploitation : journal des événements → état réel → instance « reste de la journée », adaptation du plan, déductions GPS, simulation (l'hélico suit le plan) |
 | `js/ops-ui.js` | onglet *Exploitation* (tablette du pilote) : horloge, GPS, recalcul en arrière-plan, carte, programme, fenêtres tactiles |

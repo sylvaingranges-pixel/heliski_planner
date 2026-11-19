@@ -409,12 +409,21 @@ export function redirectCarry(day, view) {
   let sol = view.plan;
   if (s.dest >= 0 && !inst.open[s.dest] && sg.next < 0 && !sg.noMore) {
     const rest = sol.seq[g];
+    // Descente encore occupée par un autre groupe à l'arrivée de l'hélico au sommet : écartée. Le groupe est à bord, l'hélico
+    // déjà en vol ne peut pas attendre qu'elle se libère (le décodeur retarderait sinon le vol chargé). Toutes occupées :
+    // on les essaie quand même.
+    const { t, loc } = inst.start.heli, occUntil = new Map();
+    for (const [r, until] of inst.start.occ) occUntil.set(r, Math.max(until, occUntil.get(r) ?? -Infinity));
+    const busy = (r) => !!inst.params.exclusiveRuns && (occUntil.get(r) ?? -Infinity) > t + inst.tau[loc * inst.N + 1 + r] + 1e-9;
     let best = { f: decode(inst, sol).f, sol };
-    for (const r of inst.dayRuns) {
-      if (sg.skied[r] || r === rest[0]) continue;
-      const seq = sol.seq.slice(); seq[g] = [r, ...rest.filter(x => x !== r)];
-      const cand = { ...sol, seq }, f = decode(inst, cand).f;
-      if (f < best.f - 1e-9) best = { f, sol: cand };
+    for (const allowBusy of [false, true]) {
+      for (const r of inst.dayRuns) {
+        if (sg.skied[r] || r === rest[0] || (!allowBusy && busy(r))) continue;
+        const seq = sol.seq.slice(); seq[g] = [r, ...rest.filter(x => x !== r)];
+        const cand = { ...sol, seq }, f = decode(inst, cand).f;
+        if (f < best.f - 1e-9) best = { f, sol: cand };
+      }
+      if (best.sol !== sol) break;
     }
     sol = best.sol;
     day.plan = { ...sol, seq: sol.seq.map(q => q.slice()) };

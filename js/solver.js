@@ -41,17 +41,30 @@ export function initialSolution(inst, rnd = Math.random) {
   return { seq, prio: new Array(G).fill(0), lambda: 1, urgency: 1, fuelGain: 10 };
 }
 
-function pickRun(inst, rnd, prevNode, exclude, g) {
-  // 75 % : parmi les 12 descentes du jour les plus proches du point de départ ; 25 % : au hasard.
+/**
+ * Descente pour une insertion / un remplacement. 75 % : parmi les 12 descentes du jour les plus proches du point de
+ * départ ; 25 % : au hasard. minV : dénivelé minimal (mouvements qui gardent l'objectif du groupe) ; on élargit alors
+ * aux 24 plus proches après 10 essais ; -1 si rien ne convient.
+ */
+function pickRun(inst, rnd, prevNode, exclude, g, minV = -Infinity) {
   const day = inst.dayRuns;
   if (!day.length) return -1;
+  const bounded = minV > -Infinity;
   let r;
-  for (let tries = 0; tries < 20; tries++) {
-    if (rnd() < 0.75) { const list = inst.nearTop[prevNode]; r = list[Math.floor(rnd() * Math.min(12, list.length))]; }
+  for (let tries = 0; tries < (bounded ? 30 : 20); tries++) {
+    if (rnd() < 0.75) { const list = inst.nearTop[prevNode]; r = list[Math.floor(rnd() * Math.min(bounded && tries >= 10 ? 24 : 12, list.length))]; }
     else r = day[Math.floor(rnd() * day.length)];
-    if (!exclude.includes(r) && !banned(inst, g, r)) return r;
+    if ((!bounded || inst.vert[r] >= minV) && !exclude.includes(r) && !banned(inst, g, r)) return r;
   }
   return -1;
+}
+
+/** Marge de dénivelé du groupe g avec la séquence q (≥ 0 : objectif atteint), dénivelé déjà fait compris. */
+function vertSlack(inst, g, q) {
+  const sg = inst.start?.groups[g];
+  let v = sg ? sg.vert + (sg.next >= 0 ? inst.vert[sg.next] : 0) : 0;
+  for (const r of q) v += inst.vert[r];
+  return v - inst.targets[g];
 }
 
 const prevNodeOf = (inst, seq, k, g) => (k === 0 ? startNode(inst, g) : 1 + inst.R + seq[k - 1]);
@@ -62,17 +75,28 @@ export function mutate(inst, sol, rnd) {
   if (act && !act.length) return s;
   const g = act ? act[Math.floor(rnd() * act.length)] : Math.floor(rnd() * G), q = s.seq[g];
   const u = rnd();
+  // Les bons plannings sont serrés sur l'objectif de dénivelé : remplacement, retrait et échange le gardent quand il
+  // est atteint (sinon, ou faute de descente qui convienne, mouvement libre).
   if (u < 0.30 && q.length > 0) {                       // remplacer une descente
-    const k = Math.floor(rnd() * q.length);
-    const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), q, g);
+    const k = Math.floor(rnd() * q.length), prev = prevNodeOf(inst, q, k, g), sl = vertSlack(inst, g, q);
+    let r = sl >= 0 ? pickRun(inst, rnd, prev, q, g, inst.vert[q[k]] - sl) : -1;
+    if (r < 0) r = pickRun(inst, rnd, prev, q, g);
     if (r >= 0) q[k] = r;
   } else if (u < 0.45) {                                // insérer
     const k = Math.floor(rnd() * (q.length + 1));
     const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), q, g);
     if (r >= 0) q.splice(k, 0, r);
-  } else if (u < 0.58 && q.length > 1) {                // retirer (+ parfois remplacer une autre)
-    q.splice(Math.floor(rnd() * q.length), 1);
-    if (rnd() < 0.5) {
+  } else if (u < 0.58 && q.length > 1) {                // retirer (+ remplacer une autre pour garder le dénivelé)
+    const sl = vertSlack(inst, g, q), i = Math.floor(rnd() * q.length), removed = q[i];
+    q.splice(i, 1);
+    if (sl >= 0) {
+      const deficit = inst.vert[removed] - sl;           // dénivelé à compenser après le retrait
+      if (deficit > 0) {
+        const k = Math.floor(rnd() * q.length);
+        const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), [...q, removed], g, inst.vert[q[k]] + deficit);
+        if (r >= 0) q[k] = r;
+      }
+    } else if (rnd() < 0.5) {
       const k = Math.floor(rnd() * q.length);
       const r = pickRun(inst, rnd, prevNodeOf(inst, q, k, g), q, g);
       if (r >= 0) q[k] = r;
@@ -87,7 +111,12 @@ export function mutate(inst, sol, rnd) {
   } else if (u < 0.83 && G > 1) {                       // échanger entre groupes
     const g2 = (g + 1 + Math.floor(rnd() * (G - 1))) % G, q2 = s.seq[g2];
     if (q.length && q2.length && !inactive(inst, g2)) {
-      const i = Math.floor(rnd() * q.length), j = Math.floor(rnd() * q2.length);
+      let i = Math.floor(rnd() * q.length), j = Math.floor(rnd() * q2.length);
+      const s1 = vertSlack(inst, g, q), s2 = vertSlack(inst, g2, q2);
+      for (let t = 0; t < 12; t++) {                    // un couple qui garde l'objectif des deux groupes
+        const a = Math.floor(rnd() * q.length), b = Math.floor(rnd() * q2.length), dv = inst.vert[q2[b]] - inst.vert[q[a]];
+        if (s1 + dv >= 0 && s2 - dv >= 0 && !q.includes(q2[b]) && !q2.includes(q[a])) { i = a; j = b; break; }
+      }
       if (!q.includes(q2[j]) && !q2.includes(q[i]) && !banned(inst, g, q2[j]) && !banned(inst, g2, q[i])) [q[i], q2[j]] = [q2[j], q[i]];
     }
   } else if (u < 0.88) {                                // priorité d'un groupe
@@ -104,13 +133,17 @@ export function mutate(inst, sol, rnd) {
   return s;
 }
 
-/** Descente locale exhaustive : remplacement / retrait / insertion / échange, première amélioration. */
-export function polish(inst, sol, maxPasses = 6) {
+/**
+ * Descente locale exhaustive : remplacement / retrait / insertion / échange, première amélioration.
+ * deadline (horloge now()) : arrêt entre deux groupes une fois l'échéance passée (appareil lent : la durée reste tenue).
+ */
+export function polish(inst, sol, maxPasses = 6, deadline = Infinity) {
   let best = cloneSol(sol), bf = decode(inst, best).f;
   for (let pass = 0; pass < maxPasses; pass++) {
     let improved = false;
     for (let g = 0; g < best.seq.length; g++) {
       if (inactive(inst, g)) continue;
+      if (now() > deadline) return best;
       for (let k = 0; k <= best.seq[g].length; k++) {
         // retrait
         if (k < best.seq[g].length) {
@@ -193,10 +226,11 @@ function penaltyWeight() {
  * res.archive : [{ sol, f, cost, lifts }], triée par coût. Sans archive, le recuit est strictement inchangé.
  */
 export function solveSA(inst, opts = {}) {
-  const timed = opts.timeMs > 0, iterations = opts.iterations ?? 60000, restarts = opts.restarts ?? 4;
+  const timed = opts.timeMs > 0, iterations = opts.iterations ?? 60000;
+  let restarts = opts.restarts ?? 4, nextBudget = 0;
   const rnd = mulberry32(opts.seed ?? 1);
   const t0 = now();
-  let best = null, bestF = Infinity, evals = 0, lastProg = -Infinity;
+  let best = null, bestF = Infinity, bestFeas = false, evals = 0, lastProg = -Infinity;
   const history = [];
   const arch = opts.archive ? eliteArchive(inst, opts.archive) : null;
   for (let rs = 0; rs < restarts; rs++) {
@@ -205,20 +239,26 @@ export function solveSA(inst, opts = {}) {
     let cur = rs === 0 && opts.init ? cloneSol(opts.init)
       : !best || (!opts.init && !decode(inst, best).feasible) ? initialSolution(inst, rnd) : mutateN(inst, best, rnd, 8);
     let cd = decode(inst, cur); evals++;
-    // Température initiale ~ écart moyen de quelques mouvements aléatoires.
+    // Température initiale ~ écart moyen de quelques mouvements aléatoires, plafonnée à 100 : l'écart moyen est dominé
+    // par les pénalités (≥ 1 500.–) des voisins infaisables, alors que deux bons plannings diffèrent de quelques dizaines
+    // de francs ; au-dessus de 100 le recuit erre sans progresser. Fin à 6 : en dessous, la descente locale fait mieux.
     let acc = 0; for (let i = 0; i < 30; i++) { acc += Math.abs(decode(inst, mutate(inst, cur, rnd)).f - cd.f); evals++; }
-    const T0 = Math.min(400, Math.max(50, acc / 30)), Tend = 1;
-    if (cd.f < bestF) { bestF = cd.f; best = cloneSol(cur); }
+    const T0 = Math.min(100, Math.max(50, acc / 30)), Tend = 6;
+    if (cd.f < bestF) { bestF = cd.f; best = cloneSol(cur); bestFeas = cd.feasible; }
     if (arch && cd.feasible) arch.offer(cur, cd.f, bestF);
     // En temps limité, le départ se termine à l'échéance : la descente locale finale est prise sur son budget.
     const tStart = now(), span = timed ? Math.max(1, t0 + (rs + 1) * opts.timeMs / restarts - tStart) : 0;
     const pw = penaltyWeight();
     let T = T0, frac = 0;
-    for (let it = 0; timed || it < iterations; it++) {
+    const itMax = nextBudget || iterations; nextBudget = 0;
+    for (let it = 0; timed || it < itMax; it++) {
       if ((it & 127) === 0) {
         const t = now();
-        frac = timed ? (t - tStart) / span : it / iterations;
+        frac = timed ? (t - tStart) / span : it / itMax;
         if (timed && frac >= 0.97) break;
+        // Départ de secours : au tiers du dernier départ, toujours aucun planning faisable (journée serrée) → nouveau
+        // départ de zéro sur le temps (ou les itérations) qui reste, au lieu de finir la chaîne infaisable.
+        if (frac >= 0.35 && !bestFeas && rs === restarts - 1 && !opts.init) { restarts = rs + 2; if (!timed) nextBudget = itMax - it; break; }
         T = T0 * Math.pow(Tend / T0, frac);
         if (opts.onProgress && t - lastProg > 50) {
           lastProg = t;
@@ -232,13 +272,14 @@ export function solveSA(inst, opts = {}) {
       const v = pw.val(d), cv = pw.val(cd);
       if (v <= cv || rnd() < Math.exp((cv - v) / T)) {
         cur = cand; cd = d;
-        if (d.f < bestF - 1e-9) { bestF = d.f; best = cloneSol(cand); history.push({ t: now() - t0, f: d.f, eval: evals }); }
+        if (d.f < bestF - 1e-9) { bestF = d.f; best = cloneSol(cand); bestFeas = d.feasible; history.push({ t: now() - t0, f: d.f, eval: evals }); }
       }
       pw.update(cd.feasible, frac);
     }
-    const pol = polish(inst, best);
+    // Temps limité : la descente locale s'arrête à l'échéance du départ (+ 5 %), même sur un appareil lent.
+    const pol = polish(inst, best, 6, timed ? t0 + (rs + 1) * opts.timeMs / restarts + 0.05 * opts.timeMs : Infinity);
     const pf = decode(inst, pol).f;
-    if (pf < bestF - 1e-9) { bestF = pf; best = pol; history.push({ t: now() - t0, f: pf, eval: evals }); }
+    if (pf < bestF - 1e-9) { bestF = pf; best = pol; bestFeas = decode(inst, pol).feasible; history.push({ t: now() - t0, f: pf, eval: evals }); }
     if (arch) arch.offer(pol, pf, bestF);              // résultat de la descente locale de chaque départ
   }
   const res = { sol: best, f: bestF, history, elapsedMs: now() - t0, evals };
