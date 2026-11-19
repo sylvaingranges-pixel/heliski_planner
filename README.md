@@ -144,15 +144,15 @@ Temps de vol = 1 min + max(distance / 180 km/h, montée / 400 m/min).
 standby ≤ 5 min, attente des clients au fond ≤ 20 min, 9 h – 15 h, autonomie 60 min de vol (plein de 8 min, moteur coupé).
 L'hélico peut couper le moteur à chaque dépose / reprise (attente gratuite, redémarrage 100.–) : plus de vol d'attente ni de standby long.
 
-| Résultat sur le jeu de base (Node, même orchestration que le navigateur, 3 workers, moyenne de 5 calculs [min–max]) | Coût hélico |
+| Résultat sur le jeu de base (Node, même orchestration que le navigateur, 3 workers, moyenne de 10 calculs [min–max]) | Coût hélico |
 |---|---|
-| Rapide, autonomie 60 min | ~CHF 3 400 [3 378–3 418] (14 rotations, 1 plein, 3 démarrages, retour vers 14 h) |
-| Moyen, autonomie 60 min | ~CHF 3 390 [3 378–3 418] (14 rotations, 1 plein, 4 démarrages, retour vers 14 h 15) |
-| Max, autonomie 60 min | ~CHF 3 380 [3 378–3 382] |
-| Sans ravitaillement (autonomie 0) : Rapide | ~CHF 3 240 [3 226–3 278] (14 rotations, 2 démarrages, retour vers 13 h 50) |
-| Sans ravitaillement : Moyen | ~CHF 3 240 [3 226–3 262] |
-| Sans ravitaillement : Max | ~CHF 3 230 [3 226–3 234] |
-| Sans ravitaillement ni arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 310 [3 270–3 334] (1 démarrage, ~3 min de standby) |
+| Rapide, autonomie 60 min | ~CHF 3 400 [3 378–3 435] (14 rotations, 1 plein, 4 démarrages, retour vers 14 h 15) |
+| Moyen, autonomie 60 min | ~CHF 3 400 [3 378–3 435] |
+| Max, autonomie 60 min | CHF 3 378 à chaque calcul |
+| Sans ravitaillement (autonomie 0) : Rapide | ~CHF 3 250 [3 226–3 305] (14 rotations, 2 démarrages, retour vers 13 h 50) |
+| Sans ravitaillement : Moyen | ~CHF 3 245 [3 226–3 274] |
+| Sans ravitaillement : Max | CHF 3 226 à chaque calcul |
+| Sans ravitaillement ni arrêt moteur à la dépose / reprise, Moyen | ~CHF 3 300 [3 270–3 320] (1 démarrage, ~7 min de standby) |
 
 La journée du jeu de base compte ~85 min de vol : avec une autonomie de 60 min, un plein est nécessaire (~CHF 150–200 :
 détour par la base, 8 min de plein, redémarrage).
