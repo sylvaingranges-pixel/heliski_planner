@@ -148,10 +148,11 @@ function waitCost(p, N, tau, restart, loc, started, o, gap) {
   }
   wLoiter = runLo; return runCost;
 }
-let oStart = 0, oCost = 0, oFuel = 0, oOver = 0, oGap = 0;
+let oStart = 0, oCost = 0, oFuel = 0, oOver = 0, oGap = 0, oUrg = 0;
 /**
  * Rotation du groupe (au nœud o, prêt à `ready`) depuis l'hélico en (hl, ht, hs) : renvoie le score du décodeur ;
- * début du chargement, coût marginal, vol depuis le dernier plein, dépassement d'autonomie et temps mort dans o*.
+ * début du chargement, coût marginal, vol depuis le dernier plein, dépassement d'autonomie, temps mort et bonus d'urgence
+ * dans o*.
  */
 function option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back, hl, ht, hs, cost0, fuel0) {
   const dh = tau[hl * N + o];
@@ -161,7 +162,8 @@ function option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase
   const c = cost0 + p.flyRate * dh + wc + (hs ? 0 : restart) + p.clientWaitPenalty * (start - gr);
   let s = start + prioG + lam * c / p.flyRate;
   // Échéance d'attente client : on sert en priorité les groupes proches de la limite.
-  if (p.maxClientWait > 0 && o !== BASE) s -= urg * Math.max(0, start - gr - 0.5 * p.maxClientWait);
+  oUrg = p.maxClientWait > 0 && o !== BASE ? urg * Math.max(0, start - gr - 0.5 * p.maxClientWait) : 0;
+  s -= oUrg;
   if (visitBase) s -= VISIT_BOOST;                        // passage base du groupe : le ramener dès qu'il est prêt
   oFuel = fuel0 + dh + wLoiter + wExtra + fl;             // minutes de vol après la rotation (sans le retour)
   oStart = start; oCost = c; oOver = rf ? Math.max(0, oFuel + back - rf.max) : 0; oGap = start - a;
@@ -257,13 +259,19 @@ export function decode(inst, sol, record = false) {
       const gr = gReady[g], prioG = prio ? prio[g] : 0, visitBase = !!gVisit[g] && d === BASE;
       let s1 = option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back, hl, ht, hs, pre, f0);
       let st1 = oStart, c1 = oCost, fu1 = oFuel, ov1 = oOver, gap1 = oGap, hl1 = hl, hs1 = hs, ref1 = -1;
-      if (rf && g !== carry && stopAt < 0 && f0 > 1e-9) {
+      const u1 = oUrg;
+      // Pas de plein d'abord tant que le vol depuis le dernier plein ne dépasse pas le retour à la base (l'hélico vient
+      // d'en partir : il n'y regagnerait presque rien) — sinon, à peine reparti, il ferait demi-tour pour un autre plein.
+      if (rf && g !== carry && stopAt < 0 && f0 > tau[hl * N] + 1e-9) {
         // Plein d'abord : vol vers la base (s'il n'y est pas), plein, puis vers le groupe. Obligatoire si la rotation ne
         // tient pas dans l'autonomie ; sinon retenu s'il est assez intéressant (bonus d'autant plus fort que le réservoir
         // est entamé).
         const dB = tau[hl * N], at = ht + dB;
-        const s2 = option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back,
+        // Le plein retarde la reprise : il ne doit pas rendre le groupe plus urgent (avec urgency > 1, le bonus d'urgence
+        // croît plus vite que l'heure de reprise, et un plein inutile serait préféré, puis refait juste après — boucle).
+        let s2 = option(p, N, tau, restart, rf, o, ready, gr, prioG, lam, urg, visitBase, fl, back,
           BASE, at + rf.dur, !rf.off, pre + p.flyRate * dB + (rf.off ? 0 : p.standbyRate * rf.dur), 0);
+        s2 += oUrg - u1;
         if (ov1 > 1e-9 ? oOver < ov1 - 1e-9 : s2 - fuelGain * f0 / rf.max < s1) {
           s1 = s2; st1 = oStart; c1 = oCost; fu1 = oFuel; ov1 = oOver; gap1 = oGap; hl1 = BASE; hs1 = !rf.off; ref1 = at;
         }
