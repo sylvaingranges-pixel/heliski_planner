@@ -253,8 +253,8 @@ function reevaluate() {
 
 // ------------------------------------------------------------------ plan pour l'exploitation, plans enregistrés
 /**
- * Plan affiché, sous la forme qui démarre une journée dans l'onglet Exploitation et qui s'enregistre dans la liste
- * partagée (js/plans.js) : jeu de données (référence « base » pour le jeu de base), paramètres, groupes, itinéraires
+ * Plan affiché, sous la forme qui s'enregistre dans la liste partagée (js/plans.js) et que le pilote charge dans
+ * l'onglet Exploitation : jeu de données (référence « base » pour le jeu de base), paramètres, groupes, itinéraires
  * ouverts, solution, coût. null sans plan complet.
  */
 function planSnapshot() {
@@ -930,7 +930,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Exploitation : la journée en cours part du plan affiché ici (copie : la planification reste libre ensuite).
-  initOps({ getPlan: planSnapshot, baseDataset: () => (BASE_DS ? baseDataset() : null) });
+  initOps({ baseDataset: () => (BASE_DS ? baseDataset() : null) });
   bindSavePlan();
 
   renderAll();

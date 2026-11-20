@@ -259,13 +259,17 @@ table.mini td { border-bottom: 1px solid #eef2f7; padding: 3px 4px; }
 .ops-start[hidden], .ops-main[hidden] { display: none; }
 .ops-start-card { max-width: 760px; margin: 0 auto; padding: 20px; font-size: 16px; }
 .ops-start-card h2 { margin: 0 0 6px; }
-.ops-plan-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
-.ops-plan-list p { margin: 4px 2px; }
-.ops-plan-row { display: flex; gap: 6px; align-items: stretch; }
-.ops-plan-pick { flex: 1; min-width: 0; font: inherit; font-size: 16px; text-align: left; color: var(--ink); min-height: 56px; padding: 8px 14px; border-radius: 12px; border: 2px solid var(--line); background: #fff; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
-.ops-plan-pick small { font-size: 13px; color: var(--muted); }
-.ops-plan-row.on .ops-plan-pick { border-color: var(--navy); background: #f1f6fd; box-shadow: inset 4px 0 0 var(--navy); }
-.ops-plan-del { flex: none; width: 52px; border-radius: 12px; border: 2px solid var(--line); background: #fff; font-size: 20px; cursor: pointer; }
+.ops-plan-list { border: 1px solid var(--line); border-radius: 12px; background: #fff; max-height: 44vh; overflow-y: auto; }
+.ops-plan-list:empty { display: none; }
+.ops-plan-item { display: flex; align-items: center; gap: 12px; width: 100%; font: inherit; font-size: 16px; text-align: left; color: var(--ink); min-height: 52px; padding: 8px 14px; border: 0; border-bottom: 1px solid var(--line); background: #fff; cursor: pointer; }
+.ops-plan-item:last-child { border-bottom: 0; }
+.ops-plan-item .nm { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ops-plan-item .dt { flex: none; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ops-plan-item.on { background: var(--navy); color: #fff; }
+.ops-plan-item.on .dt { color: #c9d6e8; }
+.ops-plan-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 14px; min-height: 1.4em; }
+.ops-plan-note .ops-mini { margin-left: auto; min-height: 34px; }
+.plan-save-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ops-field > span .ops-mini { margin-left: 6px; min-height: 30px; padding: 0 10px; vertical-align: middle; }
 .save-dlg { border: 0; border-radius: 14px; padding: 18px 20px; width: min(460px, calc(100vw - 32px)); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
 .save-dlg::backdrop { background: rgba(15, 31, 51, .45); }

@@ -37,7 +37,7 @@ const ui = {
   optGen: 0, workers: null, optAt: -1e9, optTimer: null, status: '', sig: '', panelAt: 0,
   gpsWatch: null, gpsErr: null, det: null, saveAt: 0, mv: null, traceLayer: null, toastTimer: null,
   startMode: 'sim', fitted: false,
-  startSrc: 'current',          // écran de départ : plan choisi ('current' : plan affiché en planification, sinon id enregistré)
+  startSrc: null,               // écran de départ : id du plan enregistré sélectionné
   plans: null, plansGen: 0, plansLoading: false, starting: false,   // plans enregistrés (liste partagée, js/plans.js)
   raf: 0, dueAt: 0, gantt: null, ganttKey: null,   // animation fluide (hélico, groupes, curseur du Gantt) entre deux tics
   pendingSim: false,            // simulation : une question du plan est ouverte
@@ -48,7 +48,7 @@ const ui = {
 };
 
 // ------------------------------------------------------------------ démarrage, persistance
-/** host : { getPlan, baseDataset } (fournis par app.js). getPlan : plan affiché en planification (voir planSnapshot). */
+/** host : { baseDataset } (fourni par app.js). */
 export function initOps(h) {
   host = h;
   try {
@@ -67,65 +67,59 @@ export function initOps(h) {
   if (day) startRun(); else renderStart();
 }
 
-/** Onglet affiché : la carte doit être recalée. */
+/** Onglet affiché : la carte doit être recalée ; écran de départ : liste des plans relue. */
 export function showOps() {
   document.documentElement.style.setProperty('--tb', document.querySelector('.topbar').offsetHeight + 'px');
-  if (!day) { renderStart(); return; }
+  if (!day) { fetchPlans(); renderStart(); return; }
   setTimeout(() => { ui.mv?.map.invalidateSize(); if (!ui.fitted) fitPlan(); refresh(true); }, 30);
 }
 
 /** Planification : un plan vient d'être enregistré → la liste sera relue. */
-export function plansChanged() { ui.plans = null; if (!day) renderStart(); }
+export function plansChanged() { if (!day) fetchPlans(); else ui.plans = null; }
 
 function saveDay() {
   try { localStorage.setItem(STORE, JSON.stringify(day)); } catch { /* stockage plein ou indisponible */ }
   ui.saveAt = Date.now();
 }
 
-/** Liste des plans enregistrés (relue au besoin) ; null pendant la lecture, { error } si indisponible. */
-async function fetchPlans(force = false) {
-  if (ui.plans && !force) return ui.plans;
+/** Relit la liste des plans enregistrés (les plus récents d'abord) ; { list, error? }. */
+async function fetchPlans() {
   const gen = ++ui.plansGen;
-  ui.plans = null;
+  ui.plansLoading = true;
   let res;
   try { res = { list: await listPlans() }; } catch (e) { res = { list: [], error: e.message }; }
-  if (gen === ui.plansGen) ui.plans = res;
-  return res;
+  if (gen === ui.plansGen) { ui.plans = res; ui.plansLoading = false; renderStart(); }
 }
 
-const planSum = (p) => `${chf(p.cost)} · ${p.nGroups ?? p.groups?.length} groupes · ${p.nOpen ?? p.open?.length} itinéraires ouverts`
-  + (p.label ? ` · ${esc(p.label)}` : '') + (p.feasible === false ? ' · <span class="bad-text">contraintes violées</span>' : '');
+const planSum = (m) => `${chf(m.cost)} · ${m.nGroups} groupes · ${m.nOpen} itinéraires ouverts`
+  + (m.label ? ` · ${esc(m.label)}` : '') + (m.feasible === false ? ' · <span class="bad-text">contraintes violées</span>' : '');
 
+/** Écran de départ : liste des plans enregistrés (les plus récents en haut), on en sélectionne un. */
 function renderStart() {
   if (day) return;
   $('ops-start').hidden = false; $('ops-main').hidden = true;
-  const cur = host.getPlan();
-  if (!ui.plans && !ui.plansLoading) {
-    ui.plansLoading = true;
-    fetchPlans().finally(() => { ui.plansLoading = false; renderStart(); });
-  }
+  if (!ui.plans && !ui.plansLoading) fetchPlans();
   const list = ui.plans?.list ?? [];
-  if (ui.startSrc !== 'current' && !list.some(m => m.id === ui.startSrc)) ui.startSrc = 'current';
-  if (ui.startSrc === 'current' && !cur && list.length) ui.startSrc = list[0].id;
-  const row = (id, title, sub, del = false) => `<div class="ops-plan-row ${ui.startSrc === id ? 'on' : ''}" data-src="${esc(id)}">
-      <button class="ops-plan-pick" data-src="${esc(id)}"><b>${title}</b><small>${sub}</small></button>
-      ${del ? `<button class="ops-plan-del" data-del="${esc(id)}" title="Supprimer ce plan de la liste">🗑</button>` : ''}</div>`;
-  $('ops-plan-list').innerHTML = row('current', 'Plan affiché en planification',
-      cur ? planSum({ ...cur, nGroups: cur.groups.length, nOpen: cur.open.length }) : '<span class="bad-text">pas encore de plan : lancez une optimisation</span>')
-    + list.map(m => row(m.id, `💾 ${esc(m.name)}`, `enregistré le ${savedText(m.savedAt)} · ${planSum(m)}`, true)).join('')
-    + (ui.plansLoading ? '<p class="muted">Lecture des plans enregistrés…</p>' : '')
-    + (ui.plans?.error ? `<p class="muted">Plans enregistrés indisponibles : ${esc(ui.plans.error)}</p>` : '')
-    + (ui.plans && !ui.plans.error && !list.length ? '<p class="muted">Aucun plan enregistré : utilisez « Enregistrer le plan » dans l’onglet Planification.</p>' : '');
-  $('ops-plan-list').querySelectorAll('.ops-plan-pick').forEach(b => { b.onclick = () => { if (ui.startSrc !== b.dataset.src) $('ops-sim-start').value = ''; ui.startSrc = b.dataset.src; renderStart(); }; });
-  $('ops-plan-list').querySelectorAll('.ops-plan-del').forEach(b => { b.onclick = () => removePlan(b.dataset.del); });
+  if (!list.some(m => m.id === ui.startSrc)) ui.startSrc = list[0]?.id ?? null;
+  const sel = list.find(m => m.id === ui.startSrc);
+  const box = $('ops-plan-list');
+  box.innerHTML = list.map(m => `<button class="ops-plan-item ${m.id === ui.startSrc ? 'on' : ''}" role="option" aria-selected="${m.id === ui.startSrc}" data-src="${esc(m.id)}">
+      <span class="nm">${esc(m.name)}</span><span class="dt">${savedText(m.savedAt)}</span></button>`).join('');
+  box.querySelectorAll('.ops-plan-item').forEach(b => {
+    b.onclick = () => { if (ui.startSrc !== b.dataset.src) $('ops-sim-start').value = ''; ui.startSrc = b.dataset.src; renderStart(); };
+  });
+  $('ops-plan-note').innerHTML = ui.plansLoading && !ui.plans ? '<span class="muted">Lecture des plans enregistrés…</span>'
+    : ui.plans?.error ? `<span class="bad-text">Plans enregistrés indisponibles : ${esc(ui.plans.error)}</span>`
+    : !list.length ? '<span class="muted">Aucun plan enregistré : le guide enregistre le plan dans l’onglet <i>Planification</i> (« Enregistrer le plan »).</span>'
+    : `<span class="muted">${planSum(sel)}</span><button class="ops-mini" id="ops-plan-del" title="Supprimer ce plan de la liste">🗑 Supprimer</button>`;
+  $('ops-plan-del')?.addEventListener('click', () => removePlan(sel.id));
   $('ops-start-mode').querySelectorAll('[data-mode]').forEach(b => {
     b.classList.toggle('on', b.dataset.mode === ui.startMode);
     b.onclick = () => { ui.startMode = b.dataset.mode; renderStart(); };
   });
   $('ops-start-simtime').hidden = ui.startMode !== 'sim';
-  const start = ui.startSrc === 'current' ? cur?.params.dayStart : list.find(m => m.id === ui.startSrc)?.dayStart;
-  if (!$('ops-sim-start').value && start != null) $('ops-sim-start').value = fmt(start);
-  $('ops-begin').disabled = ui.starting || (ui.startSrc === 'current' ? !cur : false);
+  if (!$('ops-sim-start').value && sel?.dayStart != null) $('ops-sim-start').value = fmt(sel.dayStart);
+  $('ops-begin').disabled = ui.starting || !sel;
   $('ops-begin').textContent = ui.starting ? 'Chargement du plan…' : 'Démarrer la journée';
 }
 
@@ -133,45 +127,27 @@ async function removePlan(id) {
   const m = ui.plans?.list.find(x => x.id === id);
   if (!m || !confirm(`Supprimer le plan « ${m.name} » de la liste partagée ?`)) return;
   try { await deletePlan(id); } catch (e) { alert(`Suppression impossible : ${e.message}`); }
-  await fetchPlans(true); renderStart();
+  fetchPlans();
 }
 
-/** Plan choisi (affiché en planification, ou enregistré : relu sur le serveur), jeu de données résolu. */
-async function resolvePlan(src) {
-  let p;
-  if (src === 'current') p = host.getPlan();
-  else {
-    const raw = await loadPlan(src);
-    p = { ...raw, id: src };
-  }
-  if (!p) throw new Error('pas de plan');
-  const dset = p.dataset === 'base' ? host.baseDataset() : { ...p.dataset, isBase: false };
-  if (!dset?.runs?.length) throw new Error('jeu de données du plan introuvable');
-  return { ...p, dataset: dset };
-}
-
-/** Écran de départ : démarrer la journée avec le plan choisi. */
+/** Démarrer la journée avec le plan sélectionné (relu sur le serveur). */
 async function beginFromStart() {
-  if (ui.starting) return;
+  if (ui.starting || !ui.startSrc) return;
   ui.starting = true; renderStart();
   try {
-    const plan = await resolvePlan(ui.startSrc);
+    const plan = await loadPlan(ui.startSrc);
+    const dset = plan.dataset === 'base' ? host.baseDataset() : { ...plan.dataset, isBase: false };
+    if (!dset?.runs?.length) throw new Error('jeu de données du plan introuvable');
+    const [hh, mm] = ($('ops-sim-start').value || '').split(':').map(Number);
     ui.starting = false;
-    begin(plan, { mode: ui.startMode, simStart: startTimeInput(plan.params) });
+    begin({ ...plan, dataset: dset }, { mode: ui.startMode, simStart: Number.isFinite(hh) ? hh * 60 + (mm || 0) : plan.params.dayStart });
   } catch (e) {
     ui.starting = false; renderStart();
     alert(`Impossible de charger le plan : ${e.message}`);
   }
 }
-function startTimeInput(params) {
-  const [hh, mm] = ($('ops-sim-start').value || '').split(':').map(Number);
-  return Number.isFinite(hh) ? hh * 60 + (mm || 0) : params.dayStart;
-}
 
-/**
- * Démarre une journée neuve avec ce plan (dataset résolu). Toute journée en cours est d'abord arrêtée complètement
- * (horloge, animation, calculs en arrière-plan, GPS, fenêtres, messages) : rien de l'ancienne journée ne subsiste.
- */
+/** Démarre une journée neuve avec ce plan (jeu de données résolu), après avoir arrêté complètement toute journée précédente. */
 function begin(plan, { mode, simStart }) {
   teardown();
   ds = plan.dataset;
@@ -180,9 +156,7 @@ function begin(plan, { mode, simStart }) {
     mode, date: new Date().toISOString().slice(0, 10), simStart,
   });
   day.dataset = ds.isBase ? 'base' : ds;
-  // Plan de départ, gardé pour « Recommencer » (sans le jeu de données, déjà dans day.dataset).
-  day.src = { name: plan.name ?? null, id: plan.id ?? null, params: plan.params, groups: plan.groups, open: plan.open,
-    sol: plan.sol, cost: plan.cost, feasible: plan.feasible, label: plan.label ?? '', simStart };
+  day.planName = plan.name ?? null;
   day.sim.paused = false; day.sim.at = Date.now();
   geo = dayGeo(day, ds); ui.fitted = false;
   saveDay();
@@ -230,42 +204,6 @@ function endDay() {
   try { localStorage.removeItem(STORE); } catch { /* ignore */ }
   ui.plans = null;
   renderStart();
-}
-
-/** En cours de journée : redémarrer proprement avec un autre plan (ou le même, depuis le début). */
-async function restartWith(src) {
-  const mode = day.mode, simStart = day.src?.simStart ?? day.params.dayStart;
-  let plan;
-  try {
-    if (src === 'same') {
-      if (!day.src) throw new Error('plan de départ non mémorisé (journée commencée avant cette version)');
-      plan = { ...day.src, dataset: ds };
-    } else plan = await resolvePlan(src);
-  } catch (e) { toast(`Impossible de charger le plan : ${esc(e.message)}`, { kind: 'warn' }); return; }
-  begin(plan, { mode, simStart: src === 'same' ? simStart : (plan.params.dayStart ?? simStart) });
-  toast(`Simulation redémarrée${plan.name ? ` avec « ${esc(plan.name)} »` : ''}`, { kind: 'info', ms: 4000 });
-}
-
-/** Menu : choisir un plan à charger (la journée en cours est remplacée). */
-async function loadPlanSheet() {
-  openSheet({ title: 'Charger un plan', sub: 'Lecture de la liste…', items: [], cancel: 'Fermer' });
-  const res = await fetchPlans(true);
-  if (!day || $('ops-sheet').hidden) return;
-  const cur = host.getPlan();
-  const items = [
-    ...(cur ? [{ label: 'Plan affiché en planification', sub: planSum({ ...cur, nGroups: cur.groups.length, nOpen: cur.open.length }), onClick: () => confirmRestart('current', 'le plan affiché en planification') }] : []),
-    ...res.list.map(m => ({ label: `💾 ${esc(m.name)}`, sub: `${savedText(m.savedAt)} · ${planSum(m)}`, onClick: () => confirmRestart(m.id, `« ${esc(m.name)} »`) })),
-  ];
-  openSheet({
-    title: 'Charger un plan', cols: 2, wide: true, cancel: 'Fermer', items,
-    sub: res.error ? `Plans enregistrés indisponibles : ${esc(res.error)}` : items.length ? 'La journée en cours est remplacée : la simulation redémarre au début.' : 'Aucun plan enregistré.',
-  });
-}
-function confirmRestart(src, what) {
-  openSheet({
-    title: 'Redémarrer la journée ?', sub: `Le suivi en cours est effacé et la journée repart de zéro avec ${what}.`,
-    items: [{ label: src === 'same' ? '↺ Recommencer' : 'Charger et redémarrer', cls: 'primary', onClick: () => restartWith(src) }],
-  });
 }
 
 // ------------------------------------------------------------------ horloge
@@ -806,13 +744,11 @@ function toggleRun(r) {
 function menuSheet() {
   const p = day.params;
   const box = openSheet({
-    title: 'Journée', wide: true, sub: day.src?.name ? `Plan : « ${esc(day.src.name)} »` : '',
+    title: 'Journée', wide: true, sub: day.planName ? `Plan : « ${esc(day.planName)} »` : '',
     html: `<div class="ops-field"><span>Stabilité du plan : un changement doit faire gagner au moins</span>
         <div class="ops-chips">${[0, 30, 60, 120, 250].map(x => `<button class="ops-chip ${p.changePenalty === x ? 'on' : ''}" data-cp="${x}">${x ? 'CHF ' + x : 'rien (toujours l’optimum)'}</button>`).join('')}</div></div>
       <div class="ops-field"><span>Mode</span><span class="muted">${day.mode === 'gps' ? 'vol réel · GPS de la tablette' : 'simulation · l’hélico suit le plan'}</span></div>`,
     items: [
-      { label: '📂 Charger un plan', sub: 'enregistré ou de la planification · la journée redémarre', cls: 'primary', onClick: loadPlanSheet },
-      { label: '↺ Recommencer la journée', sub: day.src?.name ? `même plan (« ${esc(day.src.name)} »), depuis le début` : 'même plan, depuis le début', disabled: !day.src, onClick: () => confirmRestart('same', 'le même plan') },
       { label: '⟳ Recalculer maintenant', sub: 'optimisation de la suite', onClick: () => scheduleOpt(0) },
       { label: 'Journal de la journée', sub: `${day.events.filter(e => e.type !== 'land' && e.type !== 'takeoff').length} événements`, onClick: journalSheet },
       { label: 'Exporter le journal', sub: 'fichier JSON', cls: 'muted-btn', onClick: exportDay },
@@ -1237,7 +1173,7 @@ function renderTimeline() {
 // ------------------------------------------------------------------ liaisons
 function bindStatic() {
   $('ops-begin').onclick = beginFromStart;
-  $('ops-plans-refresh').onclick = async () => { ui.plansLoading = true; renderStart(); await fetchPlans(true); ui.plansLoading = false; renderStart(); };
+  $('ops-plans-refresh').onclick = () => { fetchPlans(); renderStart(); };
   $('ops-menu').onclick = menuSheet;
   $('ops-fuel').onclick = fuelSheet;
   $('ops-undo').onclick = undo;

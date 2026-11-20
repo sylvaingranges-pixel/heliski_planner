@@ -53,15 +53,15 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
 
 ## Exploitation : la journée en cours (onglet *Exploitation*)
 
-Pour le pilote, sur une tablette en paysage, entièrement tactile, dans l'unique hélicoptère. On démarre la journée à
-partir du plan de l'onglet *Planification* (copie : la planification reste libre ensuite) ou d'un **plan enregistré**.
+Pour le pilote, sur une tablette en paysage, entièrement tactile, dans l'unique hélicoptère. Déroulement : la veille, le
+guide prépare le plan (onglet *Planification*) et l'enregistre ; le lendemain, le pilote charge ce plan enregistré et
+l'exécute.
 
-- **Plans enregistrés** : *💾 Enregistrer le plan* (onglet *Planification*) range le plan affiché, sous un nom, dans une
-  liste partagée tenue sur Netlify (Netlify Blobs, fonction `/api/plans` ; un nom déjà pris est remplacé). L'écran de
-  départ de l'exploitation les liste (suppression possible) ; en cours de journée, menu *⋯* → *Charger un plan* remplace
-  la journée en cours, et *Recommencer la journée* repart du même plan. Dans les deux cas, l'ancienne journée est arrêtée
-  entièrement (horloge, calculs en arrière-plan, GPS, questions en attente) avant que la nouvelle démarre.
-
+- **Plans enregistrés** : *💾 Enregistrer le plan* (au-dessus de la carte, onglet *Planification*) range le plan affiché,
+  sous un nom, dans une liste partagée tenue sur Netlify (Netlify Blobs, fonction `/api/plans` ; un nom déjà pris est
+  remplacé). L'écran de départ de l'exploitation les liste, les plus récents en haut ; on sélectionne le plan du jour
+  (suppression possible) et on démarre. Démarrer arrête d'abord entièrement toute journée précédente (horloge, calculs
+  en arrière-plan, GPS, questions en attente).
 - **Modes** : *Vol réel* (heure réelle, GPS de la tablette) ou *Simulation* (horloge accélérée ×1 à ×60, mise en pause
   pendant chaque question au pilote ; l'hélico suit le plan et les mêmes questions sont posées qu'en vol).
 - **Arrêts** : embarquer et débarquer ne sont proposés **que l'hélico posé** (GPS : à l'arrêt 20 s, et altitude GPS
