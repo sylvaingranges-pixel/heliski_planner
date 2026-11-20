@@ -100,6 +100,10 @@
 
       <div class="content">
         <div class="kpis" id="kpis"></div>
+        <div class="plan-save-bar">
+          <button id="btn-save-plan" class="btn btn-primary" title="Enregistrer ce plan dans la liste partagée : le pilote le chargera dans l’onglet Exploitation" disabled>💾 Enregistrer le plan</button>
+          <span class="muted small">pour le pilote : le plan enregistré se charge dans l’onglet <i>Exploitation</i></span>
+        </div>
         <div class="card map-card">
           <div class="card-head">
             <h3>Carte</h3>
@@ -272,9 +276,12 @@
       <div id="ops-start" class="ops-start">
         <div class="card ops-start-card">
           <h2>Journée en cours</h2>
-          <p class="muted">Déroulement de la journée à partir du plan de l’onglet <i>Planification</i> : la tablette suit l’hélico
+          <p class="muted">Déroulement de la journée à partir d’un plan enregistré (onglet <i>Planification</i>, « Enregistrer le plan ») : la tablette suit l’hélico
             (GPS), le pilote indique les groupes embarqués, et la suite de la journée est recalculée à chaque changement.</p>
-          <div id="ops-plan-summary" class="ops-plan-summary"></div>
+          <div class="ops-field"><span>Plan de la journée <button id="ops-plans-refresh" class="ops-mini" title="Relire la liste des plans enregistrés">↻</button></span>
+            <div id="ops-plan-list" class="ops-plan-list" role="listbox" aria-label="Plans enregistrés (les plus récents en haut)"></div>
+            <div id="ops-plan-note" class="ops-plan-note"></div>
+          </div>
           <div class="ops-field"><span>Mode</span>
             <div class="ops-chips" id="ops-start-mode">
               <button class="ops-chip" data-mode="gps">Vol réel<small>heure réelle · GPS de la tablette</small></button>
@@ -326,6 +333,20 @@
       <div id="ops-toast" class="ops-toast" hidden></div>
     </section>
   </main>
+
+  <dialog id="save-plan-dlg" class="save-dlg">
+    <form method="dialog" id="save-plan-form">
+      <h3>Enregistrer le plan</h3>
+      <p class="muted" id="save-plan-sum"></p>
+      <label class="save-dlg-field"><span>Nom</span><input id="save-plan-name" maxlength="80" autocomplete="off" list="save-plan-names" required></label>
+      <datalist id="save-plan-names"></datalist>
+      <p id="save-plan-msg" class="save-dlg-msg"></p>
+      <div class="save-dlg-btns">
+        <button type="button" class="btn" id="save-plan-cancel">Annuler</button>
+        <button type="submit" class="btn btn-primary" id="save-plan-ok">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="lib/leaflet/leaflet.js"></script>
   <script type="module" src="js/app.js"></script>

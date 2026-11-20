@@ -4,7 +4,8 @@ import { selectVariants } from './solver.js';
 import { validateSchedule, fmt } from './validate.js';
 import { createMapView, drawMap, updateMap, fitActive, setAreaTool, renderGantt, HELI_COLOR, GROUP_COLORS, SEG_STYLE } from './render.js';
 import { DEFAULT_ORIGIN, loadDEM, generateTerrainDataset, toLatLon } from './terrain.js';
-import { initOps, showOps } from './ops-ui.js';
+import { initOps, showOps, plansChanged } from './ops-ui.js';
+import { listPlans, savePlan } from './plans.js';
 
 const $ = (id) => document.getElementById(id);
 const chf = (x) => 'CHF ' + Math.round(x).toLocaleString('fr-CH').replace(/ |\s/g, '’');
@@ -248,6 +249,67 @@ function reevaluate() {
     const sol = { ...state.cur.sol, seq: state.cur.sol.seq.map(q => q.filter(r => r < state.inst.R && state.inst.open[r])) };
     setSolution({ ...state.cur, sol, lifts: decode(state.inst, sol, true).lifts, stale: true, label: state.cur.label.replace(/ \(réévaluée\)$/, '') + ' (réévaluée)' }, false);
   } else { state.cur = null; renderAll(); }
+}
+
+// ------------------------------------------------------------------ plan pour l'exploitation, plans enregistrés
+/**
+ * Plan affiché, sous la forme qui s'enregistre dans la liste partagée (js/plans.js) et que le pilote charge dans
+ * l'onglet Exploitation : jeu de données (référence « base » pour le jeu de base), paramètres, groupes, itinéraires
+ * ouverts, solution, coût. null sans plan complet.
+ */
+function planSnapshot() {
+  const c = state.cur, inst = state.inst;
+  if (!c?.sol || !inst || c.sol.seq.length !== inst.groups.length) return null;
+  const { seq, prio, lambda, urgency, fuelGain } = c.sol;
+  return {
+    dataset: state.ds.isBase ? 'base' : state.ds, params: { ...state.params },
+    groups: inst.groups.map(g => ({ name: g.name, target: g.target })), open: [...inst.dayRuns],
+    sol: structuredClone({ seq, prio, lambda, urgency, fuelGain }), cost: c.sch.cost, feasible: c.feasible,
+    label: c.variant != null && state.variants?.list.length > 1 ? `variante ${c.variant + 1} / ${state.variants.list.length}` : '',
+  };
+}
+
+function bindSavePlan() {
+  const dlg = $('save-plan-dlg'), name = $('save-plan-name'), msg = $('save-plan-msg'), ok = $('save-plan-ok');
+  let known = [];
+  $('btn-save-plan').onclick = async () => {
+    const snap = planSnapshot();
+    if (!snap) return;
+    const d = new Date(), p = (n) => String(n).padStart(2, '0');
+    name.value = `Plan du ${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}h${p(d.getMinutes())}`;
+    $('save-plan-sum').innerHTML = `${chf(snap.cost)} · ${snap.groups.length} groupes · ${snap.open.length} itinéraires ouverts${snap.label ? ` · ${snap.label}` : ''}${snap.feasible ? '' : ' · <span class="bad-text">contraintes violées</span>'}`;
+    msg.textContent = ''; msg.className = 'save-dlg-msg'; ok.disabled = false;
+    dlg.showModal(); name.select();
+    try { known = await listPlans(); } catch (e) { known = []; msg.textContent = `Liste des plans indisponible : ${e.message}`; msg.classList.add('bad-text'); }
+    $('save-plan-names').innerHTML = known.map(m => `<option value="${m.name.replace(/"/g, '&quot;')}">`).join('');
+  };
+  $('save-plan-cancel').onclick = () => dlg.close();
+  name.oninput = () => {
+    const dup = known.some(m => m.name.toLowerCase() === name.value.trim().toLowerCase());
+    msg.className = 'save-dlg-msg'; msg.textContent = dup ? 'Un plan porte déjà ce nom : il sera remplacé.' : '';
+  };
+  $('save-plan-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const snap = planSnapshot(), n = name.value.trim();
+    if (!snap || !n) return;
+    ok.disabled = true; msg.className = 'save-dlg-msg'; msg.textContent = 'Enregistrement…';
+    try {
+      const meta = await savePlan(n, snap);
+      dlg.close();
+      plansChanged();
+      flash(`Plan « ${meta.name} » enregistré`);
+    } catch (err) {
+      msg.textContent = `Échec de l’enregistrement : ${err.message}`; msg.classList.add('bad-text'); ok.disabled = false;
+    }
+  };
+}
+
+/** Message bref en bas de l'écran (onglet Planification). */
+function flash(text) {
+  let el = $('plan-flash');
+  if (!el) { el = document.createElement('div'); el.id = 'plan-flash'; el.className = 'plan-flash'; document.body.append(el); }
+  el.textContent = text; el.hidden = false;
+  clearTimeout(flash.t); flash.t = setTimeout(() => { el.hidden = true; }, 3500);
 }
 
 // ------------------------------------------------------------------ solutions
@@ -543,6 +605,7 @@ function stopPlay() { clearInterval(playTimer); playTimer = null; syncPlayButton
 function syncPlayButtons() {
   const on = !!playTimer, r = $('btn-replay'), p = $('btn-play');
   $('replay-row').hidden = !state.cur || state.sel.on;
+  $('btn-save-plan').disabled = !planSnapshot();
   r.textContent = on ? `❚❚ Pause · ${fmt(state.time)}` : (state.time > state.inst.params.dayStart && state.time < playEnd() ? `▶ Reprendre la journée · ${fmt(state.time)}` : '▶ Jouer la journée');
   p.textContent = on ? '❚❚ Pause' : '▶ Jouer';
   r.classList.toggle('playing', on); p.classList.toggle('playing', on);
@@ -867,15 +930,8 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Exploitation : la journée en cours part du plan affiché ici (copie : la planification reste libre ensuite).
-  initOps({
-    getPlan: () => (state.cur?.sol && state.cur.sol.seq.length === state.inst.groups.length
-      ? { sol: state.cur.sol, cost: state.cur.sch.cost, feasible: state.cur.feasible, label: state.cur.variant != null && state.variants?.list.length > 1 ? `variante ${state.cur.variant + 1} / ${state.variants.list.length}` : '' } : null),
-    getDataset: () => state.ds,
-    getParams: () => ({ ...state.params }),
-    getGroups: () => state.inst.groups.map(g => ({ name: g.name, target: g.target })),
-    getOpen: () => [...state.inst.dayRuns],
-    baseDataset: () => (BASE_DS ? baseDataset() : null),
-  });
+  initOps({ baseDataset: () => (BASE_DS ? baseDataset() : null) });
+  bindSavePlan();
 
   renderAll();
   solveHeuristic();

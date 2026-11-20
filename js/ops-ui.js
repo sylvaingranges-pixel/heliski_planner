@@ -14,6 +14,7 @@ import {
 import { createMapView, renderGantt, runPath, alongPath, HELI_COLOR, HELI_ICON, GROUP_COLORS } from './render.js';
 import { toLatLon, toXY } from './terrain.js';
 import { fmt } from './validate.js';
+import { listPlans, loadPlan, deletePlan, savedText } from './plans.js';
 
 const L = globalThis.L;
 const STORE = 'heliski-planner-day-v2';     // v2 : un seul hélico (les journées v1 à plusieurs hélicos sont ignorées)
@@ -36,6 +37,8 @@ const ui = {
   optGen: 0, workers: null, optAt: -1e9, optTimer: null, status: '', sig: '', panelAt: 0,
   gpsWatch: null, gpsErr: null, det: null, saveAt: 0, mv: null, traceLayer: null, toastTimer: null,
   startMode: 'sim', fitted: false,
+  startSrc: null,               // écran de départ : id du plan enregistré sélectionné
+  plans: null, plansGen: 0, plansLoading: false, starting: false,   // plans enregistrés (liste partagée, js/plans.js)
   raf: 0, dueAt: 0, gantt: null, ganttKey: null,   // animation fluide (hélico, groupes, curseur du Gantt) entre deux tics
   pendingSim: false,            // simulation : une question du plan est ouverte
   sheetKind: null,              // 'stop' : question posée à l'arrêt (refermée si l'hélico redécolle)
@@ -45,7 +48,7 @@ const ui = {
 };
 
 // ------------------------------------------------------------------ démarrage, persistance
-/** host : { getPlan, getDataset, getParams, getGroups, getOpen, baseDataset } (fournis par app.js). */
+/** host : { baseDataset } (fourni par app.js). */
 export function initOps(h) {
   host = h;
   try {
@@ -64,53 +67,125 @@ export function initOps(h) {
   if (day) startRun(); else renderStart();
 }
 
-/** Onglet affiché : la carte doit être recalée. */
+/** Onglet affiché : la carte doit être recalée ; écran de départ : liste des plans relue. */
 export function showOps() {
   document.documentElement.style.setProperty('--tb', document.querySelector('.topbar').offsetHeight + 'px');
-  if (!day) { renderStart(); return; }
+  if (!day) { fetchPlans(); renderStart(); return; }
   setTimeout(() => { ui.mv?.map.invalidateSize(); if (!ui.fitted) fitPlan(); refresh(true); }, 30);
 }
+
+/** Planification : un plan vient d'être enregistré → la liste sera relue. */
+export function plansChanged() { if (!day) fetchPlans(); else ui.plans = null; }
 
 function saveDay() {
   try { localStorage.setItem(STORE, JSON.stringify(day)); } catch { /* stockage plein ou indisponible */ }
   ui.saveAt = Date.now();
 }
 
+/** Relit la liste des plans enregistrés (les plus récents d'abord) ; { list, error? }. */
+async function fetchPlans() {
+  const gen = ++ui.plansGen;
+  ui.plansLoading = true;
+  let res;
+  try { res = { list: await listPlans() }; } catch (e) { res = { list: [], error: e.message }; }
+  if (gen === ui.plansGen) { ui.plans = res; ui.plansLoading = false; renderStart(); }
+}
+
+const planSum = (m) => `${chf(m.cost)} · ${m.nGroups} groupes · ${m.nOpen} itinéraires ouverts`
+  + (m.label ? ` · ${esc(m.label)}` : '') + (m.feasible === false ? ' · <span class="bad-text">contraintes violées</span>' : '');
+
+/** Écran de départ : liste des plans enregistrés (les plus récents en haut), on en sélectionne un. */
 function renderStart() {
+  if (day) return;
   $('ops-start').hidden = false; $('ops-main').hidden = true;
-  const plan = host.getPlan(), params = host.getParams();
-  $('ops-plan-summary').innerHTML = plan
-    ? `<b>Plan du matin${plan.label ? ` (${esc(plan.label)})` : ''} :</b> ${chf(plan.cost)} · ${host.getGroups().length} groupes · ${host.getOpen().length} itinéraires ouverts`
-      + (plan.feasible ? '' : ' · <span class="bad-text">contraintes violées</span>')
-    : '<span class="bad-text">Pas encore de plan : lancez d’abord une optimisation dans l’onglet Planification.</span>';
+  if (!ui.plans && !ui.plansLoading) fetchPlans();
+  const list = ui.plans?.list ?? [];
+  if (!list.some(m => m.id === ui.startSrc)) ui.startSrc = list[0]?.id ?? null;
+  const sel = list.find(m => m.id === ui.startSrc);
+  const box = $('ops-plan-list');
+  box.innerHTML = list.map(m => `<button class="ops-plan-item ${m.id === ui.startSrc ? 'on' : ''}" role="option" aria-selected="${m.id === ui.startSrc}" data-src="${esc(m.id)}">
+      <span class="nm">${esc(m.name)}</span><span class="dt">${savedText(m.savedAt)}</span></button>`).join('');
+  box.querySelectorAll('.ops-plan-item').forEach(b => {
+    b.onclick = () => { if (ui.startSrc !== b.dataset.src) $('ops-sim-start').value = ''; ui.startSrc = b.dataset.src; renderStart(); };
+  });
+  $('ops-plan-note').innerHTML = ui.plansLoading && !ui.plans ? '<span class="muted">Lecture des plans enregistrés…</span>'
+    : ui.plans?.error ? `<span class="bad-text">Plans enregistrés indisponibles : ${esc(ui.plans.error)}</span>`
+    : !list.length ? '<span class="muted">Aucun plan enregistré : le guide enregistre le plan dans l’onglet <i>Planification</i> (« Enregistrer le plan »).</span>'
+    : `<span class="muted">${planSum(sel)}</span><button class="ops-mini" id="ops-plan-del" title="Supprimer ce plan de la liste">🗑 Supprimer</button>`;
+  $('ops-plan-del')?.addEventListener('click', () => removePlan(sel.id));
   $('ops-start-mode').querySelectorAll('[data-mode]').forEach(b => {
     b.classList.toggle('on', b.dataset.mode === ui.startMode);
     b.onclick = () => { ui.startMode = b.dataset.mode; renderStart(); };
   });
   $('ops-start-simtime').hidden = ui.startMode !== 'sim';
-  if (!$('ops-sim-start').value) $('ops-sim-start').value = fmt(params.dayStart);
-  $('ops-begin').disabled = !plan;
+  if (!$('ops-sim-start').value && sel?.dayStart != null) $('ops-sim-start').value = fmt(sel.dayStart);
+  $('ops-begin').disabled = ui.starting || !sel;
+  $('ops-begin').textContent = ui.starting ? 'Chargement du plan…' : 'Démarrer la journée';
 }
 
-function begin() {
-  const plan = host.getPlan();
-  if (!plan) return;
-  ds = host.getDataset();
-  const [hh, mm] = $('ops-sim-start').value.split(':').map(Number);
-  const params = host.getParams();
+async function removePlan(id) {
+  const m = ui.plans?.list.find(x => x.id === id);
+  if (!m || !confirm(`Supprimer le plan « ${m.name} » de la liste partagée ?`)) return;
+  try { await deletePlan(id); } catch (e) { alert(`Suppression impossible : ${e.message}`); }
+  fetchPlans();
+}
+
+/** Démarrer la journée avec le plan sélectionné (relu sur le serveur). */
+async function beginFromStart() {
+  if (ui.starting || !ui.startSrc) return;
+  ui.starting = true; renderStart();
+  try {
+    const plan = await loadPlan(ui.startSrc);
+    const dset = plan.dataset === 'base' ? host.baseDataset() : { ...plan.dataset, isBase: false };
+    if (!dset?.runs?.length) throw new Error('jeu de données du plan introuvable');
+    const [hh, mm] = ($('ops-sim-start').value || '').split(':').map(Number);
+    ui.starting = false;
+    begin({ ...plan, dataset: dset }, { mode: ui.startMode, simStart: Number.isFinite(hh) ? hh * 60 + (mm || 0) : plan.params.dayStart });
+  } catch (e) {
+    ui.starting = false; renderStart();
+    alert(`Impossible de charger le plan : ${e.message}`);
+  }
+}
+
+/** Démarre une journée neuve avec ce plan (jeu de données résolu), après avoir arrêté complètement toute journée précédente. */
+function begin(plan, { mode, simStart }) {
+  teardown();
+  ds = plan.dataset;
   day = newDay({
-    dataset: ds, params, groups: host.getGroups(), open: host.getOpen(), sol: plan.sol, cost: plan.cost,
-    mode: ui.startMode, date: new Date().toISOString().slice(0, 10),
-    simStart: Number.isFinite(hh) ? hh * 60 + (mm || 0) : params.dayStart,
+    dataset: ds, params: plan.params, groups: plan.groups, open: plan.open, sol: plan.sol, cost: plan.cost,
+    mode, date: new Date().toISOString().slice(0, 10), simStart,
   });
   day.dataset = ds.isBase ? 'base' : ds;
+  day.planName = plan.name ?? null;
   day.sim.paused = false; day.sim.at = Date.now();
   geo = dayGeo(day, ds); ui.fitted = false;
   saveDay();
   startRun();
 }
 
+/**
+ * État transitoire de l'interface propre à une journée (question reportée, question ouverte, « ne rien faire » GPS,
+ * horloge du dernier recalcul…) : remis à zéro à chaque démarrage / fin de journée. Sinon un report posé dans une
+ * journée précédente (à 14:30 par ex.) bloquait toutes les questions d'une nouvelle journée commencée plus tôt (8:00).
+ */
+function resetDayUi() {
+  if (ui.sheet || !$('ops-sheet').hidden) closeSheet();
+  ui.snooze = -1e9; ui.pendingSim = false; ui.sheetKind = null; ui.noPickup = null; ui.dueAt = 0;
+  ui.optAt = -1e9; ui.status = ''; ui.sig = ''; ui.ganttKey = null; ui.det = null;
+  clearTimeout(ui.toastTimer); $('ops-toast').hidden = true;     // un « Annuler » de l'ancienne journée ne doit pas agir ici
+}
+
+/** Arrête tout ce qui tourne pour la journée en cours (sans effacer ce qui est enregistré). */
+function teardown() {
+  clearInterval(ui.timer); ui.timer = null;
+  stopAnim(); stopGps(); cancelOpt();
+  ui.optGen++;                                   // résultats de calcul encore en route : ignorés
+  resetDayUi();
+  day = null; view = null;
+}
+
 function startRun() {
+  resetDayUi();
   ui.heliHtml = null;
   $('ops-start').hidden = true; $('ops-main').hidden = false;
   ensureMap();
@@ -125,11 +200,9 @@ function startRun() {
 }
 
 function endDay() {
-  clearInterval(ui.timer); ui.timer = null;
-  stopAnim();
-  stopGps(); cancelOpt();
+  teardown();
   try { localStorage.removeItem(STORE); } catch { /* ignore */ }
-  day = null; view = null;
+  ui.plans = null;
   renderStart();
 }
 
@@ -147,6 +220,7 @@ function tick() {
   if (!day) return;
   const t = clock();
   let changed = false;
+  if (t < ui.snooze - SNOOZE) ui.snooze = -1e9;          // report d'une autre horloge : ignoré
   if (day.mode === 'sim' && !ui.sheet && t >= ui.snooze) {
     // Simulation : l'hélico suit le plan (arrivées, vols à vide, embarquements, passages base dus).
     for (let k = 0; k < 40; k++) {
@@ -670,7 +744,7 @@ function toggleRun(r) {
 function menuSheet() {
   const p = day.params;
   const box = openSheet({
-    title: 'Journée', wide: true,
+    title: 'Journée', wide: true, sub: day.planName ? `Plan : « ${esc(day.planName)} »` : '',
     html: `<div class="ops-field"><span>Stabilité du plan : un changement doit faire gagner au moins</span>
         <div class="ops-chips">${[0, 30, 60, 120, 250].map(x => `<button class="ops-chip ${p.changePenalty === x ? 'on' : ''}" data-cp="${x}">${x ? 'CHF ' + x : 'rien (toujours l’optimum)'}</button>`).join('')}</div></div>
       <div class="ops-field"><span>Mode</span><span class="muted">${day.mode === 'gps' ? 'vol réel · GPS de la tablette' : 'simulation · l’hélico suit le plan'}</span></div>`,
@@ -1098,7 +1172,8 @@ function renderTimeline() {
 
 // ------------------------------------------------------------------ liaisons
 function bindStatic() {
-  $('ops-begin').onclick = begin;
+  $('ops-begin').onclick = beginFromStart;
+  $('ops-plans-refresh').onclick = () => { fetchPlans(); renderStart(); };
   $('ops-menu').onclick = menuSheet;
   $('ops-fuel').onclick = fuelSheet;
   $('ops-undo').onclick = undo;
