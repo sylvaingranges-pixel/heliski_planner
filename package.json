@@ -9,5 +9,8 @@
     "test": "node --test tests/*.test.mjs",
     "bench": "node tools/bench_milp.mjs",
     "dev": "node tools/dev_server.mjs 8080"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^11.1.9"
   }
 }

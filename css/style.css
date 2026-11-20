@@ -259,7 +259,23 @@ table.mini td { border-bottom: 1px solid #eef2f7; padding: 3px 4px; }
 .ops-start[hidden], .ops-main[hidden] { display: none; }
 .ops-start-card { max-width: 760px; margin: 0 auto; padding: 20px; font-size: 16px; }
 .ops-start-card h2 { margin: 0 0 6px; }
-.ops-plan-summary { background: #f1f6fd; border: 1px solid #d6e4f7; border-radius: 10px; padding: 10px 12px; margin: 12px 0; }
+.ops-plan-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+.ops-plan-list p { margin: 4px 2px; }
+.ops-plan-row { display: flex; gap: 6px; align-items: stretch; }
+.ops-plan-pick { flex: 1; min-width: 0; font: inherit; font-size: 16px; text-align: left; color: var(--ink); min-height: 56px; padding: 8px 14px; border-radius: 12px; border: 2px solid var(--line); background: #fff; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
+.ops-plan-pick small { font-size: 13px; color: var(--muted); }
+.ops-plan-row.on .ops-plan-pick { border-color: var(--navy); background: #f1f6fd; box-shadow: inset 4px 0 0 var(--navy); }
+.ops-plan-del { flex: none; width: 52px; border-radius: 12px; border: 2px solid var(--line); background: #fff; font-size: 20px; cursor: pointer; }
+.ops-field > span .ops-mini { margin-left: 6px; min-height: 30px; padding: 0 10px; vertical-align: middle; }
+.save-dlg { border: 0; border-radius: 14px; padding: 18px 20px; width: min(460px, calc(100vw - 32px)); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+.save-dlg::backdrop { background: rgba(15, 31, 51, .45); }
+.save-dlg h3 { margin: 0 0 4px; }
+.save-dlg-field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; font-size: 13px; color: var(--muted); }
+.save-dlg-field input { font: inherit; font-size: 16px; padding: 8px 10px; }
+.save-dlg-msg { min-height: 1.3em; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.save-dlg-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.plan-flash { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 4000; background: #0f5c39; color: #fff; padding: 10px 16px; border-radius: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.3); font-size: 14px; max-width: calc(100vw - 32px); }
+.plan-flash[hidden] { display: none; }
 .ops-field { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; font-size: 14px; color: var(--muted); }
 .ops-field input[type=time] { font-size: 20px; padding: 8px 10px; width: auto; align-self: flex-start; }
 .ops-chips { display: flex; flex-wrap: wrap; gap: 8px; }
