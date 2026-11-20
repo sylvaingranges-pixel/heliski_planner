@@ -110,7 +110,18 @@ function begin() {
   startRun();
 }
 
+/**
+ * État transitoire de l'interface propre à une journée (question reportée, question ouverte, « ne rien faire » GPS) :
+ * remis à zéro à chaque démarrage / fin de journée. Sinon un report posé dans une journée précédente (à 14:30 par ex.)
+ * bloquait toutes les questions simulées d'une nouvelle journée commencée plus tôt (8:00) jusqu'à cette heure-là.
+ */
+function resetDayUi() {
+  if (ui.sheet || !$('ops-sheet').hidden) closeSheet();
+  ui.snooze = -1e9; ui.pendingSim = false; ui.sheetKind = null; ui.noPickup = null; ui.dueAt = 0;
+}
+
 function startRun() {
+  resetDayUi();
   ui.heliHtml = null;
   $('ops-start').hidden = true; $('ops-main').hidden = false;
   ensureMap();
@@ -128,6 +139,7 @@ function endDay() {
   clearInterval(ui.timer); ui.timer = null;
   stopAnim();
   stopGps(); cancelOpt();
+  resetDayUi();
   try { localStorage.removeItem(STORE); } catch { /* ignore */ }
   day = null; view = null;
   renderStart();
@@ -147,6 +159,7 @@ function tick() {
   if (!day) return;
   const t = clock();
   let changed = false;
+  if (t < ui.snooze - SNOOZE) ui.snooze = -1e9;          // report d'une autre horloge : ignoré
   if (day.mode === 'sim' && !ui.sheet && t >= ui.snooze) {
     // Simulation : l'hélico suit le plan (arrivées, vols à vide, embarquements, passages base dus).
     for (let k = 0; k < 40; k++) {
