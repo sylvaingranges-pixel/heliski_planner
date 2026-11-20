@@ -63,8 +63,9 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
   En vol, seule la destination du groupe à bord peut être changée. À chaque arrêt, l'app suggère l'action :
   hélico plein → **Débarquer** le groupe ; vide, là où un groupe est attendu par le plan → **Embarquer** ce groupe
   (en vert ; les autres groupes présents ensuite). « Ne rien faire » est toujours possible.
-- **Dépose en montagne** : l'app demande le **lieu de reprise** (fond d'un itinéraire ; ceux qui partent de ce sommet
-  d'abord, le prévu en vert, les itinéraires fermés grisés et inactifs) et, si le guide l'annonce, le **temps de
+- **Dépose en montagne** : l'app demande le **lieu de reprise** (fond d'un itinéraire qui part de ce sommet — la
+  position de l'hélico fait foi, pas de saut vers un autre sommet ; hors sommet connu : ceux du sommet le plus proche ;
+  le prévu en premier, en vert, les itinéraires fermés grisés et inactifs) et, si le guide l'annonce, le **temps de
   descente** (prévu, −10 … +20 min) → heure de reprise au fond. À la base : fin de journée, pause, ou reste à bord.
 - **GPS** : décollage (vitesse > 12 m/s) et atterrissage détectés. Au décollage à vide d'un point de reprise sans
   réponse du pilote, le groupe attendu est embarqué d'office (bandeau « Corriger »).

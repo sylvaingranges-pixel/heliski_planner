@@ -474,16 +474,18 @@ function embarkSheet({ node = null, t = null, pos = null, extra = {}, takeoff = 
 const SKI_DELTAS = [-10, -5, 0, 5, 10, 15, 20];
 
 /**
- * Débarquer en montagne : lieu de reprise = fond d'un itinéraire ouvert (ceux qui partent de cette dépose d'abord, le
- * prévu en vert ; fermés grisés) et, si besoin, temps de descente annoncé → heure de la reprise au fond.
+ * Débarquer en montagne : lieu de reprise = fond d'un itinéraire qui part de cette dépose (le prévu en premier, en vert ;
+ * fermés grisés) et, si besoin, temps de descente annoncé → heure de la reprise au fond.
  */
 function dropSheet({ t = null, pos = null } = {}) {
   const v = opsView(day, ds, clock(), { geo }), s = v.state.heli, g = s.onboard;
   if (g < 0) return;
   const tDrop = t ?? clock(), here = pos ?? heliPosition(day, v), sg = v.state.groups[g], p = day.params;
+  // La position de l'hélico (GPS) fait foi : seuls les itinéraires qui partent de ce sommet sont proposés, sinon la
+  // dépose « téléporterait » l'hélico. Hors sommet connu : ceux qui partent du sommet le plus proche.
   let list = dropCandidates(geo, here);
   const known = list.length > 0;
-  if (!known) { list = nearestRuns(geo, here, 6); if (s.dest >= 0 && !list.includes(s.dest)) list = [s.dest, ...list]; }
+  if (!known) { const [r0] = nearestRuns(geo, here, 1); list = r0 == null ? [] : dropCandidates(geo, geo.pts[1 + r0]); }
   const rank = (r) => (r === s.dest ? 0 : geo.open[r] ? 1 : 2);
   list = list.slice().sort((a, b) => rank(a) - rank(b));
   let delta = 0;
@@ -501,11 +503,10 @@ function dropSheet({ t = null, pos = null } = {}) {
       cls: r === s.dest && open ? 'expected' : !open || skied ? 'far' : '', tag: r === s.dest ? 'prévu' : '', disabled: !open, onClick: () => drop(r),
     };
   });
-  items.push({ label: 'Autre lieu de reprise…', sub: 'tous les itinéraires ouverts', cls: 'muted-btn', onClick: () => runPicker(`Reprise de ${esc(gname(g))} : au fond de…`, here, s.dest, drop, { disableClosed: true }) });
   items.push({ label: '⇄ Autre destination', sub: 'le groupe reste à bord', cls: 'muted-btn', onClick: destSheet });
   const box = openSheet({
     title: `▼ Débarquer <span class="dot big" style="background:${gcolor(g)}"></span>${esc(gname(g))}`,
-    sub: known ? `Dépose au ${nodeName(1 + list[0])}${list.length > 1 ? ` · ${list.length} itinéraires partent d’ici` : ''}` : 'Dépose hors d’un sommet connu : itinéraires les plus proches.',
+    sub: list.length ? `${known ? 'Dépose' : 'Dépose hors sommet connu · le plus proche :'} ${nodeName(1 + list[0])}${list.length > 1 ? ` · ${list.length} itinéraires partent d’ici` : ''}` : 'Aucun itinéraire ne part d’ici.',
     html: `<div class="ops-field"><span>Temps de descente (si le guide l’annonce)</span>${chipsHtml('dd', SKI_DELTAS, 0, x => (x === 0 ? 'prévu' : `${x > 0 ? '+' : '−'}${Math.abs(x)} min`))}</div>
       <p class="sheet-sub"><b>Lieu de reprise</b> (fond de l’itinéraire) :</p>`,
     items, kind: 'stop', cancel: 'Ne rien faire (reste à bord)', onCancel: () => afterEvent(),
@@ -521,10 +522,10 @@ function runItem(r, { planned = false, onClick, closedOk = true, again = 0 } = {
   };
 }
 
-/** Liste complète des itinéraires, triés par distance à une position (fermés : masqués, ou grisés et inactifs). */
-function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = [], disableClosed = false, again = null, sub = '' } = {}) {
+/** Liste des itinéraires (tous, ou among), triés par distance à une position (fermés : masqués, ou grisés et inactifs). */
+function runPicker(title, pos, planned, onPick, { onlyOpen = false, exclude = [], disableClosed = false, again = null, sub = '', among = null } = {}) {
   const times = (r) => (again ? again.filter(x => x === r).length : 0);
-  const list = nearestRuns(geo, pos, geo.R, onlyOpen ? geo.open : null).filter(r => !exclude.includes(r))
+  const list = nearestRuns(geo, pos, geo.R, onlyOpen ? geo.open : null).filter(r => !exclude.includes(r) && (!among || among.includes(r)))
     .sort((a, b) => (disableClosed ? (geo.open[b] ? 1 : 0) - (geo.open[a] ? 1 : 0) : 0) || (times(a) > 0) - (times(b) > 0));
   openSheet({ title, sub, items: list.map(r => runItem(r, { planned: r === planned, closedOk: !disableClosed, again: times(r), onClick: () => onPick(r) })), cols: 3, wide: true });
 }
@@ -596,7 +597,7 @@ function groupSheet(g) {
   }
   if (s.status === 'skiing') {
     for (const d of [-10, -5, 5, 10, 15]) items.push({ label: `${d > 0 ? 'Retard +' : 'Avance '}${d} min`, sub: `en bas vers ${fmt(s.ready + d)}`, cls: 'half', onClick: () => { addEvent(day, { type: 'adjust', group: g, delta: d, t }); afterEvent(); } });
-    items.push({ label: 'Changer l’itinéraire en cours', sub: `skie ${runLabel(s.run, true)}`, onClick: () => runPicker(`${esc(gname(g))} skie en fait…`, geo.pts[1 + s.run], s.run, (r) => { addEvent(day, { type: 'changeRun', group: g, run: r, t }); afterEvent(); }, { exclude: s.skied.filter(r => r !== s.run) }) });
+    items.push({ label: 'Changer l’itinéraire en cours', sub: `skie ${runLabel(s.run, true)}`, onClick: () => runPicker(`${esc(gname(g))} skie en fait…`, geo.pts[1 + s.run], s.run, (r) => { addEvent(day, { type: 'changeRun', group: g, run: r, t }); afterEvent(); }, { among: dropCandidates(geo, geo.pts[1 + s.run]), exclude: s.skied.filter(r => r !== s.run), sub: 'itinéraires qui partent du même sommet' }) });
   }
   if (s.status === 'onboard') items.push({ label: '⇄ Changer la destination', sub: `vers ${s.dest >= 0 ? runLabel(s.dest, true) : 'base'}`, onClick: destSheet });
   if (s.status === 'skiing' && !s.ended) {
