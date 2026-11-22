@@ -21,7 +21,9 @@ export const REROUTE_MIN = 0.5;            // min : virage pour changer de cap e
 export const GROUND_ALT_TOL = 80;          // m : altitude GPS au-dessus du terrain en deçà de laquelle l'hélico peut être posé
 
 // Événements qui modifient l'état (annulables) ; les autres (décollage, atterrissage) sont informatifs.
-export const MAIN_EVENTS = new Set(['pickup', 'dest', 'drop', 'dropBase', 'adjust', 'changeRun', 'groupEnd', 'stopStart', 'stopEnd', 'stopExtend', 'fly']);
+export const MAIN_EVENTS = new Set(['pickup', 'dest', 'drop', 'dropBase', 'adjust', 'changeRun', 'groupEnd', 'stopStart', 'stopEnd', 'stopExtend', 'fly', 'req']);
+// Vols à vide (simulation : l'hélico suit le plan) : mouvements réels, jamais annulés — l'hélico ne revient pas en arrière.
+const UNDOABLE = (e) => MAIN_EVENTS.has(e.type) && e.type !== 'fly' && !e.auto;
 
 /**
  * Nouvelle journée à partir du plan du matin.
@@ -52,6 +54,7 @@ export function newDay({ dataset, params, groups, open, sol, cost = null, mode =
 /** Ajoute un événement (horodaté en minutes depuis minuit) ; effets de bord sur les réglages, mémorisés pour l'annulation. */
 export function addEvent(day, e) {
   const ev = { id: day.nextId++, ...e };
+  if (ev.type === 'req') { ev.prev = getReq(day, ev.what, ev.group); setReq(day, ev.what, ev.group, ev.val ?? null); }
   if ((ev.type === 'pickup' || ev.type === 'dest') && ev.run >= 0 && day.forced[ev.group] === ev.run) { ev.prevForced = ev.run; day.forced[ev.group] = -1; }
   if (ev.type === 'stopStart') { ev.prevStop = day.stop; day.stop = null; }
   if (ev.type === 'dropBase' && day.visits?.[ev.group]) { ev.prevVisit = day.visits[ev.group]; day.visits[ev.group] = null; }
@@ -61,23 +64,72 @@ export function addEvent(day, e) {
 
 /** Annule l'événement significatif e (effets de bord sur les réglages). */
 function revert(day, ev) {
+  if (ev.type === 'req') setReq(day, ev.what, ev.group, ev.prev);
   if (ev.prevForced != null) day.forced[ev.group] = ev.prevForced;
   if (ev.type === 'stopStart' && ev.prevStop) day.stop = ev.prevStop;
   if (ev.prevVisit) day.visits[ev.group] = ev.prevVisit;
 }
 
 /**
- * Annule le dernier événement significatif (les décollages / atterrissages enregistrés restent). Les changements de
- * destination automatiques (itinéraire fermé) ne sont pas annulables seuls : ils suivent l'événement annulé.
+ * Demandes du pilote (réglages de la suite, sans mouvement de l'hélico), journalisées pour pouvoir être annulées :
+ *   what 'forced' : descente suivante imposée au groupe, val { run, rep } (null = libérée) ;
+ *   what 'visit'  : passage base demandé pour le groupe, val { by, dur, req } (null = supprimé) ;
+ *   what 'stop'   : passage base demandé pour l'hélico, val { by, dur, req } (null = supprimé).
  */
-export function undoLast(day) {
+export function addRequest(day, what, group, val, t) {
+  return addEvent(day, { type: 'req', what, group: what === 'stop' ? -1 : group, val: val ?? null, t });
+}
+function getReq(day, what, g) {
+  if (what === 'forced') return day.forced[g] >= 0 ? { run: day.forced[g], rep: day.forcedRep?.[g] ?? 0 } : null;
+  if (what === 'visit') return day.visits?.[g] ? { ...day.visits[g] } : null;
+  return day.stop ? { ...day.stop } : null;
+}
+function setReq(day, what, g, val) {
+  if (what === 'forced') { day.forced[g] = val ? val.run : -1; if (day.forcedRep) day.forcedRep[g] = val ? val.rep ?? 0 : 0; }
+  else if (what === 'visit') { day.visits ??= day.groups.map(() => null); day.visits[g] = val ? { ...val } : null; }
+  else day.stop = val ? { ...val } : null;
+}
+
+/** Dernier événement annulable (ni décollage / atterrissage, ni vol à vide, ni changement automatique), ou null. */
+export function undoTarget(day) {
+  for (let k = day.events.length - 1; k >= 0; k--) if (UNDOABLE(day.events[k])) return day.events[k];
+  return null;
+}
+
+/**
+ * Annule le dernier événement significatif (les décollages / atterrissages et les vols à vide restent : ils ont eu lieu).
+ * Les changements de destination automatiques (itinéraire fermé) ne sont pas annulables seuls : ils suivent l'événement
+ * annulé. Avec { geo, now } : l'hélico reste là où il est (pas de retour en arrière) — si le journal sans l'événement le
+ * place ailleurs, un vol depuis sa position actuelle est ajouté (vers la destination du groupe à bord, sinon il poursuit
+ * son vol ou reste posé), et la suite est replanifiée depuis là.
+ */
+export function undoLast(day, { geo = null, now = null } = {}) {
   let k = day.events.length - 1;
-  while (k >= 0 && (!MAIN_EVENTS.has(day.events[k].type) || day.events[k].auto)) k--;
+  while (k >= 0 && !UNDOABLE(day.events[k])) k--;
   if (k < 0) return null;
+  const track = geo && now != null && day.mode !== 'gps';      // GPS : la position est celle du GPS, pas du journal
+  const before = track ? deriveState(day, geo, now) : null;
+  const pos0 = before ? heliPosition(day, { geo, state: before, now }) : null;
   const [ev] = day.events.splice(k, 1);
   for (let j = day.events.length - 1; j >= k; j--) if (day.events[j].auto) revert(day, day.events.splice(j, 1)[0]);
   revert(day, ev);
+  if (track) keepHeliAt(day, geo, now, before, pos0);
   return ev;
+}
+
+/** Après une annulation : l'hélico est remis à sa position réelle pos0 (vol depuis là), si le journal le place ailleurs. */
+function keepHeliAt(day, geo, now, before, pos0) {
+  const st = deriveState(day, geo, now), s = st.heli, pos1 = heliPosition(day, { geo, state: st, now });
+  const moved = dist(pos0, pos1) > 0.01 || !!pos0.air !== !!pos1.air;
+  const L0 = before.heli.leg, sameLeg = (a, b) => (!a && !b) || (a && b && a.to === b.to && a.t0 === b.t0 && a.t1 === b.t1 && a.loaded === b.loaded);
+  if (!moved && (s.onboard >= 0 || sameLeg(L0, s.leg))) return;
+  const n = pos0.air ? -1 : nearNode(geo, pos0);
+  let to;
+  if (s.onboard >= 0) to = s.dest >= 0 ? 1 + s.dest : BASE;             // groupe (de nouveau) à bord : vers sa destination
+  else if (pos0.air && L0) to = L0.to;                                 // vol à vide : il poursuit (la suite peut le dérouter)
+  else to = n >= 0 ? n : BASE;                                         // posé : il reste là
+  const at = n >= 0 ? { from: n } : { from: -1, x: pos0.x, y: pos0.y, alt: pos0.alt ?? AIR_ALT };
+  addEvent(day, { type: 'fly', t: now, ...at, to, fix: true });
 }
 
 /** Géométrie de la journée (temps de vol, dénivelés, durées de ski) : instance sans état. */
@@ -195,10 +247,14 @@ export function deriveState(day, geo, now) {
         break;
       case 'fly': {                                        // vol à vide (simulation : l'hélico suit le plan)
         // from = -1 : changement de cap en vol (nouveau plan, passage base demandé…) depuis la position (x, y, alt).
+        // fix : position réelle conservée après une annulation (groupe à bord : vol chargé vers sa destination ; posé : reste là).
         const fromPt = e.from >= 0 ? P[e.from] : { x: e.x, y: e.y, alt: e.alt };
-        const dur = e.from >= 0 ? tau[e.from * N + e.to] : airTime(p, fromPt, P[e.to]);
-        h.leg = { from: e.from, fromPt, to: e.to, t0: e.t, t1: e.t + dur, loaded: false };
-        h.node = e.to; h.free = h.leg.t1; h.started = true;
+        const dur = e.from === e.to ? 0 : e.from >= 0 ? tau[e.from * N + e.to] : airTime(p, fromPt, P[e.to]);
+        const loaded = h.onboard >= 0;
+        if (!loaded && dur === 0) { h.leg = null; h.node = e.to; h.free = Math.max(h.free, e.t); break; }
+        h.leg = { from: e.from, fromPt, to: e.to, t0: e.t, t1: e.t + dur, loaded };
+        if (!loaded) { h.node = e.to; h.free = h.leg.t1; }
+        h.started = true; h.landT = null;
         break;
       }
       case 'takeoff':
