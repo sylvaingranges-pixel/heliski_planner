@@ -10,6 +10,7 @@
 // Stabilité : chaque modification du plan précédent coûte params.changePenalty (CHF) dans l'objectif ; un nouveau plan
 // n'est retenu que s'il fait gagner davantage.
 import { buildInstance, decode, buildSchedule, flightTime, refuelParams, BASE } from './model.js';
+import { fmt } from './validate.js';
 // Destination fermée en cours de vol (itinéraire retiré, vu depuis l'hélico) : le groupe à bord est replanifié depuis la
 // position actuelle de l'hélico (instantané « carry »), et la nouvelle destination est saisie d'office (redirectCarry).
 
@@ -665,20 +666,38 @@ export function displaySchedule(day, view) {
   return { heliSeg, groupSeg };
 }
 
-/** Alertes du plan : objectifs manqués, retours tardifs, attentes trop longues, passage base en retard. */
+/**
+ * Alertes du plan (contraintes non respectées par la suite prévue), par groupe quand c'est le cas :
+ * [{ key, group, text }] — key stable (type + groupe) pour repérer une alerte nouvelle ; group = -1 pour l'hélico.
+ * Attente au fond : la plus longue de chaque groupe au-delà du max (« Groupe A : 23 min d'attente… 3 min de trop »).
+ */
 export function planAlerts(day, view) {
   const { inst, sch, d } = view, p = day.params, out = [];
+  const add = (key, group, text) => out.push({ key, group, text });
+  const worst = new Map();                                  // groupe → rotation à l'attente au fond la plus longue
+  if (p.maxClientWait > 0) for (const l of d.lifts) {
+    if (l.group < 0 || l.from === BASE || l.readyAt == null) continue;
+    const w = l.start - l.readyAt;
+    if (w > p.maxClientWait + 1e-6 && w > (worst.get(l.group)?.w ?? 0)) worst.set(l.group, { w, at: l.readyAt });
+  }
+  const visitEnd = new Map();                               // groupe → arrivée à la base pour le passage demandé
+  for (const l of d.lifts) if (l.group >= 0 && l.to === BASE && !visitEnd.has(l.group)) visitEnd.set(l.group, l.end - p.unloadMin);
   inst.groups.forEach((g, i) => {
     const v = sch.gVert[i], sg = inst.start.groups[i];
-    if (!sg.done && v < inst.targets[i] - 1e-6) out.push(`${g.name} : ${Math.round(inst.targets[i] - v)} m manquants`);
-    if (sch.gEnd[i] > p.dayEnd + 1e-6) out.push(`${g.name} : retour base après la fin de journée`);
+    const w = worst.get(i);
+    if (w) add(`wait:${i}`, i, `${g.name} : ${Math.round(w.w)} min d’attente au fond dès ${fmt(w.at)} (${Math.round(w.w - p.maxClientWait)} min de trop, max ${p.maxClientWait})`);
+    if (!sg.done && v < inst.targets[i] - 1e-6) add(`short:${i}`, i, `${g.name} : ${Math.round(inst.targets[i] - v)} m manquants`);
+    const late = sch.gEnd[i] - p.dayEnd;
+    if (late > 1e-6) add(`late:${i}`, i, `${g.name} : retour base ${Math.max(1, Math.round(late))} min après la fin de journée`);
+    if (sg.visit && !sg.done) {
+      const vl = (visitEnd.get(i) ?? Infinity) - sg.visit.by;
+      if (vl > 1e-6) add(`visit:${i}`, i, `${g.name} : passage base en retard${Number.isFinite(vl) ? ` de ${Math.max(1, Math.round(vl))} min` : ''}`);
+    }
   });
-  if (d.waitExcess > 1e-6) out.push(`attente au fond > ${p.maxClientWait} min (${Math.round(d.waitExcess)} min de trop)`);
-  if (d.stopLate > 1e-6) out.push(`passage base en retard de ${Math.round(d.stopLate)} min`);
-  if (d.visitLate > 1e-6) out.push(`passage base d’un groupe en retard de ${Math.round(d.visitLate)} min`);
-  if (d.closed) out.push('descente fermée dans le plan');
+  if (d.stopLate > 1e-6) add('stop', -1, `Hélico : passage base en retard de ${Math.max(1, Math.round(d.stopLate))} min`);
+  if (d.closed) add('closed', -1, 'Descente fermée dans le plan');
   const rf = refuelParams(p);
-  if (rf && d.fuelOver > 1e-6) out.push(`autonomie dépassée : plus de ${rf.max} min de vol sans plein (${Math.round(d.fuelOver)} min de trop)`);
+  if (rf && d.fuelOver > 1e-6) add('fuel', -1, `Autonomie dépassée : plus de ${rf.max} min de vol sans plein (${Math.max(1, Math.round(d.fuelOver))} min de trop)`);
   return out;
 }
 

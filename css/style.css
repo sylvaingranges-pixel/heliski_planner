@@ -323,10 +323,16 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .ops-mini.go { background: var(--ok); border-color: var(--ok); }
 .ops-alerts:empty { display: none; }
 .ops-alert { background: #fbe1e1; color: #8f1d1d; border: 1px solid #f1b9b9; border-radius: 10px; padding: 8px 10px; font-weight: 600; }
-.ops-alert summary { cursor: pointer; list-style: none; }
+.ops-alert summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
 .ops-alert summary::-webkit-details-marker { display: none; }
-.ops-alert .more { float: right; background: #8f1d1d; color: #fff; border-radius: 9px; padding: 0 8px; }
+.ops-alert .more { flex: none; background: #8f1d1d; color: #fff; border-radius: 9px; padding: 0 8px; }
 .ops-alert div { margin-top: 4px; }
+.ops-alert .al-x { flex: 1; min-width: 0; }
+.ops-alert .alarm-ack { flex: none; min-height: 32px; padding: 2px 12px; color: #8f1d1d; border-color: #f1b9b9; font-weight: 700; }
+.ops-alert .new { background: #c62828; color: #fff; border-radius: 6px; padding: 0 6px; font-size: 11.5px; vertical-align: 1px; }
+.ops-alert.alarm { border-color: #c62828; animation: ops-alarm 1.2s ease-in-out infinite alternate; }
+@keyframes ops-alarm { from { box-shadow: 0 0 0 0 rgba(198,40,40,.45); } to { box-shadow: 0 0 0 4px rgba(198,40,40,0); } }
+@media (prefers-reduced-motion: reduce) { .ops-alert.alarm { animation: none; } }
 
 .ops-card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
 .ops-heli { border-top: 6px solid var(--c); }
