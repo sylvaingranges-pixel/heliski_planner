@@ -881,8 +881,8 @@ function renderHead() {
 
 /**
  * Alertes du plan (contraintes non respectées), en tête du panneau. Une contrainte qui ne l'était pas et qui devient
- * non respectée après un changement de plan (événement, recalcul, retard…) déclenche une alarme : bandeau rouge
- * clignotant « Contrainte non respectée » avec le groupe et les minutes en trop, jusqu'à ce que le pilote touche « Vu ».
+ * non respectée après un changement de plan (événement, recalcul, retard…) déclenche une alarme : marquée « NOUVEAU »,
+ * bordure qui pulse, jusqu'à ce que le pilote touche « Vu ». Une seule ligne affichée, badge « +n » pour voir les autres.
  * Les alertes ne sont comparées qu'une fois le recalcul terminé (le plan adapté juste après un événement est
  * provisoire) ; celles du plan au démarrage de la journée ne déclenchent pas d'alarme.
  */
@@ -895,7 +895,7 @@ function renderAlerts() {
       let fresh = false;
       for (const k of keys) if (!ui.alertSeen.has(k)) { ui.alertSeen.add(k); ui.alarm.add(k); fresh = true; }
       for (const k of [...ui.alertSeen]) if (!keys.has(k)) { ui.alertSeen.delete(k); ui.alarm.delete(k); }   // résolue
-      if (fresh) { ui.alertsOpen = true; try { navigator.vibrate?.([300, 150, 300]); } catch { /* pas de vibreur */ } }
+      if (fresh) { try { navigator.vibrate?.([300, 150, 300]); } catch { /* pas de vibreur */ } }
     }
   }
   for (const k of [...ui.alarm]) if (!keys.has(k)) ui.alarm.delete(k);
@@ -904,9 +904,10 @@ function renderAlerts() {
   // Alarmes (nouvelles) d'abord, puis les autres.
   const list = [...alerts.filter(a => ui.alarm.has(a.key)), ...alerts.filter(a => !ui.alarm.has(a.key))];
   const n = ui.alarm.size, line = (a) => `⚠ ${ui.alarm.has(a.key) ? '<b class="new">NOUVEAU</b> ' : ''}${esc(a.text)}`;
-  box.innerHTML = `<details class="ops-alert ${n ? 'alarm' : ''}" ${ui.alertsOpen || n ? 'open' : ''}>`
-    + `<summary>${n ? `<span class="alarm-head">🚨 Attention : contrainte${n > 1 ? 's' : ''} non respectée${n > 1 ? 's' : ''}<button class="ops-mini alarm-ack">Vu</button></span>` : ''}`
-    + `${line(list[0])}${list.length > 1 && !n ? ` <b class="more">+${list.length - 1}</b>` : ''}</summary>`
+  // Une seule ligne (la plus récente d'abord) ; badge « +n » pour les autres, à toucher pour les voir toutes.
+  box.innerHTML = `<details class="ops-alert ${n ? 'alarm' : ''}" ${ui.alertsOpen ? 'open' : ''}>`
+    + `<summary><span class="al-x">${line(list[0])}</span>`
+    + `${list.length > 1 ? `<b class="more">+${list.length - 1}</b>` : ''}${n ? '<button class="ops-mini alarm-ack" title="Alarme vue">Vu</button>' : ''}</summary>`
     + list.slice(1).map(a => `<div>${line(a)}</div>`).join('') + '</details>';
   box.querySelector('details').addEventListener('toggle', (e) => { ui.alertsOpen = e.target.open; });
   box.querySelector('.alarm-ack')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); ui.alarm.clear(); ui.alertsOpen = false; renderAlerts(); });
