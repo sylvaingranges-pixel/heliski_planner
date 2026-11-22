@@ -53,9 +53,15 @@ le solveur) a été retirée. La branche `main` reste le banc d'essai des solveu
 
 ## Exploitation : la journée en cours (onglet *Exploitation*)
 
-Pour le pilote, sur une tablette en paysage, entièrement tactile, dans l'unique hélicoptère. On démarre la journée à
-partir du plan de l'onglet *Planification* (copie : la planification reste libre ensuite).
+Pour le pilote, sur une tablette en paysage, entièrement tactile, dans l'unique hélicoptère. Déroulement : la veille, le
+guide prépare le plan (onglet *Planification*) et l'enregistre ; le lendemain, le pilote charge ce plan enregistré et
+l'exécute.
 
+- **Plans enregistrés** : *💾 Enregistrer le plan* (au-dessus de la carte, onglet *Planification*) range le plan affiché,
+  sous un nom, dans une liste partagée tenue sur Netlify (Netlify Blobs, fonction `/api/plans` ; un nom déjà pris est
+  remplacé). L'écran de départ de l'exploitation les liste, les plus récents en haut ; on sélectionne le plan du jour
+  (suppression possible) et on démarre. Démarrer arrête d'abord entièrement toute journée précédente (horloge, calculs
+  en arrière-plan, GPS, questions en attente).
 - **Modes** : *Vol réel* (heure réelle, GPS de la tablette) ou *Simulation* (horloge accélérée ×1 à ×60, mise en pause
   pendant chaque question au pilote ; l'hélico suit le plan et les mêmes questions sont posées qu'en vol).
 - **Arrêts** : embarquer et débarquer ne sont proposés **que l'hélico posé** (GPS : à l'arrêt 20 s, et altitude GPS
@@ -112,10 +118,11 @@ partir du plan de l'onglet *Planification* (copie : la planification reste libre
 
 ## Lancer
 
-Aucune compilation, aucune dépendance : c'est un site statique.
+Aucune compilation : c'est un site statique, plus deux fonctions Netlify (relais NEOS, plans enregistrés). Seule
+dépendance : `@netlify/blobs`, pour la fonction des plans sur Netlify (installée par Netlify au déploiement).
 
 ```sh
-npm start                        # = node tools/dev_server.mjs 8080 (statique + relais NEOS)
+npm start                        # = node tools/dev_server.mjs 8080 (statique + relais NEOS + plans enregistrés dans .netlify/plans-dev/)
 # puis ouvrir http://localhost:8080 et « Installer l'app » (Chrome / Edge / Safari « Sur l'écran d'accueil »)
 ```
 
@@ -175,6 +182,7 @@ Les paramètres *Attente client (CHF/min)* et *Attente max au fond (min)* permet
 | `js/validate.js` | vérificateur indépendant des contraintes |
 | `js/ops.js` | exploitation : journal des événements → état réel → instance « reste de la journée », adaptation du plan, déductions GPS, simulation (l'hélico suit le plan) |
 | `js/ops-ui.js` | onglet *Exploitation* (tablette du pilote) : horloge, GPS, recalcul en arrière-plan, carte, programme, fenêtres tactiles |
+| `js/plans.js`, `netlify/functions/plans.mjs` | plans enregistrés : liste partagée sur Netlify (Netlify Blobs) |
 | `data/base-dataset.json` | jeu de base fixe (Le Châble, 50 descentes, relief réel) |
 | `js/render.js`, `js/app.js` | carte, Gantt, interface |
 | `js/milp.js`, `js/neos.js`, `lib/highs/`, `netlify/functions/neos.mjs` | MILP / NEOS (banc d'essai, branche `main`, ici restreint à 1 hélico, sans ravitaillement) : tests uniquement |
