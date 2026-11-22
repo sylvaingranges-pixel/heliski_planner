@@ -7,7 +7,7 @@
 //   (workers) en partant du plan en cours ; un nouveau plan n'est adopté que s'il gagne plus que le seuil de stabilité.
 import { BASE, planChanges, refuelParams } from './model.js';
 import {
-  newDay, addEvent, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
+  newDay, addEvent, addRequest, undoTarget, undoLast, dayGeo, opsView, dueTrigger, applyTrigger, plannedDest, groupFinished, pickupCandidates,
   dropCandidates, nearestRuns, nearNode, heliPosition, heliMotion, terrainAlt, displaySchedule, planAlerts, liveFix,
   onboardArrival, redirectCarry, nextRefuel, refuelEvent, dayCost, NEAR_KM, GROUND_ALT_TOL,
 } from './ops.js';
@@ -369,7 +369,7 @@ function pickupAt(v, node, t, pos, extra = {}) {
   if (exp >= 0 && cands.includes(exp)) {
     const run = doPickup(exp, t, node, extra);
     toast(`${esc(gname(exp))} à bord → ${destText(exp, run)}`, {
-      action: 'Corriger', fn: () => { undoLast(day); afterEvent(); embarkSheet({ node, t, pos, extra, takeoff: true }); },
+      action: 'Corriger', fn: () => { undoLast(day, { geo, now: clock() }); afterEvent(); embarkSheet({ node, t, pos, extra, takeoff: true }); },
     });
     return;
   }
@@ -469,7 +469,7 @@ function onLanding(pos, t) {
   } else if (node === BASE && (day.stop || nextRefuel(v))) {
     // Passage base demandé, ou plein prévu par le plan avant la prochaine reprise : il commence à l'atterrissage.
     const rs = nextRefuel(v), ev = addEvent(day, rs ? refuelEvent(day, { t, dur: rs.t1 - rs.t0, refuel: true, hot: !rs.engineOff }) : { type: 'stopStart', t, dur: day.stop.dur });
-    toast(`${ev.refuel ? '⛽ Plein' : 'Arrêt base'} commencé (${Math.round(ev.dur)} min)`, { action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
+    toast(`${ev.refuel ? '⛽ Plein' : 'Arrêt base'} commencé (${Math.round(ev.dur)} min)`, { action: 'Annuler', fn: () => { undoLast(day, { geo, now: clock() }); afterEvent(); } });
   } else if (pickupCandidates(geo, v.state, pos).length) embarkSheet({ node: node >= 0 ? node : null, t, pos });
   afterEvent();
 }
@@ -567,7 +567,7 @@ function dropSheet({ t = null, pos = null } = {}) {
   const repTxt = (r) => `reprise ~${fmt(repT(r))} (descente ${geo.ski[r] + delta} min)`;
   const drop = (r) => {
     doDrop(g, r, tDrop, delta ? geo.ski[r] + delta : null); afterEvent();
-    toast(`${esc(gname(g))} déposé · reprise au fond ${runLabel(r)} vers ${fmt(repT(r))}`, { kind: 'info', action: 'Annuler', fn: () => { undoLast(day); afterEvent(); } });
+    toast(`${esc(gname(g))} déposé · reprise au fond ${runLabel(r)} vers ${fmt(repT(r))}`, { kind: 'info', action: 'Annuler', fn: () => { undoLast(day, { geo, now: clock() }); afterEvent(); } });
   };
   const items = list.map((r) => {
     const x = ds.runs[r], open = !!geo.open[r], skied = sg.skied.includes(r);
@@ -609,8 +609,7 @@ function doneRuns(s) { return [...s.skied, ...(s.status === 'onboard' && s.dest 
 
 /** Descente suivante imposée ; déjà skiée aujourd'hui : elle est refaite (sur demande, le plan l'évite sinon). */
 function setForced(g, r) {
-  day.forced[g] = r;
-  day.forcedRep[g] = doneRuns(view.state.groups[g]).filter(x => x === r).length;
+  addRequest(day, 'forced', g, { run: r, rep: doneRuns(view.state.groups[g]).filter(x => x === r).length }, clock());
   afterEvent();
 }
 
@@ -637,8 +636,8 @@ function visitSheet(g) {
     html: `<div class="ops-field"><span>Être à la base dans</span>${chipsHtml('vdelay', [0, 15, 30, 45, 60, 90, 120], delay, x => (x ? x + ' min' : 'au plus tôt'))}</div>
       <div class="ops-field"><span>Temps à la base</span>${chipsHtml('vdur', [10, 15, 20, 30, 45, 60, 90], dur, x => x + ' min')}</div>`,
     items: [
-      { label: 'Valider', cls: 'primary', onClick: () => { day.visits[g] = { by: t + delay, dur, req: t }; afterEvent(); toast(`${esc(gname(g))} : à la base avant ${fmt(t + delay)}, pause ${dur} min`, { kind: 'info' }); } },
-      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { day.visits[g] = null; afterEvent(); } }] : []),
+      { label: 'Valider', cls: 'primary', onClick: () => { addRequest(day, 'visit', g, { by: t + delay, dur, req: t }, clock()); afterEvent(); toast(`${esc(gname(g))} : à la base avant ${fmt(t + delay)}, pause ${dur} min`, { kind: 'info' }); } },
+      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { addRequest(day, 'visit', g, null, clock()); afterEvent(); } }] : []),
     ],
   });
   bindChips(box, 'vdelay', (x) => { delay = x; });
@@ -654,8 +653,8 @@ function fuelSheet() {
     html: `<div class="ops-field"><span>Être à la base dans</span>${chipsHtml('delay', [0, 10, 20, 30, 45, 60, 90], delay, x => (x ? x + ' min' : 'maintenant'))}</div>
       <div class="ops-field"><span>Temps à la base (moteur coupé)</span>${chipsHtml('dur', [5, 10, 15, 20, 30, 45], dur, x => x + ' min')}</div>`,
     items: [
-      { label: 'Valider', cls: 'primary', onClick: () => { day.stop = { by: t + delay, dur, req: t }; afterEvent(); toast(`Passage base avant ${fmt(t + delay)} (${dur} min)`, { kind: 'info' }); } },
-      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { day.stop = null; afterEvent(); } }] : []),
+      { label: 'Valider', cls: 'primary', onClick: () => { addRequest(day, 'stop', -1, { by: t + delay, dur, req: t }, clock()); afterEvent(); toast(`Passage base avant ${fmt(t + delay)} (${dur} min)`, { kind: 'info' }); } },
+      ...(cur ? [{ label: 'Supprimer la demande', cls: 'muted-btn', onClick: () => { addRequest(day, 'stop', -1, null, clock()); afterEvent(); } }] : []),
     ],
   });
   bindChips(box, 'delay', (x) => { delay = x; });
@@ -681,7 +680,7 @@ function groupSheet(g) {
   if (s.status !== 'done' && !s.ended) {
     const f = day.forced[g];
     items.push({ label: f >= 0 ? `Descente suivante imposée : ${runLabel(f)}${day.forcedRep[g] ? ' (la refaire)' : ''}` : 'Imposer la descente suivante', sub: f >= 0 ? 'toucher pour changer' : 'le plan est recalculé autour · on peut refaire une descente déjà skiée', onClick: () => forceSheet(g) });
-    if (f >= 0) items.push({ label: 'Libérer la descente suivante', sub: 'laisser le plan choisir', cls: 'muted-btn', onClick: () => { day.forced[g] = -1; afterEvent(); } });
+    if (f >= 0) items.push({ label: 'Libérer la descente suivante', sub: 'laisser le plan choisir', cls: 'muted-btn', onClick: () => { addRequest(day, 'forced', g, null, clock()); afterEvent(); } });
   }
   items.push({ label: 'Objectif de dénivelé', sub: `${day.groups[g].target.toLocaleString('fr-CH')} m aujourd’hui · fait ${s.vert.toLocaleString('fr-CH')} m`, onClick: () => targetSheet(g) });
   if (!s.ended && s.status !== 'done') items.push({ label: 'Fin de journée du groupe', sub: s.status === 'base' ? 'ne repart plus' : 'plus de descente : retour base', cls: 'danger', onClick: () => { addEvent(day, { type: 'groupEnd', group: g, t }); afterEvent(); } });
@@ -770,9 +769,17 @@ const EV_LABEL = {
   stopStart: (e) => `${e.refuel ? 'Plein à la base' : 'Arrêt base'} ${Math.round(e.dur)} min${e.hot ? ' (moteur allumé)' : ''}`,
   stopEnd: () => 'Fin de l’arrêt base',
   stopExtend: (e) => `Arrêt base +${e.delta} min`,
-  fly: (e) => (e.from < 0 ? `Changement de cap en vol → ${nodeName(e.to)}` : `Vol vers ${nodeName(e.to)}`),
+  fly: (e) => (e.fix ? (e.from === e.to ? `Reste au ${nodeName(e.to)} (après annulation)` : `Repart de sa position → ${nodeName(e.to)} (après annulation)`)
+    : e.from < 0 ? `Changement de cap en vol → ${nodeName(e.to)}` : `Vol vers ${nodeName(e.to)}`),
+  req: (e) => reqLabel(e),
   takeoff: () => 'Décollage', land: (e) => `Se pose (${e.node >= 0 ? nodeName(e.node) : 'hors point connu'})`,
 };
+function reqLabel(e) {
+  const v = e.val;
+  if (e.what === 'forced') return `${esc(gname(e.group))} : ${v ? `descente suivante imposée ${runLabel(v.run)}${v.rep ? ' (la refaire)' : ''}` : 'descente suivante libérée'}`;
+  if (e.what === 'visit') return `${esc(gname(e.group))} : ${v ? `passage base demandé avant ${fmt(v.by)}, pause ${v.dur} min` : 'passage base supprimé'}`;
+  return v ? `Passage base de l’hélico demandé avant ${fmt(v.by)} (${v.dur} min)` : 'Passage base de l’hélico supprimé';
+}
 function journalSheet() {
   const rows = [...day.events].reverse().map(e => `<li><span class="mono">${fmt(e.t)}</span> ${EV_LABEL[e.type]?.(e) ?? e.type}</li>`).join('');
   openSheet({ title: 'Journal de la journée', html: `<ol class="ops-journal">${rows || '<li class="muted">Aucun événement.</li>'}</ol>`, cancel: 'Fermer', wide: true });
@@ -787,11 +794,11 @@ function exportDay() {
 }
 
 function undo() {
-  const k = [...day.events].reverse().find(e => !['land', 'takeoff'].includes(e.type) && !e.auto);
+  const k = undoTarget(day);
   if (!k) { toast('Rien à annuler', { kind: 'info' }); return; }
   openSheet({
     title: 'Annuler le dernier événement ?', sub: `${fmt(k.t)} · ${EV_LABEL[k.type]?.(k) ?? k.type}`,
-    items: [{ label: 'Annuler l’événement', cls: 'danger', onClick: () => { undoLast(day); afterEvent(); } }], cancel: 'Garder',
+    items: [{ label: 'Annuler l’événement', cls: 'danger', onClick: () => { undoLast(day, { geo, now: clock() }); afterEvent(); } }], cancel: 'Garder',
   });
 }
 

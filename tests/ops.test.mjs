@@ -6,7 +6,7 @@ import { DEFAULT_GROUPS, DEFAULT_PARAMS } from '../js/data.js';
 import { buildInstance, decode, buildSchedule, planChanges, BASE } from '../js/model.js';
 import { solveSA } from '../js/solver.js';
 import {
-  newDay, addEvent, undoLast, opsView, dueTrigger, applyTrigger, deriveState, dropCandidates, pickupCandidates, nearNode, dayGeo,
+  newDay, addEvent, addRequest, undoTarget, undoLast, opsView, dueTrigger, applyTrigger, deriveState, dropCandidates, pickupCandidates, nearNode, dayGeo,
   heliPosition, heliMotion, onboardArrival, terrainAlt, redirectCarry, displaySchedule, dayCost, scheduleCostUntil,
 } from '../js/ops.js';
 
@@ -464,4 +464,79 @@ test('exploitation : refaire une descente déjà skiée, imposée sur demande', 
   day.forced[grp] = rep;
   const v = opsView(day, ds, 12 * 60);
   assert.equal(v.inst.start.groups[grp].next, -1);
+});
+
+test('exploitation : annuler une demande (passage base, descente imposée) — l’hélico reste où il est, sans saut', () => {
+  for (const what of ['stop', 'forced']) {
+    const { day } = startDay();
+    const geo = dayGeo(day, ds);
+    let asked = null, undone = null, turned = false;
+    const w = jumpWatcher(0.25);
+    runDay(day, {
+      step: 0.25, optIters: 600, until: 17 * 60,
+      onStep: (now, d) => {
+        w.onStep(now, d);
+        const v = opsView(d, ds, now), s = v.state.heli;
+        if (asked == null && now > 10 * 60 && s.onboard < 0 && s.leg && s.leg.t1 > now + 1.5 && s.leg.to !== BASE) {
+          if (what === 'stop') addRequest(d, 'stop', -1, { by: now, dur: 10, req: now }, now);
+          else {
+            // Imposer à un groupe qui skie une autre descente que celle du plan : le plan change
+            const g = v.state.groups.findIndex(x => x.status === 'skiing');
+            const r = v.inst.dayRuns.find(x => !v.state.groups[g].skied.includes(x) && x !== v.plan.seq[g]?.[0]);
+            addRequest(d, 'forced', g, { run: r, rep: 0 }, now);
+          }
+          asked = now;
+        } else if (asked != null && undone == null && now >= asked + 0.5) {
+          turned = d.events.some(e => e.type === 'fly' && e.from < 0 && e.t >= asked);
+          const hp0 = heliPosition(d, v);
+          assert.equal(undoTarget(d).type, 'req', 'la demande est le dernier événement annulable (pas le vol)');
+          const ev = undoLast(d, { geo, now });
+          assert.equal(ev.type, 'req');
+          if (what === 'stop') assert.equal(d.stop, null); else assert.ok(d.forced.every(f => f < 0));
+          assert.ok(d.events.some(e => e.type === 'fly' && e.t >= asked) || !turned, 'les vols faits restent');
+          const hp1 = heliPosition(d, opsView(d, ds, now));
+          assert.ok(Math.hypot(hp1.x - hp0.x, hp1.y - hp0.y) < 0.01, `${what} : saut de l’hélico à l’annulation`);
+          undone = now;
+        }
+      },
+    });
+    assert.ok(undone != null, `${what} : demande non annulée (asked ${asked})`);
+    if (what === 'stop') assert.ok(turned, 'changement de cap attendu après la demande de passage base');
+    assert.ok(w.maxJump < 0.05, `${what} : saut de ${w.maxJump.toFixed(2)} km`);
+  }
+});
+
+test('exploitation : annuler un embarquement en plein vol (simulation) — l’hélico continue depuis sa position', () => {
+  const { day } = startDay();
+  const geo = dayGeo(day, ds);
+  runDay(day, { until: 10 * 60 });
+  let now = 10 * 60, v = opsView(day, ds, now);
+  for (let k = 0; k < 400 && !(v.state.heli.onboard >= 0 && heliPosition(day, v).air); k++) {
+    now += 0.25; v = opsView(day, ds, now);
+    const tr = dueTrigger(day, v); if (tr) { applyTrigger(day, v, tr); v = opsView(day, ds, now); }
+  }
+  const g = v.state.heli.onboard, hp0 = heliPosition(day, v);
+  assert.ok(g >= 0 && hp0.air);
+  assert.equal(undoLast(day, { geo, now }).type, 'pickup');
+  const v1 = opsView(day, ds, now), hp1 = heliPosition(day, v1);
+  assert.equal(v1.state.heli.onboard, -1);
+  assert.notEqual(v1.state.groups[g].status, 'onboard');
+  assert.ok(hp1.air && Math.hypot(hp1.x - hp0.x, hp1.y - hp0.y) < 0.01, 'l’hélico reste en vol là où il est');
+  assert.ok(v1.inst.start.heli.loc > 2 * v1.inst.R, 'la suite part de la position actuelle');
+  // Annuler la dépose : le groupe est de nouveau à bord, l'hélico repart de là où il est vers sa destination
+  const w = jumpWatcher(0.25);
+  runDay(day, { step: 0.25, until: 17 * 60, onStep: (t, d) => {
+    w.onStep(t, d);
+    const last = undoTarget(d);
+    if (last?.type === 'drop' && t > last.t + 2 && !d.undidDrop) {
+      d.undidDrop = true;
+      const vv = opsView(d, ds, t), p0 = heliPosition(d, vv);
+      undoLast(d, { geo, now: t });
+      const v2 = opsView(d, ds, t), p1 = heliPosition(d, v2);
+      assert.equal(v2.state.heli.onboard, last.group);
+      assert.ok(Math.hypot(p1.x - p0.x, p1.y - p0.y) < 0.01, 'pas de saut à l’annulation de la dépose');
+    }
+  } });
+  assert.ok(day.undidDrop);
+  assert.ok(w.maxJump < 0.05, `saut de ${w.maxJump.toFixed(2)} km`);
 });
