@@ -327,6 +327,12 @@ h3 .dot.big { width: 18px; height: 18px; vertical-align: -2px; }
 .ops-alert summary::-webkit-details-marker { display: none; }
 .ops-alert .more { float: right; background: #8f1d1d; color: #fff; border-radius: 9px; padding: 0 8px; }
 .ops-alert div { margin-top: 4px; }
+.ops-alert.alarm { background: #c62828; color: #fff; border-color: #8f1d1d; font-size: 16px; animation: ops-alarm 1s ease-in-out infinite alternate; }
+.ops-alert .alarm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 17px; font-weight: 800; margin-bottom: 6px; }
+.ops-alert .alarm-head .ops-mini { color: #8f1d1d; font-weight: 700; }
+.ops-alert .new { background: #fff; color: #c62828; border-radius: 6px; padding: 0 6px; font-size: 12px; vertical-align: 1px; }
+@keyframes ops-alarm { from { box-shadow: 0 0 0 0 rgba(198,40,40,.6); } to { box-shadow: 0 0 0 6px rgba(198,40,40,0); background: #a61f1f; } }
+@media (prefers-reduced-motion: reduce) { .ops-alert.alarm { animation: none; } }
 
 .ops-card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 12px; }
 .ops-heli { border-top: 6px solid var(--c); }

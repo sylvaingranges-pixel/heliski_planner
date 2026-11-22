@@ -7,7 +7,7 @@ import { buildInstance, decode, buildSchedule, planChanges, BASE } from '../js/m
 import { solveSA } from '../js/solver.js';
 import {
   newDay, addEvent, addRequest, undoTarget, undoLast, opsView, dueTrigger, applyTrigger, deriveState, dropCandidates, pickupCandidates, nearNode, dayGeo,
-  heliPosition, heliMotion, onboardArrival, terrainAlt, redirectCarry, displaySchedule, dayCost, scheduleCostUntil,
+  heliPosition, heliMotion, onboardArrival, terrainAlt, redirectCarry, displaySchedule, dayCost, scheduleCostUntil, planAlerts,
 } from '../js/ops.js';
 
 const ds = JSON.parse(readFileSync(new URL('../data/base-dataset.json', import.meta.url)));
@@ -539,4 +539,21 @@ test('exploitation : annuler un embarquement en plein vol (simulation) — l’h
   } });
   assert.ok(day.undidDrop);
   assert.ok(w.maxJump < 0.05, `saut de ${w.maxJump.toFixed(2)} km`);
+});
+
+test('exploitation : alertes du plan par groupe (attente au fond : groupe, minutes d’attente et minutes en trop)', () => {
+  const { day } = startDay();
+  const v0 = opsView(day, ds, P.dayStart);
+  assert.equal(planAlerts(day, v0).filter(a => a.key.startsWith('wait:')).length, 0, 'pas d’alerte d’attente sans dépassement');
+  day.params.maxClientWait = 1;                                 // contrainte resserrée : des attentes la dépassent
+  const v = opsView(day, ds, P.dayStart), alerts = planAlerts(day, v);
+  assert.ok(v.d.waitExcess > 1e-6);
+  const waits = alerts.filter(a => a.key.startsWith('wait:'));
+  assert.ok(waits.length > 0);
+  for (const a of waits) {
+    assert.equal(a.key, `wait:${a.group}`);
+    assert.ok(a.group >= 0 && a.text.startsWith(day.groups[a.group].name + ' : '), a.text);
+    assert.match(a.text, /\d+ min d’attente au fond .* \(\d+ min de trop, max 1\)/);
+  }
+  assert.equal(new Set(alerts.map(a => a.key)).size, alerts.length, 'clés uniques');
 });

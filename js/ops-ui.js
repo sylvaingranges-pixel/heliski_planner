@@ -44,6 +44,9 @@ const ui = {
   sheetKind: null,              // 'stop' : question posée à l'arrêt (refermée si l'hélico redécolle)
   noPickup: null,               // GPS : « ne rien faire » choisi à cet atterrissage → pas d'embarquement déduit au décollage
   snooze: -1e9,                 // simulation : question écartée, reposée à cette heure d'horloge
+  alertSeen: null,              // alertes du plan déjà connues (clé) ; null : pas encore relevées pour cette journée
+  alarm: new Set(),             // alertes apparues après un changement de plan, pas encore vues par le pilote
+  optQueued: false,             // recalcul programmé, pas encore lancé
   showEmpty: (() => { try { return localStorage.getItem(PREF_EMPTY) === '1'; } catch { return false; } })(),
 };
 
@@ -172,6 +175,7 @@ function resetDayUi() {
   if (ui.sheet || !$('ops-sheet').hidden) closeSheet();
   ui.snooze = -1e9; ui.pendingSim = false; ui.sheetKind = null; ui.noPickup = null; ui.dueAt = 0;
   ui.optAt = -1e9; ui.status = ''; ui.sig = ''; ui.ganttKey = null; ui.det = null;
+  ui.alertSeen = null; ui.alarm = new Set(); ui.optQueued = false;
   clearTimeout(ui.toastTimer); $('ops-toast').hidden = true;     // un « Annuler » de l'ancienne journée ne doit pas agir ici
 }
 
@@ -286,15 +290,15 @@ function redirect() {
 }
 
 // ------------------------------------------------------------------ ré-optimisation (workers)
-function scheduleOpt(ms) { clearTimeout(ui.optTimer); ui.optTimer = setTimeout(optimize, ms); }
-function cancelOpt() { clearTimeout(ui.optTimer); ui.workers?.forEach(w => w.terminate()); ui.workers = null; }
+function scheduleOpt(ms) { clearTimeout(ui.optTimer); ui.optQueued = true; ui.optTimer = setTimeout(optimize, ms); }
+function cancelOpt() { clearTimeout(ui.optTimer); ui.optQueued = false; ui.workers?.forEach(w => w.terminate()); ui.workers = null; }
 
 function optimize() {
   if (!day) return;
   cancelOpt();
   const t = clock(), v = opsView(day, ds, t, { geo });
   ui.optAt = t;
-  if (!v.inst.active.length || !v.inst.dayRuns.length) { ui.status = ''; renderHead(); return; }
+  if (!v.inst.active.length || !v.inst.dayRuns.length) { ui.status = ''; renderHead(); renderAlerts(); return; }
   const gen = ++ui.optGen, nW = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)), res = [];
   ui.workers = new Set(); ui.status = 'recalcul'; renderHead();
   for (let k = 0; k < nW; k++) {
@@ -304,7 +308,7 @@ function optimize() {
       w.terminate(); ui.workers?.delete(w); res.push(ev.data);
       if (res.length === nW) { ui.workers = null; optimized(v, res); }
     };
-    w.onerror = () => { if (gen === ui.optGen) { cancelOpt(); ui.status = ''; renderHead(); } };
+    w.onerror = () => { if (gen === ui.optGen) { cancelOpt(); ui.status = ''; renderHead(); renderAlerts(); } };
     w.postMessage({ ops: v.snap, opts: { timeMs: OPT_MS, restarts: 2, seed: 7919 * k + gen, init: v.plan } });
     ui.workers.add(w);
   }
@@ -324,7 +328,7 @@ function optimized(v0, res) {
     refresh(true);
     if (n > 0 && !redirected) toast(`Nouveau plan : ${n} changement${n > 1 ? 's' : ''}` + (fixed ? ' · contraintes mieux respectées' : '')
       + (gain > 1 ? ` · ${chf(gain)} gagnés` : gain < -1 ? ` · ${chf(-gain)} de plus` : ''), { kind: 'info' });
-  } else renderHead();
+  } else { renderHead(); renderAlerts(); }
 }
 
 // ------------------------------------------------------------------ événements : embarquement, dépose, base
@@ -875,12 +879,42 @@ function renderHead() {
   $('ops-status').innerHTML = gps + (ui.status ? '<span class="pill-s busy" title="Recalcul de la suite en cours">⟳</span>' : '');
 }
 
+/**
+ * Alertes du plan (contraintes non respectées), en tête du panneau. Une contrainte qui ne l'était pas et qui devient
+ * non respectée après un changement de plan (événement, recalcul, retard…) déclenche une alarme : bandeau rouge
+ * clignotant « Contrainte non respectée » avec le groupe et les minutes en trop, jusqu'à ce que le pilote touche « Vu ».
+ * Les alertes ne sont comparées qu'une fois le recalcul terminé (le plan adapté juste après un événement est
+ * provisoire) ; celles du plan au démarrage de la journée ne déclenchent pas d'alarme.
+ */
+function renderAlerts() {
+  if (!day || !view) return;
+  const alerts = planAlerts(day, view), keys = new Set(alerts.map(a => a.key));
+  if (!ui.status && !ui.optQueued) {
+    if (!ui.alertSeen) ui.alertSeen = keys;
+    else {
+      let fresh = false;
+      for (const k of keys) if (!ui.alertSeen.has(k)) { ui.alertSeen.add(k); ui.alarm.add(k); fresh = true; }
+      for (const k of [...ui.alertSeen]) if (!keys.has(k)) { ui.alertSeen.delete(k); ui.alarm.delete(k); }   // résolue
+      if (fresh) { ui.alertsOpen = true; try { navigator.vibrate?.([300, 150, 300]); } catch { /* pas de vibreur */ } }
+    }
+  }
+  for (const k of [...ui.alarm]) if (!keys.has(k)) ui.alarm.delete(k);
+  const box = $('ops-alerts');
+  if (!alerts.length) { box.innerHTML = ''; return; }
+  // Alarmes (nouvelles) d'abord, puis les autres.
+  const list = [...alerts.filter(a => ui.alarm.has(a.key)), ...alerts.filter(a => !ui.alarm.has(a.key))];
+  const n = ui.alarm.size, line = (a) => `⚠ ${ui.alarm.has(a.key) ? '<b class="new">NOUVEAU</b> ' : ''}${esc(a.text)}`;
+  box.innerHTML = `<details class="ops-alert ${n ? 'alarm' : ''}" ${ui.alertsOpen || n ? 'open' : ''}>`
+    + `<summary>${n ? `<span class="alarm-head">🚨 Attention : contrainte${n > 1 ? 's' : ''} non respectée${n > 1 ? 's' : ''}<button class="ops-mini alarm-ack">Vu</button></span>` : ''}`
+    + `${line(list[0])}${list.length > 1 && !n ? ` <b class="more">+${list.length - 1}</b>` : ''}</summary>`
+    + list.slice(1).map(a => `<div>${line(a)}</div>`).join('') + '</details>';
+  box.querySelector('details').addEventListener('toggle', (e) => { ui.alertsOpen = e.target.open; });
+  box.querySelector('.alarm-ack')?.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); ui.alarm.clear(); ui.alertsOpen = false; renderAlerts(); });
+}
+
 function renderPanel() {
   const v = view, t = v.now;
-  // Alertes
-  const alerts = planAlerts(day, v);
-  $('ops-alerts').innerHTML = alerts.length ? `<details class="ops-alert" ${ui.alertsOpen ? 'open' : ''}><summary>⚠ ${esc(alerts[0])}${alerts.length > 1 ? ` <b class="more">+${alerts.length - 1}</b>` : ''}</summary>${alerts.slice(1).map(a => `<div>⚠ ${esc(a)}</div>`).join('')}</details>` : '';
-  $('ops-alerts').querySelector('details')?.addEventListener('toggle', (e) => { ui.alertsOpen = e.target.open; });
+  renderAlerts();
   // Hélico
   renderHeliCard();
   renderCost();
